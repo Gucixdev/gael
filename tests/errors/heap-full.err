@@ -1,0 +1,1 @@
+tests/errors/heap-full.gael:3: runtime error: out of memory for vecs (the heap is full)

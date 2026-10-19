@@ -13,12 +13,12 @@
 
 typedef u16 Ty;
 enum { T_ERR, T_UNIT, T_INT, T_FLOAT, T_BOOL, T_STR, T_NONE, T_ANY, T_USER };
-typedef enum { K_PRIM, K_STRUCT, K_ENUM, K_OPTION } TyKind;
+typedef enum { K_PRIM, K_STRUCT, K_ENUM, K_OPTION, K_VEC } TyKind;
 
 typedef struct {
 	const char *name;
 	u8 kind;
-	Ty elem;      /* option: the type inside */
+	Ty elem;      /* option and vec: the type inside */
 	i32 cells;    /* VM cells of one value */
 	i32 first, n; /* struct: its fields g_fields[first...]; enum: its variants g_variants[first...] */
 	i32 line;     /* where it was declared; 0 for the built-in and the option types */
@@ -140,7 +140,7 @@ static u8 g_seen[MAX_VARIANTS];      /* match: the variants an arm already cover
 
 typedef enum {
 	F_START, F_CALL, F_IF, F_WHEN, F_WHILE, F_DO, F_LET, F_SET, F_AND, F_OR, F_NOT, F_ARITH, F_CMP, F_PRINT,
-	F_CONV, F_STRFN, F_NEW, F_SOME, F_MATCH
+	F_CONV, F_STRFN, F_NEW, F_SOME, F_MATCH, F_VEC, F_VECOP, F_FOR
 } Form;
 
 typedef struct {
@@ -180,6 +180,8 @@ static i32 cells(Ty t) { return t < g_ntys ? g_tys[t].cells : 0; }
 static int is_struct(Ty t) { return t < g_ntys && g_tys[t].kind == K_STRUCT; }
 static int is_enum(Ty t) { return t < g_ntys && g_tys[t].kind == K_ENUM; }
 static int is_option(Ty t) { return t < g_ntys && g_tys[t].kind == K_OPTION; }
+static int is_vec(Ty t) { return t < g_ntys && g_tys[t].kind == K_VEC; }
+static Ty elem_of(Ty t) { return is_vec(t) || is_option(t) ? g_tys[t].elem : (Ty)T_ERR; }
 static int numeric(Ty t) { return t == T_INT || t == T_FLOAT; }
 static int comparable(Ty t) { return numeric(t) || t == T_BOOL || t == T_STR || is_enum(t); }
 static int matchable(Ty t) { return t == T_INT || t == T_BOOL || t == T_STR || is_enum(t) || is_option(t); }
@@ -209,6 +211,11 @@ static i32 effect(Op op, i32 a, i32 b)
 	case OP_PRINT: case OP_PRINTLN: return -g_fmts[a].cells;
 	case OP_FORMAT: return 1 - g_fmts[a].cells;
 	case OP_PARSE_I: case OP_PARSE_F: return 1;
+	case OP_VEC_NEW: return 1 - a * b;
+	case OP_VEC_PUSH: return -(1 + a);
+	case OP_VEC_GET: return a - 2;
+	case OP_VEC_PUT: return -(2 + a);
+	case OP_VEC_POP: return a;
 	case OP_SHOW: return -cells((Ty)a);
 	default: return 0;
 	}
@@ -274,7 +281,8 @@ static int head_is(i32 n, const char *s) { return n >= 0 && g_nodes[n].kind == N
 static const char *const g_reserved[] = {
 	"if", "when", "while", "do", "let", "set", "and", "or", "not", "+", "-", "*", "/", "%", "<", "<=", ">", ">=", "=",
 	"!=", "print", "println", "int", "float", "bool", "string", "unit", "len", "sh", "defn", "def", "true", "false", ":",
-	"struct", "enum", "match", "some", "none", "option", "_", "format", "system", "parse-int", "parse-float"
+	"struct", "enum", "match", "some", "none", "option", "_", "format", "system", "parse-int", "parse-float", "vec", "push",
+	"get", "put", "pop", "for"
 };
 
 static int is_reserved(const char *s)
@@ -291,50 +299,54 @@ static Ty find_named_type(const char *s)
 {
 	i32 i;
 	for (i = T_UNIT; i < g_ntys; i++) {
-		if (i == T_NONE || i == T_ANY || g_tys[i].kind == K_OPTION) continue;
+		if (i == T_NONE || i == T_ANY || g_tys[i].kind == K_OPTION || g_tys[i].kind == K_VEC) continue;
 		if (!strcmp(g_tys[i].name, s)) return (Ty)i;
 	}
 	return T_NONE;
 }
 
-/* intern_option TYPE: the type (option TYPE), made once */
-static Ty intern_option(Ty elem)
+/* intern_wrap KIND TYPE: the type (option TYPE) or (vec TYPE), made once. An option holds its value in place (a tag
+ * cell first); a vec is one cell, a handle to its elements on the heap */
+static Ty intern_wrap(u8 kind, Ty elem)
 {
 	char name[160];
 	TyInfo *t;
 	i32 i;
 	for (i = T_USER; i < g_ntys; i++) {
-		if (g_tys[i].kind == K_OPTION && g_tys[i].elem == elem) return (Ty)i;
+		if (g_tys[i].kind == kind && g_tys[i].elem == elem) return (Ty)i;
 	}
 	if (g_ntys == MAX_TYS) die("too many types");
-	sprintf(name, "(option %.140s)", tn(elem));
+	sprintf(name, "(%s %.140s)", kind == K_VEC ? "vec" : "option", tn(elem));
 	t = &g_tys[g_ntys];
 	memset(t, 0, sizeof(*t));
 	t->name = arena_strndup(&g_perm, name, strlen(name));
-	t->kind = K_OPTION;
+	t->kind = kind;
 	t->elem = elem;
-	t->cells = 1 + cells(elem);
+	t->cells = kind == K_VEC ? 1 : 1 + cells(elem);
 	return (Ty)g_ntys++;
 }
 
-/* parse_type NODE: the type a node names - int, float, bool, string, unit, a struct, an enum or (option type) - or an
- * error and ERR */
+static Ty intern_option(Ty elem) { return intern_wrap(K_OPTION, elem); }
+
+/* parse_type NODE: the type a node names - int, float, bool, string, unit, a struct, an enum, (option type) or
+ * (vec type) - or an error and ERR */
 static Ty parse_type(i32 n)
 {
+	u8 wraps[MAX_DEPTH];
 	i32 depth = 0, k;
 	Ty t;
-	while (n >= 0 && g_nodes[n].kind == N_LIST && sym_is(first_of(n), "option")) {
+	while (n >= 0 && g_nodes[n].kind == N_LIST && (head_is(n, "option") || head_is(n, "vec")) && depth < MAX_DEPTH) {
 		i32 inner = next_of(first_of(n));
 		if (inner < 0 || next_of(inner) >= 0) {
-			err_node(n, "an option type is (option type), like (option int)");
+			err_node(n, head_is(n, "vec") ? "a vec type is (vec type), like (vec int)" : "an option type is (option type), like (option int)");
 			return T_ERR;
 		}
-		depth++;
+		wraps[depth++] = (u8)(head_is(n, "vec") ? K_VEC : K_OPTION);
 		n = inner;
 	}
 	if (n < 0) return T_ERR;
 	if (!is_sym(n)) {
-		err_node(n, "expected a type here: int, float, bool, string, unit, a struct, an enum or (option type)");
+		err_node(n, "expected a type here: int, float, bool, string, unit, a struct, an enum, (option type) or (vec type)");
 		return T_ERR;
 	}
 	t = find_named_type(g_nodes[n].text);
@@ -342,12 +354,12 @@ static Ty parse_type(i32 n)
 		err_node(n, "unknown type " NAME_FMT, g_nodes[n].text);
 		return T_ERR;
 	}
-	for (k = 0; k < depth; k++) {
+	for (k = depth - 1; k >= 0; k--) {
 		if (t == T_UNIT) {
-			err_node(n, "(option unit) holds nothing; use bool");
+			err_node(n, wraps[k] == K_VEC ? "(vec unit) holds nothing; count with an int" : "(option unit) holds nothing; use bool");
 			return T_ERR;
 		}
-		t = intern_option(t);
+		t = intern_wrap(wraps[k], t);
 	}
 	return t;
 }
@@ -557,6 +569,12 @@ enum { SF_LEN, SF_SH, SF_SYSTEM, SF_PARSE_I, SF_PARSE_F };
 static const char *const g_strfn_names[] = { "len", "sh", "system", "parse-int", "parse-float" };
 static const Op g_strfn_ops[] = { OP_LEN_S, OP_SH, OP_SYSTEM, OP_PARSE_I, OP_PARSE_F };
 
+/* the builtins on a vec */
+enum { VO_PUSH, VO_GET, VO_PUT, VO_POP };
+static const char *const g_vecop_names[] = { "push", "get", "put", "pop" };
+static const char *const g_vecop_usage[] = { "(push v x)", "(get v i)", "(put v i x)", "(pop v)" };
+static const i32 g_vecop_args[] = { 2, 2, 3, 1 };
+
 typedef struct {
 	int global;
 	i32 at;
@@ -720,6 +738,8 @@ static o start_list(Frame *f)
 	else if (!strcmp(s, "format")) { f->form = F_PRINT; f->op = 2; }
 	else if (!strcmp(s, "int") || !strcmp(s, "float")) { f->form = F_CONV; f->op = (u8)(s[0] == 'f' ? T_FLOAT : T_INT); }
 	else if (!strcmp(s, "some")) f->form = F_SOME;
+	else if (!strcmp(s, "vec")) f->form = F_VEC;
+	else if (!strcmp(s, "for")) f->form = F_FOR;
 	else if (!strcmp(s, "match")) f->form = F_MATCH;
 	else if (!strcmp(s, "defn") || !strcmp(s, "def") || !strcmp(s, "struct") || !strcmp(s, "enum")) {
 		err_node(head, NAME_FMT " is only allowed at the top level of a file", s);
@@ -735,6 +755,9 @@ static o start_list(Frame *f)
 		}
 		for (k = 0; k < GAEL_COUNT(g_strfn_names); k++) {
 			if (!strcmp(s, g_strfn_names[k])) { f->form = F_STRFN; f->op = (u8)k; break; }
+		}
+		for (k = 0; k < GAEL_COUNT(g_vecop_names); k++) {
+			if (!strcmp(s, g_vecop_names[k])) { f->form = F_VECOP; f->op = (u8)k; break; }
 		}
 		if (f->form != F_START) return;
 		if (is_struct(t = find_named_type(s))) {
@@ -1360,7 +1383,13 @@ static o run_work(i32 base)
 				finish(f->op);
 				break;
 			}
-			if (t != T_STR && t != T_ERR) err_node(f->cur, "%s takes a string, not %s", g_strfn_names[f->op], tn(t));
+			if (f->op == SF_LEN && is_vec(t)) {
+				emit(OP_VEC_LEN, 0, 0, line);
+				finish(T_INT);
+				break;
+			}
+			if (f->op == SF_LEN && t != T_STR && t != T_ERR) err_node(f->cur, "len takes a string or a vec, not %s", tn(t));
+			else if (t != T_STR && t != T_ERR) err_node(f->cur, "%s takes a string, not %s", g_strfn_names[f->op], tn(t));
 			emit(g_strfn_ops[f->op], 0, 0, line);
 			switch (f->op) {
 			case SF_SH: finish(T_STR); break;
@@ -1524,6 +1553,171 @@ static o run_work(i32 base)
 			}
 			break;
 
+		case F_VEC: /* (vec a b c), or (vec) when the expected type says what it holds */
+			if (f->phase == 0) {
+				f->rt = is_vec(f->want) ? g_tys[f->want].elem : (Ty)T_NONE; /* the element type, once known */
+				if (f->cur < 0) {
+					if (f->rt == T_NONE) {
+						err_node(f->node, "an empty vec needs to know what it holds; give it a type, like (let ((v : (vec int) (vec))) ...)");
+						finish(T_ERR);
+						break;
+					}
+					emit(OP_VEC_NEW, 0, cells(f->rt), line);
+					finish(f->want);
+					break;
+				}
+				f->k = 0;
+				f->phase = 1;
+				push_child(f->cur, f->rt);
+				break;
+			}
+			t = pop_type();
+			if (t == T_UNIT) {
+				err_node(f->cur, "a vec cannot hold unit");
+				t = T_ERR;
+			}
+			if (f->rt == T_NONE) f->rt = t; /* the first element decides */
+			else if (t != T_ERR && f->rt != T_ERR && t != f->rt)
+				err_node(f->cur, "vec: element %ld is %s, the vec holds %s", (long)(f->k + 1), tn(t), tn(f->rt));
+			f->k++;
+			f->cur = next_of(f->cur);
+			if (f->cur >= 0) { push_child(f->cur, f->rt == T_ERR ? (Ty)T_NONE : f->rt); break; }
+			emit(OP_VEC_NEW, f->k, cells(f->rt), line);
+			finish(f->rt == T_ERR ? (Ty)T_ERR : intern_wrap(K_VEC, f->rt));
+			break;
+
+		case F_VECOP: { /* (push v x) (get v i) (put v i x) (pop v) */
+			const char *what = g_vecop_names[f->op];
+			Ty elem = elem_of(f->rt);
+			if (f->phase == 0) {
+				if (f->k != g_vecop_args[f->op]) {
+					err_node(f->node, "%s takes %ld value%s: %s", what, (long)g_vecop_args[f->op], g_vecop_args[f->op] == 1 ? "" : "s",
+					         g_vecop_usage[f->op]);
+					finish(T_ERR);
+					break;
+				}
+				f->phase = 1;
+				push_child(f->cur, T_NONE);
+				break;
+			}
+			t = pop_type();
+			if (f->phase == 1) { /* the vec */
+				if (t != T_ERR && !is_vec(t)) {
+					err_node(f->cur, "%s: the first value must be a vec, this is %s", what, tn(t));
+					t = T_ERR;
+				}
+				f->rt = t;
+				elem = elem_of(t);
+				if (f->op == VO_POP) {
+					emit(OP_VEC_POP, cells(elem), 0, line);
+					finish(t == T_ERR ? (Ty)T_ERR : intern_option(elem));
+					break;
+				}
+				f->phase = 2;
+				f->cur = next_of(f->cur);
+				push_child(f->cur, f->op == VO_PUSH ? (t == T_ERR ? (Ty)T_NONE : elem) : (Ty)T_NONE);
+				break;
+			}
+			if (f->phase == 2 && f->op != VO_PUSH) { /* the index */
+				if (t != T_INT && t != T_ERR) err_node(f->cur, "%s: the index is %s, it must be int", what, tn(t));
+				if (f->op == VO_GET) {
+					emit(OP_VEC_GET, cells(elem), 0, line);
+					finish(elem);
+					break;
+				}
+				f->phase = 3;
+				f->cur = next_of(f->cur);
+				push_child(f->cur, f->rt == T_ERR ? (Ty)T_NONE : elem);
+				break;
+			}
+			/* the element of a push or a put */
+			if (t != T_ERR && f->rt != T_ERR && t != elem)
+				err_node(f->cur, "%s: the vec holds %s, this value is %s", what, tn(elem), tn(t));
+			emit(f->op == VO_PUSH ? OP_VEC_PUSH : OP_VEC_PUT, cells(elem), 0, line);
+			finish(T_UNIT);
+			break;
+		}
+
+		case F_FOR: /* (for (x v) body...) over a vec, (for (i from to) body...) over from, from + 1, ..., to - 1 */
+			switch (f->phase) {
+			case 0: {
+				i32 b = f->cur, name = first_of(b), from = next_of(name);
+				if (b < 0 || g_nodes[b].kind != N_LIST || !is_sym(name) || from < 0 || count_from(from) > 2) {
+					err_node(b < 0 ? f->node : b, "for takes (x v) or (i from to), then a body: (for (i 0 10) (println \"%%d\" i))");
+					finish(T_ERR);
+					break;
+				}
+				if (is_reserved(g_nodes[name].text) || strchr(g_nodes[name].text, '.'))
+					err_node(name, NAME_FMT " cannot be a variable name", g_nodes[name].text);
+				f->op = (u8)(next_of(from) >= 0); /* 1: a range */
+				f->mark = g_nlocals;
+				f->mark2 = g_slots;
+				f->phase = 1;
+				push_child(from, T_NONE);
+				break;
+			}
+			case 1: {
+				i32 b = f->cur, name = first_of(b);
+				t = pop_type();
+				if (f->op) { /* i, then the end, each in a slot */
+					if (t != T_INT && t != T_ERR) err_node(next_of(name), "for: a range starts at an int, this is %s", tn(t));
+					f->a = new_slots(2);
+					emit(OP_STORE_L, f->a, 0, line);
+					f->phase = 2;
+					push_child(next_of(next_of(name)), T_INT);
+					break;
+				}
+				if (t != T_ERR && !is_vec(t)) {
+					err_node(next_of(name), "for: (x v) goes over a vec, this is %s; a range is (i from to)", tn(t));
+					t = T_ERR;
+				}
+				f->rt = elem_of(t);
+				f->a = new_slots(2 + cells(f->rt)); /* the vec, the index, the element */
+				emit(OP_STORE_L, f->a, 0, line);
+				emit(OP_PUSH_I, add_int(0), 0, line);
+				emit(OP_STORE_L, f->a + 1, 0, line);
+				f->c = g_ncode;
+				emit(OP_LOAD_L, f->a + 1, 0, line);
+				emit(OP_LOAD_L, f->a, 0, line);
+				emit(OP_VEC_LEN, 0, 0, line);
+				emit(OP_LT_I, 0, 0, line);
+				f->b = emit(OP_JF, -1, 0, line);
+				emit(OP_LOAD_L, f->a, 0, line);
+				emit(OP_LOAD_L, f->a + 1, 0, line);
+				emit(OP_VEC_GET, cells(f->rt), 0, line);
+				emit_store(0, f->a + 2, f->rt, line);
+				add_local(g_nodes[name].text, f->rt, f->a + 2);
+				f->phase = 3;
+				push_body(next_of(b), 0, T_UNIT);
+				break;
+			}
+			case 2: {
+				i32 name = first_of(f->cur);
+				t = pop_type();
+				if (t != T_INT && t != T_ERR) err_node(next_of(next_of(name)), "for: a range ends at an int, this is %s", tn(t));
+				emit(OP_STORE_L, f->a + 1, 0, line);
+				f->c = g_ncode;
+				emit(OP_LOAD_L, f->a, 0, line);
+				emit(OP_LOAD_L, f->a + 1, 0, line);
+				emit(OP_LT_I, 0, 0, line);
+				f->b = emit(OP_JF, -1, 0, line);
+				add_local(g_nodes[name].text, T_INT, f->a);
+				f->phase = 3;
+				push_body(next_of(f->cur), 0, T_UNIT);
+				break;
+			}
+			default:
+				(void)pop_type();
+				emit(OP_INC_L, f->op ? f->a : f->a + 1, 0, line);
+				emit(OP_JMP, f->c, 0, line);
+				patch(f->b, g_ncode);
+				g_nlocals = f->mark;
+				g_slots = f->mark2;
+				finish(T_UNIT);
+				break;
+			}
+			break;
+
 		default:
 			err_node(f->node, "internal: unknown form");
 			finish(T_ERR);
@@ -1556,36 +1750,34 @@ static int new_name_ok(i32 name, i32 form, const char *what)
 	return 1;
 }
 
-/* add_type NAME KIND FIRST N CELLS: register a struct or an enum; in the REPL the same declaration read again is fine */
-static o add_type(i32 name, u8 kind, i32 first, i32 n, i32 ncells, int repl, int broken)
+/* new_type NAME KIND: register a struct or an enum; the caller fills in its fields or variants */
+static Ty new_type(i32 name, u8 kind)
 {
-	const char *s = g_nodes[name].text;
-	Ty old = find_named_type(s);
 	TyInfo *t;
-	i32 i;
-	if (old != T_NONE) {
-		TyInfo *ot = &g_tys[old];
-		int same = repl && ot->kind == kind && ot->n == n;
-		for (i = 0; same && i < n; i++) {
-			if (kind == K_STRUCT)
-				same = !strcmp(g_fields[ot->first + i].name, g_fields[first + i].name) && g_fields[ot->first + i].type == g_fields[first + i].type;
-			else
-				same = !strcmp(g_variants[ot->first + i], g_variants[first + i]);
-		}
-		if (!same) err_node(name, NAME_FMT " is already a type (line %ld)", s, (long)ot->line);
-		if (kind == K_STRUCT) g_nfields = first; else g_nvariants = first;
-		return;
-	}
 	if (g_ntys == MAX_TYS) die("too many types");
-	t = &g_tys[g_ntys++];
+	t = &g_tys[g_ntys];
 	memset(t, 0, sizeof(*t));
-	t->name = arena_strndup(&g_perm, s, g_nodes[name].len);
+	t->name = arena_strndup(&g_perm, g_nodes[name].text, g_nodes[name].len);
 	t->kind = kind;
-	t->cells = ncells;
-	t->first = first;
-	t->n = n;
 	t->line = g_nodes[name].line;
-	t->broken = (u8)broken;
+	return (Ty)g_ntys++;
+}
+
+/* same_type NAME OLD KIND FIRST N REPL: NAME is a type already; only the REPL may read its declaration again, and
+ * only unchanged. The fields or variants just read are dropped either way */
+static o same_type(i32 name, Ty old, u8 kind, i32 first, i32 n, int repl)
+{
+	TyInfo *ot = &g_tys[old];
+	int same = repl && ot->kind == kind && ot->n == n;
+	i32 i;
+	for (i = 0; same && i < n; i++) {
+		if (kind == K_STRUCT)
+			same = !strcmp(g_fields[ot->first + i].name, g_fields[first + i].name) && g_fields[ot->first + i].type == g_fields[first + i].type;
+		else
+			same = !strcmp(g_variants[ot->first + i], g_variants[first + i]);
+	}
+	if (!same) err_node(name, NAME_FMT " is already a type (line %ld)", g_nodes[name].text, (long)ot->line);
+	if (kind == K_STRUCT) g_nfields = first; else g_nvariants = first;
 }
 
 /* declared_below FROM NAME: a struct or enum called NAME comes after FROM at the top level */
@@ -1598,13 +1790,18 @@ static int declared_below(i32 from, const char *name)
 	return 0;
 }
 
-/* declare_struct STRUCT REPL: (struct Name (field : type) ...); a field's type must be declared above */
+/* declare_struct STRUCT REPL: (struct Name (field : type) ...); a field's type must be declared above, or be the
+ * struct itself inside a vec (a tree) */
 static o declare_struct(i32 n, int repl)
 {
 	i32 name = next_of(first_of(n)), p, q, first = g_nfields, ncells = 0, nf = 0, bad = 0;
+	Ty old, self;
 	if (!new_name_ok(name, n, "struct")) return;
+	old = find_named_type(g_nodes[name].text);
+	self = old != T_NONE ? old : new_type(name, K_STRUCT); /* known by name now, for a (vec Self) field */
 	for (p = next_of(name); p >= 0; p = next_of(p)) {
 		i32 fname = first_of(p), colon = next_of(fname), ft = next_of(colon), base = ft;
+		int in_vec = 0;
 		Ty t;
 		if (g_nodes[p].kind != N_LIST || !is_sym(fname) || !sym_is(colon, ":") || ft < 0 || next_of(ft) >= 0) {
 			err_node(p, "a field is (name : type)");
@@ -1622,10 +1819,13 @@ static o declare_struct(i32 n, int repl)
 			bad++;
 			continue;
 		}
-		while (head_is(base, "option")) base = next_of(first_of(base));
-		if (sym_is(base, g_nodes[name].text)) {
-			err_node(ft, NAME_FMT " cannot hold a " NAME_FMT ", not even in an option: its size would have no end",
-			         g_nodes[name].text, g_nodes[name].text);
+		while (head_is(base, "option") || head_is(base, "vec")) {
+			if (head_is(base, "vec")) in_vec = 1;
+			base = next_of(first_of(base));
+		}
+		if (sym_is(base, g_nodes[name].text) && !in_vec) {
+			err_node(ft, NAME_FMT " cannot hold a " NAME_FMT ", not even in an option: its size would have no end; (vec "
+			         NAME_FMT ") can", g_nodes[name].text, g_nodes[name].text, g_nodes[name].text);
 			bad++;
 			continue;
 		}
@@ -1645,13 +1845,21 @@ static o declare_struct(i32 n, int repl)
 		ncells += cells(t);
 		nf++;
 	}
-	add_type(name, K_STRUCT, first, nf, ncells, repl, bad);
+	if (old != T_NONE) {
+		same_type(name, old, K_STRUCT, first, nf, repl);
+		return;
+	}
+	g_tys[self].first = first;
+	g_tys[self].n = nf;
+	g_tys[self].cells = ncells;
+	g_tys[self].broken = (u8)(bad > 0);
 }
 
 /* declare_enum ENUM REPL: (enum Name variant ...) */
 static o declare_enum(i32 n, int repl)
 {
 	i32 name = next_of(first_of(n)), p, i, first = g_nvariants, nv = 0, bad = 0;
+	Ty old, self;
 	if (!new_name_ok(name, n, "enum")) return;
 	if (next_of(name) < 0) {
 		err_node(name, "enum " NAME_FMT " needs at least one variant: (enum Dir north south)", g_nodes[name].text);
@@ -1673,7 +1881,15 @@ static o declare_enum(i32 n, int repl)
 		g_variants[g_nvariants++] = arena_strndup(&g_perm, g_nodes[p].text, g_nodes[p].len);
 		nv++;
 	}
-	add_type(name, K_ENUM, first, nv, 1, repl, bad);
+	if ((old = find_named_type(g_nodes[name].text)) != T_NONE) {
+		same_type(name, old, K_ENUM, first, nv, repl);
+		return;
+	}
+	self = new_type(name, K_ENUM);
+	g_tys[self].first = first;
+	g_tys[self].n = nv;
+	g_tys[self].cells = 1;
+	g_tys[self].broken = (u8)(bad > 0);
 }
 
 /* fn_shape DEFN NAME PARAMS RET BODY: the parts of (defn name ((p : type) ...) [: type] body...) */

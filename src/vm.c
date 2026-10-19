@@ -1,7 +1,8 @@
 /* vm.c - the bytecode machine: one operand stack of untyped cells and a stack of call frames.
  *
  * The compiler already proved every type, so a cell carries no tag: ADD_I reads two ints, ADD_F two floats. A string
- * is its place in the text arena. A struct or an option is a run of cells. Integer arithmetic wraps (done in u64,
+ * is its place in the text arena. A struct or an option is a run of cells; a vec is one cell, the heap index of its
+ * header (length, capacity, where its elements are). Integer arithmetic wraps (done in u64,
  * no undefined behaviour); dividing by zero and running out of stack are runtime errors with the line they happened
  * on. A frame needs its slots plus the deepest operand stack the compiler counted for it, and the VM checks that all
  * of it fits before it enters the frame, so no instruction inside can write past the stack. */
@@ -19,6 +20,13 @@ typedef struct {
 } VFrame;
 
 static Cell g_global_cells[MAX_GLOBAL_CELLS];
+
+/* the heap: vec headers and their elements, laid out flat. A vec that outgrows its room moves to a new block twice the
+ * size; nothing is freed */
+#define HEAP_CELLS (1 << 22)
+static Cell g_heap[HEAP_CELLS];
+static i64 g_nheap;
+enum { VH_LEN, VH_CAP, VH_DATA, VH_CELLS };
 static Cell g_vstack[VM_STACK];
 static VFrame g_vframes[VM_FRAMES];
 
@@ -84,7 +92,7 @@ static o print_quoted(i64 v)
 
 #define PRINT_DEPTH 64
 
-/* print_value TYPE CELLS: one value, as the REPL shows it: (Vec2 :x 1.0 :y 2.0), (some 3), none, north */
+/* print_value TYPE CELLS: one value, as the REPL shows it: (Vec2 :x 1.0 :y 2.0), (some 3), none, north, (vec 1 2) */
 static o print_value(Ty type, const Cell *c)
 {
 	struct {
@@ -100,6 +108,22 @@ static o print_value(Ty type, const Cell *c)
 		const TyInfo *ti = &g_tys[st[n - 1].t];
 		const Cell *v = st[n - 1].c;
 		i32 *i = &st[n - 1].i;
+		if (ti->kind == K_VEC) {
+			const Cell *hd = g_heap + v->i;
+			if (*i < 0) {
+				out_s("(vec");
+				*i = 0;
+			}
+			if (*i >= hd[VH_LEN].i) { out_s(")"); n--; continue; }
+			out_s(" ");
+			if (n == PRINT_DEPTH) { out_s("..."); (*i)++; continue; }
+			st[n].t = ti->elem;
+			st[n].i = -1;
+			st[n].c = g_heap + hd[VH_DATA].i + (i64)*i * cells(ti->elem);
+			(*i)++;
+			n++;
+			continue;
+		}
 		if (ti->kind == K_STRUCT || ti->kind == K_OPTION) {
 			const Field *fd = 0;
 			if (*i < 0) {
@@ -228,6 +252,53 @@ static int run_sh(i64 cmd, i64 *res)
 	*res = text_end(start);
 	return 1;
 }
+
+/* heap_alloc N: N cells off the heap; -1 when it is full */
+static i64 heap_alloc(i64 n)
+{
+	i64 at = g_nheap;
+	if (n > HEAP_CELLS - g_nheap) return -1;
+	g_nheap += n;
+	return at;
+}
+
+/* vec_new N SIZE FROM: a vec of the N elements (SIZE cells each) at FROM; -1 when the heap is full */
+static i64 vec_new(i64 n, i64 size, const Cell *from)
+{
+	i64 cap = n < 4 ? 4 : n, h = heap_alloc(VH_CELLS + cap * size);
+	if (h < 0) return -1;
+	g_heap[h + VH_LEN].i = n;
+	g_heap[h + VH_CAP].i = cap;
+	g_heap[h + VH_DATA].i = h + VH_CELLS;
+	memcpy(g_heap + h + VH_CELLS, from, (size_t)(n * size) * sizeof(Cell));
+	return h;
+}
+
+/* vec_push V SIZE FROM: append one element; 0 when the heap is full */
+static int vec_push(i64 v, i64 size, const Cell *from)
+{
+	Cell *hd = g_heap + v;
+	if (hd[VH_LEN].i == hd[VH_CAP].i) {
+		i64 cap = hd[VH_CAP].i * 2, data = heap_alloc(cap * size);
+		if (data < 0) return 0;
+		memcpy(g_heap + data, g_heap + hd[VH_DATA].i, (size_t)(hd[VH_LEN].i * size) * sizeof(Cell));
+		hd[VH_DATA].i = data;
+		hd[VH_CAP].i = cap;
+	}
+	memcpy(g_heap + hd[VH_DATA].i + hd[VH_LEN].i * size, from, (size_t)size * sizeof(Cell));
+	hd[VH_LEN].i++;
+	return 1;
+}
+
+/* index_error LINE I LEN: the runtime error for an index outside a vec */
+static int index_error(i32 line, i64 i, i64 len)
+{
+	char msg[96];
+	sprintf(msg, "index %ld is outside a vec of %ld", (long)i, (long)len);
+	return vm_error(line, msg);
+}
+
+#define HEAP_FULL "out of memory for vecs (the heap is full)"
 
 /* vm_run PC: run from PC until HALT; 0 when it finished, 1 after a runtime error */
 static int vm_run(i32 pc)
@@ -383,6 +454,51 @@ static int vm_run(i32 pc)
 			int ok = parse_float(s[sp - 1].i, &v);
 			s[sp - 1].i = ok;
 			s[sp++].f = ok ? v : 0;
+			break;
+		}
+		case OP_INC_L: s[fp + in->a].i = (i64)((u64)s[fp + in->a].i + 1); break;
+		case OP_VEC_NEW: {
+			i64 h;
+			sp -= in->a * in->b;
+			if ((h = vec_new(in->a, in->b, s + sp)) < 0) return vm_error(in->line, HEAP_FULL);
+			s[sp++].i = h;
+			break;
+		}
+		case OP_VEC_LEN: s[sp - 1].i = g_heap[s[sp - 1].i + VH_LEN].i; break;
+		case OP_VEC_PUSH:
+			sp -= in->a + 1;
+			if (!vec_push(s[sp].i, in->a, s + sp + 1)) return vm_error(in->line, HEAP_FULL);
+			break;
+		case OP_VEC_GET: {
+			const Cell *hd = g_heap + s[sp - 2].i;
+			i64 i = s[sp - 1].i;
+			if (i < 0 || i >= hd[VH_LEN].i) return index_error(in->line, i, hd[VH_LEN].i);
+			sp -= 2;
+			memcpy(s + sp, g_heap + hd[VH_DATA].i + i * in->a, (size_t)in->a * sizeof(Cell));
+			sp += in->a;
+			break;
+		}
+		case OP_VEC_PUT: {
+			const Cell *hd;
+			i64 i;
+			sp -= in->a + 2;
+			hd = g_heap + s[sp].i;
+			i = s[sp + 1].i;
+			if (i < 0 || i >= hd[VH_LEN].i) return index_error(in->line, i, hd[VH_LEN].i);
+			memcpy(g_heap + hd[VH_DATA].i + i * in->a, s + sp + 2, (size_t)in->a * sizeof(Cell));
+			break;
+		}
+		case OP_VEC_POP: {
+			Cell *hd = g_heap + s[sp - 1].i;
+			if (!hd[VH_LEN].i) { /* none */
+				s[sp - 1].i = 0;
+				memset(s + sp, 0, (size_t)in->a * sizeof(Cell));
+			} else {
+				hd[VH_LEN].i--;
+				s[sp - 1].i = 1;
+				memcpy(s + sp, g_heap + hd[VH_DATA].i + hd[VH_LEN].i * in->a, (size_t)in->a * sizeof(Cell));
+			}
+			sp += in->a;
 			break;
 		}
 		case OP_SHOW:

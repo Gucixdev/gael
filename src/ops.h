@@ -48,6 +48,13 @@
 	X(SYSTEM, 0)   /* s -- i       run a shell command, its exit status */ \
 	X(PARSE_I, 0)  /* s -- o       (option int): the string as an int, or none */ \
 	X(PARSE_F, 0)  /* s -- o       (option float) */ \
+	X(INC_L, 1)    /* --           a: local slot; adds 1 to the int in it */ \
+	X(VEC_NEW, 2)  /* x... -- v    a: elements on the stack, b: cells of one */ \
+	X(VEC_LEN, 0)  /* v -- i */ \
+	X(VEC_PUSH, 1) /* v x... --    a: cells of an element */ \
+	X(VEC_GET, 1)  /* v i -- x...  a: cells of an element; the index is checked */ \
+	X(VEC_PUT, 1)  /* v i x... --  a: cells of an element; the index is checked */ \
+	X(VEC_POP, 1)  /* v -- o...    (option element): the last one, taken off; none when empty */ \
 	X(SHOW, 1)     /* x... --      the REPL's "=> value : type"; a: the type */
 
 #define GAEL_OP_ENUM_(name, n) OP_##name,
