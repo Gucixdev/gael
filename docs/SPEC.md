@@ -203,7 +203,8 @@ Potem: makra i moduły (0.2), manifest i resolver gemów (0.3), bufor i okno (0.
 - **Moduły:** `(use "plik.gael")` - ścieżka względem pliku, każdy plik raz (kanoniczna ścieżka), cykl to błąd w
   miejscu `use`, najpierw kompilacja wszystkich plików, uruchomienie dopiero bez błędów. Wspólna przestrzeń nazw;
   przestrzenie nazw gemów przyjdą z manifestem.
-- **Następne:** mapy, pola wyniku wyrażenia, makra, manifest i resolver gemów (na `use`), bufor i okno. Pamięć: dziś areny tekstu i sterta nie są zwalniane - przed edytorem trzeba
+- **Pola wyrażeń:** `(get v 0).pos.x` - czytnik zamienia `.pole` tuż po `)` na `(. wyrażenie pole)`.
+- **Następne:** mapy, makra, manifest i resolver gemów (na `use`), bufor i okno. Pamięć: dziś areny tekstu i sterta nie są zwalniane - przed edytorem trzeba
   zdecydować (areny z zakresem sprawdzanym w kompilacji, refcount, albo jedno i drugie).
   Numery wersji przesuwają się o jeden względem planu wyżej.
 

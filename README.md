@@ -179,7 +179,7 @@ convert on purpose. A comment starts with `;`.
 | `<`, `<=`, `>`, `>=`, `=`, `!=` | compare two ints or two floats; `=` and `!=` also take bools, strings and enum values |
 | `(struct Vec2 (x : float) (y : float))` | a struct; a field can have any type declared above it, other structs and options included |
 | `(Vec2 1.0 2.0)`, `(Vec2 :y 2.0 :x 1.0)` | a struct value, with the fields in order or named; every field must be given |
-| `v.x`, `b.pos.x` | a field of a variable |
+| `v.x`, `b.pos.x`, `(get bodies 0).pos.x` | a field of a variable, or of any expression's value: `(expr).name` right after the parenthesis reads as `(. expr name)` |
 | `(enum Dir north east south west)`, `Dir.north` | an enum and one of its values |
 | `(vec 1 2 3)`, `(vec)` | a vec; an empty one takes its element type from where it goes, like `none` |
 | `(push v x)`, `(get v i)`, `(put v i x)`, `(pop v)`, `(len v)` | add at the end, read, replace, take the last one off (an option), count; `get` and `put` check the index at run time |
@@ -234,11 +234,11 @@ tests/errors/div-zero.gael:1: runtime error: division by zero
 
 ## Status
 
-Version 0.3, tested on Linux x86-64 with gcc 13.3 and clang 18.1. `./test` passes 58 checks per build (14 examples,
-38 compile and runtime error cases, one REPL session, five README examples) with gcc, clang and gcc with both sanitizers. GitHub Actions
+Version 0.3, tested on Linux x86-64 with gcc 13.3 and clang 18.1. `./test` passes 59 checks per build (14 examples,
+39 compile and runtime error cases, one REPL session, five README examples) with gcc, clang and gcc with both sanitizers. GitHub Actions
 runs shellcheck on the scripts and `./test` on every push (`.github/workflows/test.yml`, ubuntu-24.04).
 
-Not in 0.3: maps, field access on an expression (bind it with `let` first), gems
+Not in 0.3: maps, gems
 (packages with versions, see the spec), calling C, and the editor. The fixed limits are 8 parameters per function, 4096 functions, 4096 globals, 4096
 types and 2^18 instructions; per unit (a file, or one REPL form) 2^18 syntax nodes and an 8 MiB arena for the source
 and its names; at run time a stack of 65536 cells and at most 4096 nested calls. Every string, the program's and the
