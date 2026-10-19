@@ -171,7 +171,8 @@ static u8 g_seen[MAX_VARIANTS];      /* match: the variants an arm already cover
 
 typedef enum {
 	F_START, F_CALL, F_IF, F_WHEN, F_WHILE, F_DO, F_LET, F_SET, F_AND, F_OR, F_NOT, F_ARITH, F_CMP, F_PRINT,
-	F_CONV, F_BUILTIN, F_NEW, F_SOME, F_MATCH, F_VEC, F_VECOP, F_FOR, F_DOT, F_MAP, F_MAPOP, F_SHPIPE, F_POOL
+	F_CONV, F_BUILTIN, F_NEW, F_SOME, F_MATCH, F_VEC, F_VECOP, F_FOR, F_DOT, F_MAP, F_MAPOP, F_SHPIPE, F_POOL, F_ARENA,
+	F_KEEP
 } Form;
 
 typedef struct {
@@ -275,6 +276,7 @@ static i32 effect(Op op, i32 a, i32 b)
 	case OP_POOL_PUT: return -(2 + a);
 	case OP_POOL_LOOKUP: case OP_POOL_REMOVE: return a - 1;
 	case OP_POOL_NEW: case OP_POOL_LEN: case OP_POOL_NEXT: return 0;
+	case OP_ARENA_BEGIN: case OP_ARENA_END: case OP_KEEP: return 0;
 	case OP_SHPIPE: return 1 - a;
 	case OP_SHOW: return -cells((Ty)a);
 	default: return builtin_effect(op);
@@ -400,7 +402,7 @@ static const char *const g_reserved[] = {
 	"!=", "print", "println", "int", "float", "bool", "string", "unit", "len", "sh", "defn", "def", "true", "false", ":",
 	"struct", "enum", "match", "some", "none", "option", "_", "format", "eprint", "eprintln", "vec", "push", "get", "put",
 	"pop", "for", "use", ".", "map", "insert", "lookup", "has", "remove", "keys", "values", "&&", "||", "|>", "|", "<<<",
-	"pool", "spawn", "handle"
+	"pool", "spawn", "handle", "arena", "keep"
 };
 
 static int is_builtin(const char *s);
@@ -1131,6 +1133,8 @@ static o start_list(Frame *f)
 	else if (!strcmp(s, "vec")) f->form = F_VEC;
 	else if (!strcmp(s, "map")) f->form = F_MAP;
 	else if (!strcmp(s, "pool")) f->form = F_POOL;
+	else if (!strcmp(s, "arena")) f->form = F_ARENA;
+	else if (!strcmp(s, "keep")) f->form = F_KEEP;
 	else if (!strcmp(s, "for")) f->form = F_FOR;
 	else if (!strcmp(s, "match")) f->form = F_MATCH;
 	else if (!strcmp(s, "defn") || !strcmp(s, "def") || !strcmp(s, "struct") || !strcmp(s, "enum") || !strcmp(s, "use")) {
@@ -1325,6 +1329,58 @@ static int check_arms(i32 node, i32 first, Ty t)
 		err_node(node, "match on %s needs a _ arm for the values the arms do not list", ti->name);
 	}
 	return 0;
+}
+
+/* fresh NODE: NODE makes a new string, vec, map or pool, or a struct or (some ...) with one in it; inside an arena
+ * that object is made in the arena */
+static int fresh(i32 n)
+{
+	static const char *const makers[] = { "format", "sh", "$", "|", "<<<", "vec", "map", "pool", "split", "join",
+		"read-file", "read-line", "getenv", "env", "keys", "values", "args" };
+	i32 stack[64], ns = 0, head, x;
+	size_t k;
+	stack[ns++] = n;
+	while (ns > 0) {
+		n = stack[--ns];
+		if (n < 0) continue;
+		if (is_sym(n) && g_nodes[n].text[0] == '$' && g_nodes[n].text[1] && strcmp(g_nodes[n].text, "$$")) return 1;
+		if (g_nodes[n].kind != N_LIST || !is_sym(head = first_of(n))) continue;
+		for (k = 0; k < GAEL_COUNT(makers); k++) {
+			if (!strcmp(g_nodes[head].text, makers[k])) return 1;
+		}
+		if (sym_is(head, "some") || is_struct(find_named_type(g_nodes[head].text))) {
+			for (x = next_of(head); x >= 0 && ns < 64; x = next_of(x)) stack[ns++] = x;
+		}
+	}
+	return 0;
+}
+
+/* arena_mark: the number of local names there were when the innermost arena being compiled began; -1 outside one */
+static i32 arena_mark(void)
+{
+	i32 i;
+	for (i = g_nwork - 1; i >= 0; i--) {
+		if (g_work[i].form == F_ARENA) return g_work[i].mark;
+	}
+	return -1;
+}
+
+/* escapes WHAT PLACE VALUE: inside an arena, VALUE makes an object there and PLACE is a variable from outside it, so
+ * the object would outlive the arena: report it */
+static o escapes(const char *what, i32 place, i32 value)
+{
+	char base[256];
+	const char *s, *dot;
+	i32 mark = arena_mark(), i;
+	if (mark < 0 || !is_sym(place) || !fresh(value)) return;
+	s = g_nodes[place].text;
+	dot = strchr(s, '.');
+	if ((size_t)(dot ? dot - s : (long)strlen(s)) >= sizeof(base)) return;
+	sprintf(base, "%.*s", (int)(dot ? dot - s : (long)strlen(s)), s);
+	i = find_local(base);
+	if (i >= mark || (i < 0 && find_global(base) < 0)) return;
+	err_node(value, "%s: " NAME_FMT " lives outside this arena, and this value is made in it, so it would outlive it; (keep x) copies it out",
+	         what, base);
 }
 
 /* start_arm MATCH: test the current arm's pattern against the matched value, bind the x of (some x), compile the body */
@@ -1577,6 +1633,7 @@ static o run_work(i32 base)
 			if (f->c > 0) {
 				if (f->rt != T_ERR && t != T_ERR && t != f->rt)
 					err_node(next_of(f->cur), "set: " NAME_FMT " is %s, the value is %s", g_nodes[f->cur].text, tn(f->rt), tn(t));
+				if (has_refs(f->rt)) escapes("set", f->cur, next_of(f->cur));
 				emit_release(f->op, f->a, f->rt, line);
 				emit_store(f->op, f->a, f->rt, line);
 			}
@@ -2091,6 +2148,7 @@ static o run_work(i32 base)
 			/* the element of a push, a put or a spawn */
 			if (t != T_ERR && f->rt != T_ERR && t != elem)
 				err_node(f->cur, "%s: the %s holds %s, this value is %s", what, pool ? "pool" : "vec", tn(elem), tn(t));
+			if (has_refs(elem)) escapes(what, next_of(first_of(f->node)), f->cur);
 			if (f->op == VO_SPAWN) {
 				emit(OP_POOL_SPAWN, cells(elem), f->b, line);
 				finish(f->rt == T_ERR ? (Ty)T_ERR : intern_wrap(K_HANDLE, elem));
@@ -2356,6 +2414,8 @@ static o run_work(i32 base)
 				break;
 			}
 			if (t != T_ERR && f->rt != T_ERR && t != val) err_node(f->cur, "insert: the values are %s, this one is %s", tn(val), tn(t));
+			if (has_refs(key)) escapes("insert", next_of(first_of(f->node)), next_of(next_of(first_of(f->node))));
+			if (has_refs(val)) escapes("insert", next_of(first_of(f->node)), f->cur);
 			emit(OP_MAP_INSERT, cells(val), f->b, line);
 			finish(T_UNIT);
 			break;
@@ -2378,6 +2438,38 @@ static o run_work(i32 base)
 			if (t != T_INT && t != T_ERR) err_node(f->cur, "pool: the number of slots is %s, it must be int", tn(t));
 			emit(OP_POOL_NEW, 0, is_pool(f->want) ? f->want : (Ty)T_ERR, line);
 			finish(is_pool(f->want) ? f->want : (Ty)T_ERR);
+			break;
+
+		case F_ARENA: /* (arena body...): what the body makes lives in an arena that ends with it */
+			if (f->phase == 0) {
+				emit(OP_ARENA_BEGIN, 0, 0, line);
+				f->mark = g_nlocals; /* names from here on live inside it */
+				f->phase = 1;
+				push_body(f->cur, 1, f->want);
+				break;
+			}
+			t = pop_type();
+			for (i = f->cur; next_of(i) >= 0; i = next_of(i)) {}
+			if (has_refs(t) && fresh(i))
+				err_node(i, "this value is made in the arena, which ends here; (keep x) copies it out");
+			emit(OP_ARENA_END, 0, 0, line);
+			finish(t);
+			break;
+
+		case F_KEEP: /* (keep x): x stops holding what the innermost arena made, so it outlives it */
+			if (f->phase == 0) {
+				if (f->k != 1) {
+					err_node(f->node, "keep takes one value: (keep x)");
+					finish(T_ERR);
+					break;
+				}
+				f->phase = 1;
+				push_child(f->cur, f->want);
+				break;
+			}
+			t = pop_type();
+			if (has_refs(t)) emit(OP_KEEP, t, 0, line);
+			finish(t);
 			break;
 
 		case F_DOT: { /* (. expr pos.x): a field of the value of any expression; (f x).pos.x reads as this */

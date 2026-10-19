@@ -37,13 +37,13 @@ static VFrame g_vframes[VM_FRAMES];
  * linked list through their first two cells, -(next + 2) and -(prev + 2), so a freed object's count cell reads as
  * freed (below 1). Cells 0 to 3 are a block of their own that is never freed: an empty string, so a cell of 0 (a
  * zeroed slot) reads as "" and as no object. Handles are indexes, not pointers, so the heap can be copied whole */
-#define MAX_HEAP_ORDER 34     /* 128 GiB */
+#define MAX_HEAP_ORDER 34     /* 128 GiB, and as much again for arenas */
 #define DEFAULT_HEAP_ORDER 27 /* 1 GiB; GAEL_HEAP sets another size */
 static Cell *g_heap;
 static i32 g_heap_order;
 static i64 g_free_head[MAX_HEAP_ORDER + 1]; /* the first free block of each size, -1 when none */
 static u8 *g_free_order;                    /* k + 1 when a free block of 2^k cells starts at this cell * 4, else 0 */
-static i64 g_live;                          /* cells handed out and not freed yet, for the leak check */
+static i64 g_live;                          /* heap cells handed out and not freed yet, for the leak check */
 static int g_check;                         /* GAEL_CHECK=1: freed blocks get a pattern, leaks are reported */
 
 static o free_push(i64 at, i32 k)
@@ -125,6 +125,62 @@ static int heap_grow(i64 at, i64 n)
 	return 1;
 }
 
+/* Arenas. After the heap's cells comes the arena area, as big: a stack of bump regions, one for each (arena ...)
+ * that is running, the innermost on top. While one runs, a new object goes into it; an object's later parts (a vec's
+ * bigger block, a map's new entries) go where the object is, or to the heap when its arena is not the innermost any
+ * more. Freeing a block in an arena does nothing: an arena's cells come back all at once when it ends. Each arena
+ * counts its objects still alive, and when it ends that count must be 0 */
+#define MAX_ARENAS 64
+typedef struct {
+	i64 start;   /* its first cell */
+	i64 live[8]; /* its objects not freed yet, by kind */
+	i32 line;    /* of the (arena ...) form */
+} ArenaLevel;
+static ArenaLevel g_arenas[MAX_ARENAS];
+static i32 g_narenas;
+static i64 g_arena_lo, g_arena_top; /* the area's first cell; the innermost arena's next free one */
+
+static i64 arena_take(i64 n)
+{
+	i64 at = g_arena_top;
+	if (n <= 0) return 0;
+	if (n > ((i64)2 << g_heap_order) - at) return -1;
+	g_arena_top += n;
+	return at;
+}
+
+/* in_inner H: H was made in the innermost arena */
+static int in_inner(i64 h) { return g_narenas && h >= g_arenas[g_narenas - 1].start && h < g_arena_top; }
+
+/* obj_alloc N: the cells of a new object: from the innermost arena when one runs, else from the heap */
+static i64 obj_alloc(i64 n) { return g_narenas ? arena_take(n) : heap_alloc(n); }
+
+/* part_alloc OBJ N: a new block for a part of OBJ: where OBJ is when that is the innermost arena, else on the heap */
+static i64 part_alloc(i64 obj, i64 n) { return in_inner(obj) ? arena_take(n) : heap_alloc(n); }
+
+static o part_free(i64 at, i64 n)
+{
+	if (at < g_arena_lo) heap_free(at, n);
+}
+
+/* part_grow AT N: make a block of N cells twice as big where it is: on the heap when its buddy is free, in the
+ * innermost arena when it is the last block there; 1 when it did */
+static int part_grow(i64 at, i64 n)
+{
+	if (at < g_arena_lo) return heap_grow(at, n);
+	if (!in_inner(at) || n <= 0 || at + n != g_arena_top || n > ((i64)2 << g_heap_order) - g_arena_top) return 0;
+	g_arena_top += n;
+	return 1;
+}
+
+/* part_ungrow AT N: take back what part_grow AT N added */
+static o part_ungrow(i64 at, i64 n)
+{
+	i64 half = (i64)1 << order_of(n);
+	if (at < g_arena_lo) heap_free(at + half, half);
+	else if (at + 2 * n == g_arena_top) g_arena_top = at + n;
+}
+
 /* reserve BYTES: that much address space, given pages only where something is written; 0 when the system refuses */
 static o *reserve(size_t bytes)
 {
@@ -148,8 +204,8 @@ static i32 heap_order_of(const char *s)
 	return ((u64)8 << k) <= bytes ? k : 0;
 }
 
-/* vm_init CHECK: reserve the heap and, as big, the text arena (a system that refuses gets them halved), make the heap
- * one free block, and take cells 0 to 3 for the empty string */
+/* vm_init CHECK: reserve the heap, the arena area after it and, as big as the heap, the text arena (a system that
+ * refuses gets them halved), make the heap one free block, and take cells 0 to 3 for the empty string */
 static o vm_init(int check)
 {
 	const char *size = getenv("GAEL_HEAP");
@@ -158,11 +214,11 @@ static o vm_init(int check)
 	if (!k) die("GAEL_HEAP: give a size of 32K or more, like 64M or 2G");
 	for (;; k--) {
 		size_t bytes = (size_t)8 << k;
-		g_heap = (Cell *)reserve(bytes);
-		g_free_order = (u8 *)reserve(bytes >> 5); /* a byte for every 4 cells */
+		g_heap = (Cell *)reserve(2 * bytes); /* the heap, then the arena area */
+		g_free_order = (u8 *)reserve(bytes >> 5); /* a byte for every 4 cells of the heap */
 		text = reserve(bytes);
 		if (g_heap && g_free_order && text) break;
-		if (g_heap) munmap((o *)g_heap, bytes);
+		if (g_heap) munmap((o *)g_heap, 2 * bytes);
 		if (g_free_order) munmap(g_free_order, bytes >> 5);
 		if (text) munmap(text, bytes);
 		if (k == 12) die("the system gave no address space for the heap");
@@ -170,6 +226,7 @@ static o vm_init(int check)
 	g_text.base = (u8 *)text;
 	g_text.cap = (size_t)8 << k;
 	g_heap_order = k;
+	g_arena_lo = g_arena_top = (i64)1 << k;
 	g_check = check;
 	for (k = 0; k <= MAX_HEAP_ORDER; k++) g_free_head[k] = -1;
 	free_push(0, g_heap_order);
@@ -199,6 +256,25 @@ static i64 g_objects[8]; /* the strings, vecs, maps and pools alive, by kind */
 #define USED_FREED "internal error: an object was used after it was freed"
 
 static o drain(void);
+
+/* obj_born H KIND TYPE: H's first cells become a new object's count (1) and kind */
+static o obj_born(i64 h, i64 kind, u64 type)
+{
+	g_heap[h + OB_RC].i = 1;
+	g_heap[h + OB_KIND].i = kind | (i64)(type << 8);
+	g_objects[kind]++;
+	if (h >= g_arena_lo) g_arenas[g_narenas - 1].live[kind]++;
+}
+
+/* obj_died H KIND: the object at H was freed; one less alive in its arena */
+static o obj_died(i64 h, i64 kind)
+{
+	i32 k = g_narenas - 1;
+	g_objects[kind]--;
+	if (h < g_arena_lo) return;
+	while (k >= 0 && h < g_arenas[k].start) k--;
+	if (k >= 0) g_arenas[k].live[kind]--; /* else an arena an error left behind (REPL) */
+}
 
 static o obj_retain(i64 h)
 {
@@ -280,17 +356,17 @@ static i64 handle_of(const Cell *hd, i64 i) { return (i64)((u64)g_heap[hd[PH_GEN
 static o obj_free(i64 h)
 {
 	Cell *hd = g_heap + h;
-	g_objects[hd[OB_KIND].i & 7]--;
+	obj_died(h, hd[OB_KIND].i & 7);
 	switch (hd[OB_KIND].i & 0xff) {
 	case KIND_STR:
-		heap_free(h, str_cells((u64)hd[OB_KIND].i >> 8));
+		part_free(h, str_cells((u64)hd[OB_KIND].i >> 8));
 		break;
 	case KIND_VEC: {
 		Ty et = vec_elem(h);
 		i64 i, size = cells(et);
 		for (i = 0; g_tys[et].nleaf && i < hd[VH_LEN].i; i++) refs(vec_cell(hd, i, 0), hd[VH_CAP].i, et, 0);
-		heap_free(hd[VH_DATA].i, hd[VH_CAP].i * size);
-		heap_free(h, VH_CELLS);
+		part_free(hd[VH_DATA].i, hd[VH_CAP].i * size);
+		part_free(h, VH_CELLS);
 		break;
 	}
 	case KIND_POOL: {
@@ -300,9 +376,9 @@ static o obj_free(i64 h)
 		for (i = 0; g_tys[et].nleaf && i < cap; i++) {
 			if (gens[i].i & 1) refs(slot_cell(hd, i, 0), cap, et, 0);
 		}
-		heap_free(hd[PH_DATA].i, cap * cells(et));
-		heap_free(hd[PH_GENS].i, 2 * cap);
-		heap_free(h, PH_CELLS);
+		part_free(hd[PH_DATA].i, cap * cells(et));
+		part_free(hd[PH_GENS].i, 2 * cap);
+		part_free(h, PH_CELLS);
 		break;
 	}
 	case KIND_MAP: {
@@ -315,9 +391,9 @@ static o obj_free(i64 h)
 			if (strkeys) obj_release(ent[1].i);
 			refs(ent + 2, 1, vt, 0);
 		}
-		heap_free(hd[MH_ENT].i, hd[MH_CAP].i * esize);
-		heap_free(hd[MH_IDX].i, hd[MH_SLOTS].i);
-		heap_free(h, MH_CELLS);
+		part_free(hd[MH_ENT].i, hd[MH_CAP].i * esize);
+		part_free(hd[MH_IDX].i, hd[MH_SLOTS].i);
+		part_free(h, MH_CELLS);
 		break;
 	}
 	default:
@@ -367,10 +443,8 @@ static i64 str_new(const char *p, size_t n)
 {
 	i64 h;
 	if (!n) return 0;
-	if ((h = heap_alloc(str_cells(n))) < 0) return -1;
-	g_heap[h + OB_RC].i = 1;
-	g_heap[h + OB_KIND].i = KIND_STR | (i64)((u64)n << 8);
-	g_objects[KIND_STR]++;
+	if ((h = obj_alloc(str_cells(n))) < 0) return -1;
+	obj_born(h, KIND_STR, n);
 	memcpy(g_heap + h + 2, p, n);
 	((char *)(g_heap + h + 2))[n] = 0;
 	return h;
@@ -733,11 +807,9 @@ static int read_into(FILE *in, i64 *res)
  * the heap is full */
 static i64 vec_new(Ty vt, i64 n, const Cell *from)
 {
-	i64 size = cells(g_tys[vt].elem), cap = n < 4 ? 4 : n, h = heap_alloc(VH_CELLS), data = heap_alloc(cap * size), i;
+	i64 size = cells(g_tys[vt].elem), cap = n < 4 ? 4 : n, h = obj_alloc(VH_CELLS), data = obj_alloc(cap * size), i;
 	if (h < 0 || data < 0) return -1;
-	g_heap[h + OB_RC].i = 1;
-	g_heap[h + OB_KIND].i = KIND_VEC | (i64)((u64)vt << 8);
-	g_objects[KIND_VEC]++;
+	obj_born(h, KIND_VEC, vt);
 	g_heap[h + VH_LEN].i = n;
 	g_heap[h + VH_CAP].i = cap;
 	g_heap[h + VH_DATA].i = data;
@@ -753,14 +825,14 @@ static int vec_push(i64 v, const Cell *from)
 	i64 size = cells(vec_elem(v));
 	if (hd[VH_LEN].i == hd[VH_CAP].i) { /* twice the room; each column moves to its place in it */
 		i64 old = hd[VH_CAP].i, cap = old * 2, data = hd[VH_DATA].i, c;
-		if (heap_grow(data, old * size)) { /* in place: the last column first, each moves up */
+		if (part_grow(data, old * size)) { /* in place: the last column first, each moves up */
 			for (c = size - 1; c > 0; c--)
 				memmove(g_heap + data + c * cap, g_heap + data + c * old, (size_t)hd[VH_LEN].i * sizeof(Cell));
 		} else {
-			if ((data = heap_alloc(cap * size)) < 0) return 0;
+			if ((data = part_alloc(v, cap * size)) < 0) return 0;
 			for (c = 0; c < size; c++)
 				memcpy(g_heap + data + c * cap, vec_cell(hd, 0, c), (size_t)hd[VH_LEN].i * sizeof(Cell));
-			heap_free(hd[VH_DATA].i, old * size);
+			part_free(hd[VH_DATA].i, old * size);
 		}
 		hd[VH_DATA].i = data;
 		hd[VH_CAP].i = cap;
@@ -791,11 +863,9 @@ static u64 hash_key(i64 key, int is_str)
 /* map_new TYPE: an empty map of this map type; -1 when the heap is full */
 static i64 map_new(Ty mt)
 {
-	i64 esize = 2 + cells(g_tys[mt].elem), h = heap_alloc(MH_CELLS), ent = heap_alloc(8 * esize), idx = heap_alloc(16);
+	i64 esize = 2 + cells(g_tys[mt].elem), h = obj_alloc(MH_CELLS), ent = obj_alloc(8 * esize), idx = obj_alloc(16);
 	if (h < 0 || ent < 0 || idx < 0) return -1;
-	g_heap[h + OB_RC].i = 1;
-	g_heap[h + OB_KIND].i = KIND_MAP | (i64)((u64)mt << 8);
-	g_objects[KIND_MAP]++;
+	obj_born(h, KIND_MAP, mt);
 	g_heap[h + MH_COUNT].i = 0;
 	g_heap[h + MH_USED].i = 0;
 	g_heap[h + MH_CAP].i = 8;
@@ -833,14 +903,14 @@ static int map_grow(i64 m)
 {
 	Cell *hd = g_heap + m;
 	i64 esize = 2 + map_vsize(m), cap = hd[MH_CAP].i * 2, slots = hd[MH_SLOTS].i * 2, ent, idx, e, k = 0, slot;
-	int idx_here = heap_grow(hd[MH_IDX].i, hd[MH_SLOTS].i), ent_here; /* each grows in place when it can */
-	idx = idx_here ? hd[MH_IDX].i : heap_alloc(slots);
+	int idx_here = part_grow(hd[MH_IDX].i, hd[MH_SLOTS].i), ent_here; /* each grows in place when it can */
+	idx = idx_here ? hd[MH_IDX].i : part_alloc(m, slots);
 	if (idx < 0) return 0;
-	ent_here = heap_grow(hd[MH_ENT].i, hd[MH_CAP].i * esize);
-	ent = ent_here ? hd[MH_ENT].i : heap_alloc(cap * esize);
+	ent_here = part_grow(hd[MH_ENT].i, hd[MH_CAP].i * esize);
+	ent = ent_here ? hd[MH_ENT].i : part_alloc(m, cap * esize);
 	if (ent < 0) { /* the map stays as it was */
-		if (idx_here) heap_free(idx + hd[MH_SLOTS].i, hd[MH_SLOTS].i);
-		else heap_free(idx, slots);
+		if (idx_here) part_ungrow(idx, hd[MH_SLOTS].i);
+		else part_free(idx, slots);
 		return 0;
 	}
 	for (e = 0; e < hd[MH_USED].i; e++) { /* the live entries, packed; in place they only move down */
@@ -848,8 +918,8 @@ static int map_grow(i64 m)
 		if (from[0].i) memmove(g_heap + ent + k++ * esize, from, (size_t)esize * sizeof(Cell));
 	}
 	memset(g_heap + idx, 0, (size_t)slots * sizeof(Cell));
-	if (!ent_here) heap_free(hd[MH_ENT].i, hd[MH_CAP].i * esize);
-	if (!idx_here) heap_free(hd[MH_IDX].i, hd[MH_SLOTS].i);
+	if (!ent_here) part_free(hd[MH_ENT].i, hd[MH_CAP].i * esize);
+	if (!idx_here) part_free(hd[MH_IDX].i, hd[MH_SLOTS].i);
 	hd[MH_ENT].i = ent;
 	hd[MH_IDX].i = idx;
 	hd[MH_CAP].i = cap;
@@ -893,11 +963,9 @@ static int map_insert(i64 m, i64 key, const Cell *val)
 /* pool_new TYPE CAP: a pool of this type with CAP free slots; -1 when the heap is full */
 static i64 pool_new(Ty pt, i64 cap)
 {
-	i64 size = cells(g_tys[pt].elem), h = heap_alloc(PH_CELLS), data = heap_alloc(cap * size), gens = heap_alloc(2 * cap), i;
+	i64 size = cells(g_tys[pt].elem), h = obj_alloc(PH_CELLS), data = obj_alloc(cap * size), gens = obj_alloc(2 * cap), i;
 	if (h < 0 || data < 0 || gens < 0) return -1;
-	g_heap[h + OB_RC].i = 1;
-	g_heap[h + OB_KIND].i = KIND_POOL | (i64)((u64)pt << 8);
-	g_objects[KIND_POOL]++;
+	obj_born(h, KIND_POOL, pt);
 	g_heap[h + PH_CAP].i = cap;
 	g_heap[h + PH_COUNT].i = 0;
 	g_heap[h + PH_FREE].i = 0;
@@ -908,6 +976,143 @@ static i64 pool_new(Ty pt, i64 cap)
 		g_heap[gens + cap + i].i = i + 1 < cap ? i + 1 : -1;
 	}
 	return h;
+}
+
+/* keep: (keep x) copies onto the heap the objects of the innermost arena that x holds, and the objects of that arena
+ * they hold in turn, so x outlives the arena; objects from elsewhere are shared. While it runs, a copied object's
+ * count cell holds -(its copy), so an object held twice is copied once and a cycle ends; the counts come back at the
+ * end. Its lists sit at the free end of the text arena */
+static i64 *g_kept;      /* pairs: an object copied, its count */
+static Cell **g_kwork;   /* cells of the copies that still hold an object of the arena */
+static i64 g_nkept, g_nkwork, g_kcap;
+
+static int keep_leaves(Cell *v, i64 stride, Ty t)
+{
+	i32 k, j, n = g_tys[t].nleaf, first = g_tys[t].leaf_first;
+	for (k = 0; k < n; k++) {
+		const Leaf *lf = &g_leaves[first + k];
+		Cell *c = v + lf->off * stride;
+		for (j = 0; j < lf->nguards && v[g_guards[lf->guard_first + j] * stride].i; j++) {}
+		if (j < lf->nguards) continue;
+		if (!in_inner(c->i)) obj_retain(c->i); /* shared by the copy */
+		else if (g_nkwork == g_kcap) return 0;
+		else g_kwork[g_nkwork++] = c;
+	}
+	return 1;
+}
+
+/* keep_copy H: the heap copy of arena object H, with one owner more; -1 when the heap or the lists are full */
+static i64 keep_copy(i64 h)
+{
+	Cell *hd = g_heap + h;
+	i64 kind = hd[OB_KIND].i & 0xff, n = -1, a = 0, b = 0, i, e;
+	Ty t = obj_type(h);
+	if (hd[OB_RC].i < 0) { /* copied already */
+		n = -hd[OB_RC].i;
+		g_heap[n + OB_RC].i++;
+		return n;
+	}
+	if (g_nkept == g_kcap) return -1;
+	if (kind == KIND_STR) {
+		i64 size = str_cells((u64)hd[OB_KIND].i >> 8);
+		if ((n = heap_alloc(size)) < 0) return -1;
+		memcpy(g_heap + n, hd, (size_t)size * sizeof(Cell));
+	} else if (kind == KIND_VEC) {
+		i64 size = cells(g_tys[t].elem) * hd[VH_CAP].i;
+		if ((n = heap_alloc(VH_CELLS)) < 0 || (a = heap_alloc(size)) < 0) return -1;
+		memcpy(g_heap + n, hd, VH_CELLS * sizeof(Cell));
+		if (a) memcpy(g_heap + a, g_heap + hd[VH_DATA].i, (size_t)size * sizeof(Cell));
+		g_heap[n + VH_DATA].i = a;
+		for (i = 0; g_tys[g_tys[t].elem].nleaf && i < hd[VH_LEN].i; i++)
+			if (!keep_leaves(vec_cell(g_heap + n, i, 0), hd[VH_CAP].i, g_tys[t].elem)) return -1;
+	} else if (kind == KIND_MAP) {
+		i64 esize = 2 + cells(g_tys[t].elem);
+		if ((n = heap_alloc(MH_CELLS)) < 0 || (a = heap_alloc(hd[MH_CAP].i * esize)) < 0 || (b = heap_alloc(hd[MH_SLOTS].i)) < 0) return -1;
+		memcpy(g_heap + n, hd, MH_CELLS * sizeof(Cell));
+		memcpy(g_heap + a, g_heap + hd[MH_ENT].i, (size_t)(hd[MH_CAP].i * esize) * sizeof(Cell));
+		memcpy(g_heap + b, g_heap + hd[MH_IDX].i, (size_t)hd[MH_SLOTS].i * sizeof(Cell));
+		g_heap[n + MH_ENT].i = a;
+		g_heap[n + MH_IDX].i = b;
+		for (e = 0; e < hd[MH_USED].i; e++) {
+			Cell *ent = g_heap + a + e * esize;
+			if (!ent[0].i) continue;
+			if (g_tys[t].key == T_STR && !keep_leaves(ent + 1, 1, T_STR)) return -1;
+			if (!keep_leaves(ent + 2, 1, g_tys[t].elem)) return -1;
+		}
+	} else if (kind == KIND_POOL) {
+		i64 cap = hd[PH_CAP].i, size = cells(g_tys[t].elem) * cap;
+		if ((n = heap_alloc(PH_CELLS)) < 0 || (a = heap_alloc(size)) < 0 || (b = heap_alloc(2 * cap)) < 0) return -1;
+		memcpy(g_heap + n, hd, PH_CELLS * sizeof(Cell));
+		if (a) memcpy(g_heap + a, g_heap + hd[PH_DATA].i, (size_t)size * sizeof(Cell));
+		memcpy(g_heap + b, g_heap + hd[PH_GENS].i, (size_t)(2 * cap) * sizeof(Cell));
+		g_heap[n + PH_DATA].i = a;
+		g_heap[n + PH_GENS].i = b;
+		for (i = 0; g_tys[g_tys[t].elem].nleaf && i < cap; i++)
+			if ((g_heap[b + i].i & 1) && !keep_leaves(slot_cell(g_heap + n, i, 0), cap, g_tys[t].elem)) return -1;
+	}
+	g_heap[n + OB_RC].i = 1;
+	g_objects[kind]++;
+	g_kept[2 * g_nkept] = h;
+	g_kept[2 * g_nkept + 1] = hd[OB_RC].i;
+	g_nkept++;
+	hd[OB_RC].i = -n;
+	return n;
+}
+
+/* keep VALUE TYPE: the value on the stack stops holding objects of the innermost arena; 0 when memory ran out */
+static int keep(Cell *val, Ty t)
+{
+	size_t off = (g_text.used + 7) & ~(size_t)7;
+	i64 *olds, nolds = 0, k, room = (i64)((g_text.cap - off) / sizeof(i64));
+	const TyInfo *ti = &g_tys[t];
+	if (!g_narenas || !ti->nleaf) return 1;
+	olds = (i64 *)(o *)(g_text.base + off);    /* the value's own objects of the arena, released at the end */
+	g_kcap = (room - ti->nleaf) / 3;
+	g_kept = olds + ti->nleaf;
+	g_kwork = (Cell **)(o *)(g_kept + 2 * g_kcap);
+	g_nkept = g_nkwork = 0;
+	if (g_kcap < 1) return 0;
+	for (k = 0; k < ti->nleaf; k++) {
+		const Leaf *lf = &g_leaves[ti->leaf_first + k];
+		i64 j, h = val[lf->off].i, n;
+		for (j = 0; j < lf->nguards && val[g_guards[lf->guard_first + j]].i; j++) {}
+		if (j < lf->nguards || !in_inner(h)) continue;
+		if ((n = keep_copy(h)) < 0) return 0;
+		olds[nolds++] = h;
+		val[lf->off].i = n;
+	}
+	while (g_nkwork > 0) {
+		Cell *c = g_kwork[--g_nkwork];
+		i64 n = keep_copy(c->i);
+		if (n < 0) return 0;
+		c->i = n;
+	}
+	for (k = 0; k < g_nkept; k++) g_heap[g_kept[2 * k]].i = g_kept[2 * k + 1];
+	for (k = 0; k < nolds; k++) obj_release(olds[k]);
+	return 1;
+}
+
+/* arena_error LINE ARENA: the runtime error for an arena that ends while objects made in it are still held */
+static int arena_error(i32 line, const ArenaLevel *ar)
+{
+	static const char *const kinds[] = { "?", "string", "vec", "map", "pool" };
+	char msg[400];
+	size_t n = 0;
+	i64 k, kinds_left = 0, total = 0;
+	for (k = 1; k < 5; k++) {
+		kinds_left += ar->live[k] != 0;
+		total += ar->live[k];
+	}
+	for (k = 1; k < 5; k++) { /* "1 string, 2 vecs and 1 map" */
+		if (!ar->live[k]) continue;
+		kinds_left--;
+		sprintf(msg + n, "%ld %s%s%s", (long)ar->live[k], kinds[k], ar->live[k] == 1 ? "" : "s",
+		        kinds_left > 1 ? ", " : kinds_left == 1 ? " and " : "");
+		n = strlen(msg);
+	}
+	sprintf(msg + n, " made in this arena %s still held when it ends (kept outside it, or in a cycle); (keep x) copies a value out",
+	        total == 1 ? "is" : "are");
+	return vm_error(line, msg);
 }
 
 /* index_error LINE I LEN: the runtime error for an index outside a vec */
@@ -947,6 +1152,7 @@ static int vm_run(i32 pc)
 	i32 sp = 0, fp = 0, nf = 0;
 	Cell *s = g_vstack;
 	const Ins *in = 0;
+	g_narenas = 0; /* arenas a runtime error left open (REPL) stay used but take nothing new */
 	for (;;) {
 		in = &g_code[pc++];
 		switch ((Op)in->op) {
@@ -1561,6 +1767,27 @@ static int vm_run(i32 pc)
 			if (!in->a) obj_release(p);
 			break;
 		}
+		case OP_ARENA_BEGIN:
+			if (g_narenas == MAX_ARENAS) return vm_error(in->line, "arenas nested deeper than 64");
+			memset(&g_arenas[g_narenas], 0, sizeof(ArenaLevel));
+			g_arenas[g_narenas].start = g_arena_top;
+			g_arenas[g_narenas].line = in->line;
+			g_narenas++;
+			break;
+		case OP_ARENA_END: {
+			const ArenaLevel *ar = &g_arenas[g_narenas - 1];
+			i64 k;
+			for (k = 0; k < 8; k++) {
+				if (ar->live[k]) return arena_error(in->line, ar);
+			}
+			if (g_check) memset(g_heap + ar->start, 0xa5, (size_t)(g_arena_top - ar->start) * sizeof(Cell));
+			g_arena_top = ar->start;
+			g_narenas--;
+			break;
+		}
+		case OP_KEEP:
+			if (!keep(s + sp - cells((Ty)in->a), (Ty)in->a)) return vm_error(in->line, "keep: out of memory (the heap or the text arena is full)");
+			break;
 		case OP_SHOW:
 			sp -= cells((Ty)in->a);
 			g_sink = stdout;
@@ -1603,7 +1830,8 @@ static o disassemble(i32 from, i32 to)
 		if (in->op == OP_PUSH_S) printf("\t(\"%.40s\")", g_strs[in->a].p);
 		if (in->op == OP_PRINT || in->op == OP_PRINTLN || in->op == OP_FORMAT) printf("\t(\"%.40s\")", g_strs[g_fmts[in->a].str].p);
 		if (in->op == OP_CALL) printf("\t(%.40s)", g_fns[in->a].name);
-		if (in->op == OP_SHOW || in->op == OP_RETAIN || in->op == OP_DROP || in->op == OP_MAP_KEYS || in->op == OP_MAP_VALUES)
+		if (in->op == OP_SHOW || in->op == OP_RETAIN || in->op == OP_DROP || in->op == OP_MAP_KEYS || in->op == OP_MAP_VALUES ||
+		    in->op == OP_KEEP)
 			printf("\t(%.40s)", tn((Ty)in->a));
 		if (in->op == OP_RELEASE_L || in->op == OP_RELEASE_G || in->op == OP_VEC_NEW || in->op == OP_MAP_NEW || in->op == OP_POOL_NEW)
 			printf("\t(%.40s)", tn((Ty)in->b));

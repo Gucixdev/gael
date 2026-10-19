@@ -30,8 +30,8 @@ gael -c FILE           only compile: report every type error, run nothing
 gael -d FILE           compile and print the bytecode
 gael -e CODE ARGS...   compile and run CODE
 gael -h                this help
-GAEL_HEAP=SIZE  the heap for strings, vecs and maps, and as much for the program's own text (default 1G;
-                K, M, G; the system gives pages only where they are written)
+GAEL_HEAP=SIZE  the heap for strings, vecs, maps and pools, and as much again for arenas and for the program's
+                own text (default 1G; K, M, G; the system gives pages only where they are written)
 GAEL_CHECK=1    freed memory is overwritten, and a program that ran to its end reports what it never freed
 ```
 
@@ -195,6 +195,8 @@ enums, `(option type)`, `(vec type)`, `(map key value)`, `(pool type)` and `(han
 | `(spawn p x)`, `(get p h)`, `(put p h x)`, `(len p)` | put `x` into a free slot and get its `(handle type)`; read and replace an element; count them. `get` and `put` with a handle whose element was removed are runtime errors, and so is a spawn into a full pool |
 | `(lookup p h)`, `(has p h)`, `(remove p h)` | the element as an option (`none` once it was removed), whether it is still there, take it out (an option) so its slot is free again |
 | `(for (x v) body...)`, `(for (k m) body...)`, `(for (h p) body...)`, `(for (i 0 n) body...)` | go over a vec (`x` is a copy of each element), over a map's keys, over the handles of a pool's elements, or over 0, 1, ..., n - 1 |
+| `(arena body...)` | the strings, vecs, maps and pools the body makes (also in the functions it calls) come from one block that is handed back at once when it ends; its value is the body's last one |
+| `(keep x)` | `x` with what it holds from the innermost arena copied out to the heap, so it outlives the arena |
 | `(some 5)`, `none` | the two kinds of `(option int)` value; `none` takes its type from where it goes: a declared binding, a parameter, a field, a return type, or the else branch of an `if` whose then branch has one |
 | `(match x (pattern body...)...)` | patterns are `_`, int and string literals, `true` and `false`, enum values (`north` or `Dir.north`), `(some name)` and `none`; every value must be covered, and an arm that can never run is an error |
 | `(print "fmt" args...)`, `(println "fmt" args...)` | `%d` int, `%f` float, `%s` string, `%b` bool, `%v` any value, `%%`; the codes are checked against the arguments when compiling. `eprint` and `eprintln` write to stderr |
@@ -231,6 +233,12 @@ the counting in; a read that only looks at a variable (`len`, `get`, `=`, `looku
 cycle, like a node kept in its own list of children, is never freed. With `GAEL_CHECK=1` a program that runs to its
 end reports what it never freed, and freed memory is overwritten, so a read of it shows.
 
+An arena is for memory with a known end, like one frame of a game or one request to a server: what its body makes is
+handed back in one go when it ends. Its objects are counted too, so when an arena ends while something made in it is
+still held (put in a global, say, or in a cycle), that is a runtime error at the arena instead of a dangling
+reference. Where the compiler can see a value made in an arena go somewhere that outlives it (`set` or `push` to a
+variable from outside, or the arena's own value), that is a compile error. `keep` is the way out: it copies the value.
+
 A runtime error stops the program and names the line it happened on:
 
 ```
@@ -259,6 +267,10 @@ tests/errors/div-zero.gael:1: runtime error: division by zero
 - The heap is that one array with a buddy allocator: blocks of 2^k cells, split to fit and merged with their free
   neighbour when freed. A growing vec doubles in place when the block after it is free. Objects refer to each other by
   index, not by pointer. Freeing is a loop over a chain of objects whose count reached 0, not a recursion.
+- After the heap's cells comes an area as big for arenas: a stack of bump regions, one for each `(arena ...)` that is
+  running. A new object goes to the innermost one; freeing a block there does nothing, and the region goes back in
+  one step when its arena ends. Each arena counts its objects that are alive, which is how it knows that nothing
+  made in it is still held.
 - A vec of structs is stored as columns, one per field (SoA), so going over one field of every element reads one
   run of memory; the program sees ordinary values, `get` gathers an element and `put` spreads it out again.
 - The compiler counts how deep each function's operand stack can get, and the VM checks that the whole frame fits
@@ -266,12 +278,12 @@ tests/errors/div-zero.gael:1: runtime error: division by zero
 
 ## Status
 
-Version 0.3, tested on Linux x86-64 with gcc 13.3 and clang 18.1. `./test` passes 74 checks per build (22 examples,
-46 compile and runtime error cases, one REPL session, five README examples) with gcc, clang and gcc with both
+Version 0.3, tested on Linux x86-64 with gcc 13.3 and clang 18.1. `./test` passes 78 checks per build (23 examples,
+49 compile and runtime error cases, one REPL session, five README examples) with gcc, clang and gcc with both
 sanitizers, every run with `GAEL_CHECK=1`. GitHub Actions runs shellcheck on the scripts and `./test` on every push
 (`.github/workflows/test.yml`, ubuntu-24.04).
 
-Not in 0.3: gems (packages with versions, see the spec), arenas, calling C, and the editor. The fixed limits are 8
+Not in 0.3: gems (packages with versions, see the spec), calling C, and the editor. The fixed limits are 8
 parameters per function, 4096 functions, 4096 globals, 4096 types and 2^18 instructions; per unit (a file, or one REPL
 form) 2^18 syntax nodes and an 8 MiB arena for the source and its names; at run time a stack of 65536 cells and at
 most 4096 nested calls. Strings made at run time, vecs, maps and pools live on the heap; the text arena, as big, holds

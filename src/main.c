@@ -27,8 +27,8 @@ static const char g_usage[] =
 	"       gael -e CODE ARGS...   compile and run CODE\n"
 	"       gael -h                this help\n";
 static const char g_usage_env[] =
-	"GAEL_HEAP=SIZE  the heap for strings, vecs and maps, and as much for the program's own text (default 1G;\n"
-	"                K, M, G; the system gives pages only where they are written)\n"
+	"GAEL_HEAP=SIZE  the heap for strings, vecs, maps and pools, and as much again for arenas and for the program's\n"
+	"                own text (default 1G; K, M, G; the system gives pages only where they are written)\n"
 	"GAEL_CHECK=1    freed memory is overwritten, and a program that ran to its end reports what it never freed\n";
 
 enum { RUN, CHECK, DIS };

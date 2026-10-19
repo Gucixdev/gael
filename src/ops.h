@@ -96,6 +96,9 @@
 	X(POOL_REMOVE, 2) /* p h -- o... (option element): the element moves out and its slot is free again */ \
 	X(POOL_LEN, 1) /* p -- i       elements in the pool; a: borrowed */ \
 	X(POOL_NEXT, 1) /* p i -- i h  the first slot from i on that holds an element, and its handle; -1 and 0 if none */ \
+	X(ARENA_BEGIN, 0) /* --        an arena starts: new strings, vecs, maps and pools go into it */ \
+	X(ARENA_END, 0) /* --          it ends: its cells come back at once; anything made in it and still held is an error */ \
+	X(KEEP, 1)     /* x -- x       a: the type; what the value holds from the innermost arena is copied onto the heap */ \
 	X(SHOW, 1)     /* x... --      the REPL's "=> value : type"; a: the type */
 
 #define GAEL_OP_ENUM_(name, n) OP_##name,
