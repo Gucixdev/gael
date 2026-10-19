@@ -59,6 +59,30 @@ static i64 text_end(size_t start)
 
 static int text_room(void) { return g_text.used < g_text.cap; }
 
+/* c_str STR: the string with a 0 after it, for the C library. It is written to the free end of the text arena and
+ * stays valid until the next string is made; 0 when there is no room. A string can be a piece of another, so it
+ * has no 0 of its own */
+static const char *c_str(i64 v)
+{
+	char *d = (char *)g_text.base + g_text.used;
+	u32 n = STR_LEN(v);
+	if (g_text.cap - g_text.used < (size_t)n + 1) return 0;
+	memcpy(d, STR_P(v), n);
+	d[n] = 0;
+	return d;
+}
+
+/* str_find S PART FROM: where PART first starts in S at or after FROM, or -1 */
+static i64 str_find(i64 hay, i64 part, i64 from)
+{
+	const char *h = STR_P(hay), *p = STR_P(part);
+	i64 n = STR_LEN(hay), m = STR_LEN(part), i;
+	for (i = from; i + m <= n; i++) {
+		if (!memcmp(h + i, p, (size_t)m)) return i;
+	}
+	return -1;
+}
+
 static o out(const char *p, size_t n)
 {
 	if (g_sink) fwrite(p, 1, n, g_sink);
@@ -231,10 +255,11 @@ static int parse_float(i64 v, f64 *out_v)
 static int run_sh(i64 cmd, i64 *res)
 {
 	size_t start = g_text.used;
-	int full = !text_room();
-	FILE *pipe;
+	const char *c = c_str(cmd);
+	int full = !c;
+	FILE *pipe = 0;
 	fflush(stdout);
-	pipe = popen(STR_P(cmd), "r");
+	if (c) pipe = popen(c, "r"); /* the command is copied into the child before the output lands on it */
 	if (pipe) {
 		for (;;) {
 			char buf[4096];
@@ -262,7 +287,8 @@ static i64 heap_alloc(i64 n)
 	return at;
 }
 
-/* vec_new N SIZE FROM: a vec of the N elements (SIZE cells each) at FROM; -1 when the heap is full */
+/* vec_new N SIZE FROM: a vec of the N elements (SIZE cells each) at FROM, or of N zeros without FROM; -1 when the heap
+ * is full */
 static i64 vec_new(i64 n, i64 size, const Cell *from)
 {
 	i64 cap = n < 4 ? 4 : n, h = heap_alloc(VH_CELLS + cap * size);
@@ -270,7 +296,8 @@ static i64 vec_new(i64 n, i64 size, const Cell *from)
 	g_heap[h + VH_LEN].i = n;
 	g_heap[h + VH_CAP].i = cap;
 	g_heap[h + VH_DATA].i = h + VH_CELLS;
-	memcpy(g_heap + h + VH_CELLS, from, (size_t)(n * size) * sizeof(Cell));
+	if (from) memcpy(g_heap + h + VH_CELLS, from, (size_t)(n * size) * sizeof(Cell));
+	else memset(g_heap + h + VH_CELLS, 0, (size_t)(n * size) * sizeof(Cell));
 	return h;
 }
 
@@ -299,6 +326,15 @@ static int index_error(i32 line, i64 i, i64 len)
 }
 
 #define HEAP_FULL "out of memory for vecs (the heap is full)"
+#define TEXT_FULL "out of memory for strings (the text arena is full)"
+
+/* range_error LINE FROM TO LEN: substr's bytes FROM up to TO do not fit a string of LEN, or TO is before FROM */
+static int range_error(i32 line, i64 from, i64 to, i64 len)
+{
+	char msg[160];
+	sprintf(msg, "substr %ld %ld does not fit a string of %ld bytes", (long)from, (long)to, (long)len);
+	return vm_error(line, msg);
+}
 
 /* vm_run PC: run from PC until HALT; 0 when it finished, 1 after a runtime error */
 static int vm_run(i32 pc)
@@ -428,17 +464,19 @@ static int vm_run(i32 pc)
 			g_sink = 0;
 			g_sink_full = !text_room();
 			print_fmt(&g_fmts[in->a], s + sp);
-			if (g_sink_full) return vm_error(in->line, "out of memory for strings (the text arena is full)");
+			if (g_sink_full) return vm_error(in->line, TEXT_FULL);
 			s[sp++].i = text_end(start);
 			break;
 		}
 		case OP_SH:
-			if (!run_sh(s[sp - 1].i, &s[sp - 1].i)) return vm_error(in->line, "out of memory for strings (the text arena is full)");
+			if (!run_sh(s[sp - 1].i, &s[sp - 1].i)) return vm_error(in->line, TEXT_FULL);
 			break;
 		case OP_SYSTEM: {
+			const char *c = c_str(s[sp - 1].i);
 			int st;
+			if (!c) return vm_error(in->line, TEXT_FULL);
 			fflush(stdout);
-			st = system(STR_P(s[sp - 1].i));
+			st = system(c);
 			s[sp - 1].i = st == -1 ? -1 : (st >> 8) & 0xff; /* the exit status as the shell reports it (Linux) */
 			break;
 		}
@@ -454,6 +492,77 @@ static int vm_run(i32 pc)
 			int ok = parse_float(s[sp - 1].i, &v);
 			s[sp - 1].i = ok;
 			s[sp++].f = ok ? v : 0;
+			break;
+		}
+		case OP_SUBSTR: {
+			i64 v = s[sp - 3].i, from = s[sp - 2].i, to = s[sp - 1].i;
+			if (from < 0 || from > to || to > STR_LEN(v)) return range_error(in->line, from, to, STR_LEN(v));
+			sp -= 2;
+			s[sp - 1].i = str_cell(STR_OFF(v) + (size_t)from, (size_t)(to - from));
+			break;
+		}
+		case OP_BYTE: {
+			i64 v = s[sp - 2].i, i = s[sp - 1].i;
+			if (i < 0 || i >= STR_LEN(v)) {
+				char msg[96];
+				sprintf(msg, "byte %ld is outside a string of %ld bytes", (long)i, (long)STR_LEN(v));
+				return vm_error(in->line, msg);
+			}
+			sp--;
+			s[sp - 1].i = (u8)STR_P(v)[i];
+			break;
+		}
+		case OP_FIND: { /* the two strings become the option's two cells */
+			i64 at = str_find(s[sp - 2].i, s[sp - 1].i, 0);
+			s[sp - 2].i = at >= 0;
+			s[sp - 1].i = at >= 0 ? at : 0;
+			break;
+		}
+		case OP_SPLIT: {
+			i64 v = s[sp - 2].i, sep = s[sp - 1].i, n = 1, at, start = 0, h;
+			Cell *data;
+			if (!STR_LEN(sep)) return vm_error(in->line, "split: the separator is empty");
+			for (at = str_find(v, sep, 0); at >= 0; at = str_find(v, sep, at + STR_LEN(sep))) n++;
+			if ((h = vec_new(n, 1, 0)) < 0) return vm_error(in->line, HEAP_FULL);
+			data = g_heap + g_heap[h + VH_DATA].i;
+			for (n = 0; (at = str_find(v, sep, start)) >= 0; start = at + STR_LEN(sep))
+				data[n++].i = str_cell(STR_OFF(v) + (size_t)start, (size_t)(at - start));
+			data[n].i = str_cell(STR_OFF(v) + (size_t)start, (size_t)(STR_LEN(v) - start));
+			sp--;
+			s[sp - 1].i = h;
+			break;
+		}
+		case OP_JOIN: {
+			const Cell *hd = g_heap + s[sp - 2].i;
+			i64 sep = s[sp - 1].i, k;
+			size_t start = g_text.used;
+			int ok = text_room();
+			for (k = 0; ok && k < hd[VH_LEN].i; k++) {
+				i64 e = g_heap[hd[VH_DATA].i + k].i;
+				if (k) ok = text_put(STR_P(sep), STR_LEN(sep));
+				if (ok) ok = text_put(STR_P(e), STR_LEN(e));
+			}
+			if (!ok) {
+				g_text.used = start;
+				return vm_error(in->line, TEXT_FULL);
+			}
+			sp--;
+			s[sp - 1].i = text_end(start);
+			break;
+		}
+		case OP_CHAR:
+			if (s[sp - 1].i < 0 || s[sp - 1].i > 255) {
+				char msg[64];
+				sprintf(msg, "char takes 0 to 255, this is %ld", (long)s[sp - 1].i);
+				return vm_error(in->line, msg);
+			}
+			s[sp - 1].i = str_cell((size_t)(2 * s[sp - 1].i), 1);
+			break;
+		case OP_TRIM: {
+			const char *p;
+			u32 n;
+			trimmed(s[sp - 1].i, &p, &n);
+			s[sp - 1].i = str_cell((size_t)(p - (const char *)g_text.base), n);
 			break;
 		}
 		case OP_INC_L: s[fp + in->a].i = (i64)((u64)s[fp + in->a].i + 1); break;

@@ -127,6 +127,7 @@ static int repl(void)
 int main(int argc, char **argv)
 {
 	int st;
+	text_init();
 	if (argc == 1) return repl();
 	if (!strcmp(argv[1], "-h") || !strcmp(argv[1], "--help")) {
 		fputs(g_usage, stdout);

@@ -48,6 +48,13 @@
 	X(SYSTEM, 0)   /* s -- i       run a shell command, its exit status */ \
 	X(PARSE_I, 0)  /* s -- o       (option int): the string as an int, or none */ \
 	X(PARSE_F, 0)  /* s -- o       (option float) */ \
+	X(SUBSTR, 0)   /* s i i -- s   the bytes from the first index up to the second, the same text (no copy) */ \
+	X(BYTE, 0)     /* s i -- i     one byte, 0 to 255 */ \
+	X(FIND, 0)     /* s s -- o     (option int): where the second string first starts in the first */ \
+	X(SPLIT, 0)    /* s s -- v     (vec string): the pieces between the separators (no copies) */ \
+	X(JOIN, 0)     /* v s -- s     the strings of a vec with the separator between them, a new string */ \
+	X(CHAR, 0)     /* i -- s       the one-byte string of 0 to 255 */ \
+	X(TRIM, 0)     /* s -- s       without the spaces, tabs and newlines around it (no copy) */ \
 	X(INC_L, 1)    /* --           a: local slot; adds 1 to the int in it */ \
 	X(VEC_NEW, 2)  /* x... -- v    a: elements on the stack, b: cells of one */ \
 	X(VEC_LEN, 0)  /* v -- i */ \

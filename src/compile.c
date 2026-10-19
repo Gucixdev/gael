@@ -123,7 +123,19 @@ static Arena g_text = { (u8 *)g_text_mem, sizeof(g_text_mem), 0, "text" };
 
 static i64 str_cell(size_t off, size_t len) { return (i64)(((u64)off << 32) | (u64)len); }
 #define STR_LEN(v) ((u32)((u64)(v) & 0xffffffffu))
-#define STR_P(v) ((char *)g_text.base + ((u64)(v) >> 32))
+#define STR_OFF(v) ((size_t)((u64)(v) >> 32))
+#define STR_P(v) ((char *)g_text.base + STR_OFF(v))
+
+/* text_init: the 256 one-byte strings that (char n) returns, at the start of the text arena */
+static o text_init(void)
+{
+	i32 c;
+	for (c = 0; c < 256; c++) {
+		g_text.base[2 * c] = (u8)c;
+		g_text.base[2 * c + 1] = 0;
+	}
+	g_text.used = 512;
+}
 
 /* what one compilation needs */
 #define MAX_LOCALS 1024
@@ -140,7 +152,7 @@ static u8 g_seen[MAX_VARIANTS];      /* match: the variants an arm already cover
 
 typedef enum {
 	F_START, F_CALL, F_IF, F_WHEN, F_WHILE, F_DO, F_LET, F_SET, F_AND, F_OR, F_NOT, F_ARITH, F_CMP, F_PRINT,
-	F_CONV, F_STRFN, F_NEW, F_SOME, F_MATCH, F_VEC, F_VECOP, F_FOR
+	F_CONV, F_BUILTIN, F_NEW, F_SOME, F_MATCH, F_VEC, F_VECOP, F_FOR
 } Form;
 
 typedef struct {
@@ -193,6 +205,8 @@ static o depth_add(i32 d)
 }
 
 /* effect OP A B: how many cells the instruction adds to the operand stack (negative: takes away) */
+static i32 builtin_effect(Op op);
+
 static i32 effect(Op op, i32 a, i32 b)
 {
 	switch (op) {
@@ -217,7 +231,7 @@ static i32 effect(Op op, i32 a, i32 b)
 	case OP_VEC_PUT: return -(2 + a);
 	case OP_VEC_POP: return a;
 	case OP_SHOW: return -cells((Ty)a);
-	default: return 0;
+	default: return builtin_effect(op);
 	}
 }
 
@@ -281,9 +295,10 @@ static int head_is(i32 n, const char *s) { return n >= 0 && g_nodes[n].kind == N
 static const char *const g_reserved[] = {
 	"if", "when", "while", "do", "let", "set", "and", "or", "not", "+", "-", "*", "/", "%", "<", "<=", ">", ">=", "=",
 	"!=", "print", "println", "int", "float", "bool", "string", "unit", "len", "sh", "defn", "def", "true", "false", ":",
-	"struct", "enum", "match", "some", "none", "option", "_", "format", "system", "parse-int", "parse-float", "vec", "push",
-	"get", "put", "pop", "for"
+	"struct", "enum", "match", "some", "none", "option", "_", "format", "vec", "push", "get", "put", "pop", "for"
 };
+
+static int is_builtin(const char *s);
 
 static int is_reserved(const char *s)
 {
@@ -291,7 +306,7 @@ static int is_reserved(const char *s)
 	for (i = 0; i < GAEL_COUNT(g_reserved); i++) {
 		if (!strcmp(s, g_reserved[i])) return 1;
 	}
-	return 0;
+	return is_builtin(s);
 }
 
 /* find_named_type NAME: a built-in type, a struct or an enum by name; T_NONE when there is none */
@@ -327,6 +342,85 @@ static Ty intern_wrap(u8 kind, Ty elem)
 }
 
 static Ty intern_option(Ty elem) { return intern_wrap(K_OPTION, elem); }
+
+/* Builtins with a fixed signature. Argument and result types are letters: i int, f float, b bool, s string,
+ * I (option int), F (option float), S (vec string), x a string or a vec (len). params names them for messages. */
+typedef struct {
+	const char *name, *args, *params;
+	char ret;
+	Op op;
+} Builtin;
+
+static const Builtin g_builtins[] = {
+	{ "len", "x", "s", 'i', OP_LEN_S },
+	{ "sh", "s", "command", 's', OP_SH },
+	{ "system", "s", "command", 'i', OP_SYSTEM },
+	{ "parse-int", "s", "s", 'I', OP_PARSE_I },
+	{ "parse-float", "s", "s", 'F', OP_PARSE_F },
+	{ "substr", "sii", "s from to", 's', OP_SUBSTR },
+	{ "byte", "si", "s i", 'i', OP_BYTE },
+	{ "find", "ss", "s part", 'I', OP_FIND },
+	{ "split", "ss", "s separator", 'S', OP_SPLIT },
+	{ "join", "Ss", "v separator", 's', OP_JOIN },
+	{ "char", "i", "n", 's', OP_CHAR },
+	{ "trim", "s", "s", 's', OP_TRIM }
+};
+
+static Ty code_type(char c)
+{
+	switch (c) {
+	case 'i': return T_INT;
+	case 'f': return T_FLOAT;
+	case 'b': return T_BOOL;
+	case 's': return T_STR;
+	case 'I': return intern_option(T_INT);
+	case 'F': return intern_option(T_FLOAT);
+	case 'S': return intern_wrap(K_VEC, T_STR);
+	default: return T_NONE; /* x: the form checks it */
+	}
+}
+
+static i32 builtin_effect(Op op)
+{
+	size_t i;
+	const char *a;
+	i32 d;
+	for (i = 0; i < GAEL_COUNT(g_builtins); i++) {
+		if (g_builtins[i].op != op) continue;
+		d = cells(code_type(g_builtins[i].ret));
+		for (a = g_builtins[i].args; *a; a++) d -= *a == 'x' ? 1 : cells(code_type(*a));
+		return d;
+	}
+	return 0;
+}
+
+static int is_builtin(const char *s)
+{
+	size_t i;
+	for (i = 0; i < GAEL_COUNT(g_builtins); i++) {
+		if (!strcmp(s, g_builtins[i].name)) return 1;
+	}
+	return 0;
+}
+
+/* param_name BUILTIN K BUF: the name of argument K, for a message */
+static const char *param_name(const Builtin *bi, i32 k, char *buf)
+{
+	const char *p = bi->params, *end;
+	for (; k > 0 && (p = strchr(p, ' ')) != 0; k--) p++;
+	if (!p) return "?";
+	end = strchr(p, ' ');
+	sprintf(buf, "%.*s", (int)(end ? end - p : (long)strlen(p)), p);
+	return buf;
+}
+
+/* a_type TYPE: "a string", "an int" - for a message about the one argument of a builtin */
+static const char *a_type(Ty t)
+{
+	static char buf[200];
+	sprintf(buf, "%s %.180s", t == T_INT ? "an" : "a", tn(t));
+	return buf;
+}
 
 /* parse_type NODE: the type a node names - int, float, bool, string, unit, a struct, an enum, (option type) or
  * (vec type) - or an error and ERR */
@@ -564,11 +658,6 @@ static Ty fmt_type(const char *s, u32 n, i32 want, i32 *count)
 	return T_NONE;
 }
 
-/* the builtins that take one string */
-enum { SF_LEN, SF_SH, SF_SYSTEM, SF_PARSE_I, SF_PARSE_F };
-static const char *const g_strfn_names[] = { "len", "sh", "system", "parse-int", "parse-float" };
-static const Op g_strfn_ops[] = { OP_LEN_S, OP_SH, OP_SYSTEM, OP_PARSE_I, OP_PARSE_F };
-
 /* the builtins on a vec */
 enum { VO_PUSH, VO_GET, VO_PUT, VO_POP };
 static const char *const g_vecop_names[] = { "push", "get", "put", "pop" };
@@ -753,8 +842,8 @@ static o start_list(Frame *f)
 		for (k = 0; k < GAEL_COUNT(g_cmp_names); k++) {
 			if (!strcmp(s, g_cmp_names[k])) { f->form = F_CMP; f->op = (u8)k; break; }
 		}
-		for (k = 0; k < GAEL_COUNT(g_strfn_names); k++) {
-			if (!strcmp(s, g_strfn_names[k])) { f->form = F_STRFN; f->op = (u8)k; break; }
+		for (k = 0; k < GAEL_COUNT(g_builtins); k++) {
+			if (!strcmp(s, g_builtins[k].name)) { f->form = F_BUILTIN; f->op = (u8)k; break; }
 		}
 		for (k = 0; k < GAEL_COUNT(g_vecop_names); k++) {
 			if (!strcmp(s, g_vecop_names[k])) { f->form = F_VECOP; f->op = (u8)k; break; }
@@ -1362,11 +1451,44 @@ static o run_work(i32 base)
 			break;
 		}
 
+		case F_BUILTIN: {
+			const Builtin *bi = &g_builtins[f->op];
+			i32 nargs = (i32)strlen(bi->args);
+			char pname[64];
+			if (f->phase == 0) {
+				if (f->k != nargs) {
+					if (nargs == 1) err_node(f->node, "%s takes one value: (%s %s)", bi->name, bi->name, bi->params);
+					else err_node(f->node, "%s takes %ld values: (%s %s)", bi->name, (long)nargs, bi->name, bi->params);
+					finish(T_ERR);
+					break;
+				}
+				f->k = 0;
+				f->c = 0;
+				f->phase = 1;
+				push_child(f->cur, code_type(bi->args[0]));
+				break;
+			}
+			t = pop_type();
+			t2 = code_type(bi->args[f->k]);
+			if (bi->args[f->k] == 'x') {
+				if (is_vec(t)) f->c = 1; /* len of a vec */
+				else if (t != T_STR && t != T_ERR) err_node(f->cur, "len takes a string or a vec, not %s", tn(t));
+			} else if (t != T_ERR && t != t2) {
+				if (nargs == 1) err_node(f->cur, "%s takes %s, not %s", bi->name, a_type(t2), tn(t));
+				else err_node(f->cur, "%s: %s is %s, it must be %s", bi->name, param_name(bi, f->k, pname), tn(t), tn(t2));
+			}
+			f->k++;
+			f->cur = next_of(f->cur);
+			if (f->cur >= 0) { push_child(f->cur, code_type(bi->args[f->k])); break; }
+			emit(f->c ? OP_VEC_LEN : bi->op, 0, 0, line);
+			finish(code_type(bi->ret));
+			break;
+		}
+
 		case F_CONV:
-		case F_STRFN:
 			if (f->phase == 0) {
 				if (f->k != 1) {
-					err_node(f->node, "%s takes one value", f->form == F_CONV ? (f->op == T_INT ? "int" : "float") : g_strfn_names[f->op]);
+					err_node(f->node, "%s takes one value: (%s x)", f->op == T_INT ? "int" : "float", f->op == T_INT ? "int" : "float");
 					finish(T_ERR);
 					break;
 				}
@@ -1382,20 +1504,6 @@ static o run_work(i32 base)
 					err_node(f->cur, "%s converts a number, not %s", f->op == T_INT ? "int" : "float", tn(t));
 				finish(f->op);
 				break;
-			}
-			if (f->op == SF_LEN && is_vec(t)) {
-				emit(OP_VEC_LEN, 0, 0, line);
-				finish(T_INT);
-				break;
-			}
-			if (f->op == SF_LEN && t != T_STR && t != T_ERR) err_node(f->cur, "len takes a string or a vec, not %s", tn(t));
-			else if (t != T_STR && t != T_ERR) err_node(f->cur, "%s takes a string, not %s", g_strfn_names[f->op], tn(t));
-			emit(g_strfn_ops[f->op], 0, 0, line);
-			switch (f->op) {
-			case SF_SH: finish(T_STR); break;
-			case SF_PARSE_I: finish(intern_option(T_INT)); break;
-			case SF_PARSE_F: finish(intern_option(T_FLOAT)); break;
-			default: finish(T_INT); break;
 			}
 			break;
 
