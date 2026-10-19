@@ -4,7 +4,7 @@ gael is a small statically typed language written as s-expressions. The compiler
 runs and reports all the errors of a file in one go, each with its line, column and a caret under the mistake. A
 program without errors is compiled to bytecode and run on a stack VM. gael is meant to become the scripting language
 of a game engine and of an Emacs-like editor written in it (`docs/SPEC.md`, in Polish); this repository is the
-language, version 0.1.
+language, version 0.2.
 
 ## Build and run
 
@@ -73,19 +73,81 @@ tests/errors/three-errors.gael:4:6: error: set: unknown name nothing
        ^
 ```
 
+Structs are values: passing one to a function or storing it copies it, and nothing is allocated.
+
+```lisp
+(struct Vec2 (x : float) (y : float))
+(struct Body (name : string) (pos : Vec2) (vel : Vec2))
+
+(defn add ((a : Vec2) (b : Vec2)) : Vec2
+  (Vec2 (+ a.x b.x) (+ a.y b.y)))
+
+(defn step ((b : Body) (dt : float)) : Body
+  (set b.pos (add b.pos (Vec2 (* b.vel.x dt) (* b.vel.y dt))))
+  b)
+
+; fields in order, or by name in any order
+(def ball (Body :name "ball" :pos (Vec2 0.0 10.0) :vel (Vec2 :y -2.0 :x 1.5)))
+
+(let ((later (step (step ball 0.5) 0.5)))
+  (println "%s moved to %f, %f" later.name later.pos.x later.pos.y)
+  (println "%v" later))
+(println "the original is still at %v" ball.pos)
+```
+
+```
+$ ./gael examples/structs.gael
+ball moved to 1.5, 8.0
+(Body :name "ball" :pos (Vec2 :x 1.5 :y 8.0) :vel (Vec2 :x 1.5 :y -2.0))
+the original is still at (Vec2 :x 0.0 :y 10.0)
+```
+
+A `match` must handle every value. These four each miss one:
+
+```lisp
+(enum Dir north east south west)
+(defn name ((d : Dir)) : string
+  (match d
+    (north "n")
+    (east "e")))
+(defn yes ((b : bool)) : int
+  (match b (true 1)))
+(defn opt ((x : (option int))) : int
+  (match x ((some v) v)))
+(defn count ((n : int)) : string
+  (match n (0 "zero") (1 "one")))
+```
+
+```
+$ ./gael tests/errors/match-missing.gael
+tests/errors/match-missing.gael:3:3: error: match on Dir does not cover south, west; add arms for them or a _ arm
+    (match d
+    ^
+tests/errors/match-missing.gael:7:3: error: match on bool does not cover false; add an arm for it or a _ arm
+    (match b (true 1)))
+    ^
+tests/errors/match-missing.gael:9:3: error: match on (option int) does not cover none; add an arm for it or a _ arm
+    (match x ((some v) v)))
+    ^
+tests/errors/match-missing.gael:11:3: error: match on int needs a _ arm for the values the arms do not list
+    (match n (0 "zero") (1 "one")))
+    ^
+```
+
 The REPL keeps definitions between forms, shows each value with its type, and reads a form over several lines until
 its parentheses close:
 
 ```
 $ ./gael
-gael 0.1 - :q quits, a form may span lines
+gael 0.2 - :q quits, a form may span lines
 gael> (def hp 100)
 gael> (- hp 30)
 => 70 : int
-gael> (defn sq ((n : int)) : int
-  ...   (* n n))
-gael> (sq 12)
-=> 144 : int
+gael> (struct Vec2 (x : float) (y : float))
+gael> (defn scale ((v : Vec2) (k : float)) : Vec2
+  ...   (Vec2 (* v.x k) (* v.y k)))
+gael> (scale (Vec2 :y 2.0 :x 1.0) 3.0)
+=> (Vec2 :x 3.0 :y 6.0) : Vec2
 gael> (+ hp 0.5)
 <repl>:1:7: error: +: int and float do not mix; convert one with (float x) or (int x)
   (+ hp 0.5)
@@ -96,24 +158,30 @@ gael> :q
 `gael -d examples/fact.gael` prints the bytecode, one instruction per line with its operands, the constant it uses
 and the source line it came from.
 
-## The language in 0.1
+## The language in 0.2
 
-Types: `int` (64-bit, arithmetic wraps around), `float` (64-bit), `bool`, `string` and `unit` (no value). Nothing
-converts on its own: `(+ 1 2.0)` is a compile error, `(float x)` and `(int x)` convert on purpose. A comment starts
-with `;`.
+Types: `int` (64-bit, arithmetic wraps around), `float` (64-bit), `bool`, `string`, `unit` (no value), structs,
+enums and `(option type)`. Nothing converts on its own: `(+ 1 2.0)` is a compile error, `(float x)` and `(int x)`
+convert on purpose. A comment starts with `;`.
 
 | Form | Meaning |
 |---|---|
 | `(def hp : int 100)`, `(def hp 100)` | a global; without `: type` the type is the value's |
 | `(defn name ((x : int) (y : float)) : int body...)` | a function, `()` when it takes nothing; without `: type` it returns unit. A function can be called above its definition |
 | `(let ((x 1) (y : float 2.0)) body...)` | locals for the body |
-| `(set x 5)` | assign to a local or a global; the value must have its type |
+| `(set x 5)`, `(set b.pos.x 3.0)` | assign to a variable or a field of one; the value must have its type |
 | `(if c then else)`, `(when c body...)`, `(while c body...)`, `(do body...)` | a condition must be a bool; `if` without `else` is unit |
 | `(and a b...)`, `(or a b...)`, `(not a)` | on bools; `and` and `or` stop at the first answer |
 | `(+ a b...)`, `-`, `*`, `/` | int with int or float with float; `(- x)` negates |
 | `(% a b)` | the remainder of two ints |
-| `<`, `<=`, `>`, `>=`, `=`, `!=` | compare two ints or two floats; `=` and `!=` also take bools and strings |
-| `(print "fmt" args...)`, `(println "fmt" args...)` | `%d` int, `%f` float, `%s` string, `%b` bool, `%%`; the codes are checked against the arguments when compiling |
+| `<`, `<=`, `>`, `>=`, `=`, `!=` | compare two ints or two floats; `=` and `!=` also take bools, strings and enum values |
+| `(struct Vec2 (x : float) (y : float))` | a struct; a field can have any type declared above it, other structs and options included |
+| `(Vec2 1.0 2.0)`, `(Vec2 :y 2.0 :x 1.0)` | a struct value, with the fields in order or named; every field must be given |
+| `v.x`, `b.pos.x` | a field of a variable |
+| `(enum Dir north east south west)`, `Dir.north` | an enum and one of its values |
+| `(some 5)`, `none` | the two kinds of `(option int)` value; `none` takes its type from where it goes: a declared binding, a parameter, a field, a return type, or the else branch of an `if` whose then branch has one |
+| `(match x (pattern body...)...)` | patterns are `_`, int and string literals, `true` and `false`, enum values (`north` or `Dir.north`), `(some name)` and `none`; every value must be covered, and an arm that can never run is an error |
+| `(print "fmt" args...)`, `(println "fmt" args...)` | `%d` int, `%f` float, `%s` string, `%b` bool, `%v` any value, `%%`; the codes are checked against the arguments when compiling |
 | `(len s)` | the length of a string in bytes |
 | `(sh "command")` | run a shell command, get its exit status |
 
@@ -138,17 +206,22 @@ tests/errors/div-zero.gael:1: runtime error: division by zero
   gael program is a gael runtime error, not a crash.
 - Every instruction is listed once in `src/ops.h` (an x-macro); the opcode enum, the disassembler's names and the
   operand counts come from that list.
-- The VM's cells carry no type tag: the compiler has already proved the types, so `ADD_I` reads two ints.
+- The VM's cells carry no type tag: the compiler has already proved the types, so `ADD_I` reads two ints. A value
+  takes as many cells as its type says: one for a number, a bool, a string or an enum value, the sum of its fields
+  for a struct, and one more than the value inside for an option.
+- The compiler counts how deep each function's operand stack can get, and the VM checks that the whole frame fits
+  before it enters it, so no instruction can write past the stack.
 
 ## Status
 
-Version 0.1, tested on Linux x86-64 with gcc 13.3 and clang 18.1. `./test` passes 23 checks per build (six examples,
-16 compile and runtime error cases, one REPL session) with gcc, clang and gcc with both sanitizers.
+Version 0.2, tested on Linux x86-64 with gcc 13.3 and clang 18.1. `./test` passes 35 checks per build (nine examples,
+25 compile and runtime error cases, one REPL session) with gcc, clang and gcc with both sanitizers.
 
-Not in 0.1: structs, arrays and other compound types, string building, modules and gems (packages, see the spec),
-calling C, and the editor. The fixed limits are 8 parameters per function, 4096 functions, 4096 globals and 2^18
-instructions; per unit (a file, or one REPL form) 2^18 syntax nodes and an 8 MiB arena for the source and the text
-of its names and strings; at run time at most 4096 nested calls.
+Not in 0.2: arrays, maps and other collections, building strings at run time (and `sh` returning a command's
+output), modules and gems (packages, see the spec), calling C, and the editor. The fixed limits are 8 parameters per
+function, 4096 functions, 4096 globals, 4096 types and 2^18 instructions; per unit (a file, or one REPL form) 2^18
+syntax nodes and an 8 MiB arena for the source and the text of its names and strings; at run time a stack of 65536
+cells and at most 4096 nested calls.
 
 ## License
 

@@ -180,6 +180,20 @@ Coś, co działa samo i da się wydać, nawet zanim powstanie silnik:
 
 Potem: makra i moduły (0.2), manifest i resolver gemów (0.3), bufor i okno (0.4, początek edytora).
 
+### Stan (2026-10-19)
+
+- **0.1:** reader, `def`/`defn`/`let`/`set`, `if`/`when`/`while`/`do`, `and`/`or`/`not`, int/float/bool/string,
+  type checker zgłaszający wszystkie błędy naraz, bajtkod i VM, REPL, `print`/`println` z kodami sprawdzanymi w
+  kompilacji, `sh` (na razie kod wyjścia), statyczna binarka, testy na gcc, clang i sanitizerach. Zamiast `loop` jest
+  `while`.
+- **0.2:** `struct` (wartości bez alokacji, pola przez kropkę: `b.pos.x`, konstruktor pozycyjny albo z nazwami pól),
+  `enum`, `(option T)` z `some`/`none` (typ `none` wynika z miejsca użycia), `match` z kontrolą wyczerpania i
+  martwych ramion, `%v` dla każdej wartości. Kompilator liczy największą głębokość stosu operandów każdej funkcji, a VM
+  sprawdza przed wejściem, że cała ramka się mieści (wcześniej stały zapas 256 komórek dało się przekroczyć).
+- **Następne:** stringi w czasie wykonania (`format`, `sh` zwracające wyjście, `system` z kodem wyjścia), CI na
+  GitHubie, tablice, potem makra i moduły, manifest gemów, bufor i okno. Numery wersji przesuwają się o jeden względem
+  planu wyżej.
+
 ## Ryzyka, uczciwie
 
 - **Skala:** własny język, edytor, silnik, system gemów i zamienniki Blendera to lata pracy jednej osoby. Każdy etap
