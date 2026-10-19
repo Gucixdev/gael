@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# build - compile gael: one translation unit, C89, warnings as errors, linked statically when the C library allows it.
+# CC picks the compiler (default cc); CFLAGS adds flags.
+set -euo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")"
+flags=(-std=c89 -pedantic -Wall -Wextra -Werror -O2)
+if ! ${CC:-cc} "${flags[@]}" ${CFLAGS:-} -static -o gael src/main.c 2> /dev/null; then
+	${CC:-cc} "${flags[@]}" ${CFLAGS:-} -o gael src/main.c
+fi
