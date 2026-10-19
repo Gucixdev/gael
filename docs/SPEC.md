@@ -200,7 +200,10 @@ Potem: makra i moduły (0.2), manifest i resolver gemów (0.3), bufor i okno (0.
   Wbudowane funkcje o stałej sygnaturze są w jednej tabeli w kompilatorze. `./test` uruchamia też przykłady z README.
   Wejście i wyjście: `read-file`, `write-file`, `read-line`, `args` (`gael PLIK ARGUMENTY...`), `getenv`, `exit`,
   `eprint`/`eprintln` na stderr.
-- **Następne:** mapy, pola wyniku wyrażenia, potem makra i moduły, manifest gemów, bufor i okno. Pamięć: dziś areny tekstu i sterta nie są zwalniane - przed edytorem trzeba
+- **Moduły:** `(use "plik.gael")` - ścieżka względem pliku, każdy plik raz (kanoniczna ścieżka), cykl to błąd w
+  miejscu `use`, najpierw kompilacja wszystkich plików, uruchomienie dopiero bez błędów. Wspólna przestrzeń nazw;
+  przestrzenie nazw gemów przyjdą z manifestem.
+- **Następne:** mapy, pola wyniku wyrażenia, makra, manifest i resolver gemów (na `use`), bufor i okno. Pamięć: dziś areny tekstu i sterta nie są zwalniane - przed edytorem trzeba
   zdecydować (areny z zakresem sprawdzanym w kompilacji, refcount, albo jedno i drugie).
   Numery wersji przesuwają się o jeden względem planu wyżej.
 

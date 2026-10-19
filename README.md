@@ -167,6 +167,7 @@ convert on purpose. A comment starts with `;`.
 
 | Form | Meaning |
 |---|---|
+| `(use "lib/geometry.gael")` | compile that file first, its path relative to this one; a file used by several others is compiled once, and a file that ends up using itself is an error |
 | `(def hp : int 100)`, `(def hp 100)` | a global; without `: type` the type is the value's |
 | `(defn name ((x : int) (y : float)) : int body...)` | a function, `()` when it takes nothing; without `: type` it returns unit. A function can be called above its definition |
 | `(let ((x 1) (y : float 2.0)) body...)` | locals for the body |
@@ -200,7 +201,9 @@ convert on purpose. A comment starts with `;`.
 | `(args)`, `(getenv name)` | the arguments after the file name as a `(vec string)`; an environment variable as an `(option string)` |
 | `(exit status)` | end the program with this exit status |
 
-A struct is a value and is copied; a vec is a handle, so copying one (also inside a struct) shares its elements. A
+All the files of a program share one set of names. They are compiled in the order their `use`s need, and nothing
+runs until every one of them compiled without an error; then their top levels run in the same order (in the REPL a
+used file runs when it is loaded). A struct is a value and is copied; a vec is a handle, so copying one (also inside a struct) shares its elements. A
 struct can hold a vec of itself, which makes a tree. A function's last form is its value. An integer literal must fit in 64 bits, and a float needs digits on both sides
 of its point (`4.2`, `4.2e3`; `1e3` and `.5` are errors). A runtime error stops the program and names the line it
 happened on:
@@ -231,12 +234,12 @@ tests/errors/div-zero.gael:1: runtime error: division by zero
 
 ## Status
 
-Version 0.3, tested on Linux x86-64 with gcc 13.3 and clang 18.1. `./test` passes 52 checks per build (13 examples,
-33 compile and runtime error cases, one REPL session, five README examples) with gcc, clang and gcc with both sanitizers. GitHub Actions
+Version 0.3, tested on Linux x86-64 with gcc 13.3 and clang 18.1. `./test` passes 58 checks per build (14 examples,
+38 compile and runtime error cases, one REPL session, five README examples) with gcc, clang and gcc with both sanitizers. GitHub Actions
 runs shellcheck on the scripts and `./test` on every push (`.github/workflows/test.yml`, ubuntu-24.04).
 
-Not in 0.3: maps, field access on an expression (bind it with `let` first), modules
-and gems (packages, see the spec), calling C, and the editor. The fixed limits are 8 parameters per function, 4096 functions, 4096 globals, 4096
+Not in 0.3: maps, field access on an expression (bind it with `let` first), gems
+(packages with versions, see the spec), calling C, and the editor. The fixed limits are 8 parameters per function, 4096 functions, 4096 globals, 4096
 types and 2^18 instructions; per unit (a file, or one REPL form) 2^18 syntax nodes and an 8 MiB arena for the source
 and its names; at run time a stack of 65536 cells and at most 4096 nested calls. Every string, the program's and the
 ones `format` and `sh` make, lives in one 32 MiB arena, and every vec on a heap of 4M cells (32 MiB); neither is
