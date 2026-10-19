@@ -68,6 +68,14 @@
 	X(VEC_GET, 1)  /* v i -- x...  a: cells of an element; the index is checked */ \
 	X(VEC_PUT, 1)  /* v i x... --  a: cells of an element; the index is checked */ \
 	X(VEC_POP, 1)  /* v -- o...    (option element): the last one, taken off; none when empty */ \
+	X(MAP_NEW, 2)  /* k x... -- m  a: entries on the stack, b: cells of a value * 2, + 1 when the keys are strings */ \
+	X(MAP_INSERT, 1) /* m k x... -- a: cells of a value; adds the entry or replaces its value */ \
+	X(MAP_LOOKUP, 1) /* m k -- o... (option value) */ \
+	X(MAP_HAS, 0)  /* m k -- b */ \
+	X(MAP_REMOVE, 1) /* m k -- o... (option value): the value it had */ \
+	X(MAP_LEN, 0)  /* m -- i */ \
+	X(MAP_KEYS, 0) /* m -- v       (vec key) in the order they went in */ \
+	X(MAP_VALUES, 1) /* m -- v     (vec value) in the same order; a: cells of a value */ \
 	X(SHOW, 1)     /* x... --      the REPL's "=> value : type"; a: the type */
 
 #define GAEL_OP_ENUM_(name, n) OP_##name,

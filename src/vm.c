@@ -21,12 +21,17 @@ typedef struct {
 
 static Cell g_global_cells[MAX_GLOBAL_CELLS];
 
-/* the heap: vec headers and their elements, laid out flat. A vec that outgrows its room moves to a new block twice the
- * size; nothing is freed */
+/* the heap: vecs and maps, laid out flat. A vec that outgrows its room moves to a new block twice the size; nothing is
+ * freed */
 #define HEAP_CELLS (1 << 22)
 static Cell g_heap[HEAP_CELLS];
 static i64 g_nheap;
 enum { VH_LEN, VH_CAP, VH_DATA, VH_CELLS };
+
+/* A map: this header; its entries in the order they went in, each an alive flag, the key and the value's cells; and
+ * an index of SLOTS cells holding an entry's number + 1 (0: empty), probed linearly from the key's hash. A removed
+ * entry stays in place, dead, until the map grows and packs the live ones together */
+enum { MH_COUNT, MH_USED, MH_CAP, MH_ENT, MH_SLOTS, MH_IDX, MH_VSIZE, MH_STR, MH_CELLS };
 static Cell g_vstack[VM_STACK];
 static VFrame g_vframes[VM_FRAMES];
 
@@ -145,6 +150,31 @@ static o print_value(Ty type, const Cell *c)
 			st[n].i = -1;
 			st[n].c = g_heap + hd[VH_DATA].i + (i64)*i * cells(ti->elem);
 			(*i)++;
+			n++;
+			continue;
+		}
+		if (ti->kind == K_MAP) { /* (map (k v) ...): *i counts three steps per entry - "(", key, value */
+			const Cell *hd = g_heap + v->i, *ent;
+			i64 esize = 2 + hd[MH_VSIZE].i, e;
+			if (*i < 0) {
+				out_s("(map");
+				*i = 0;
+			}
+			e = *i / 3;
+			while (*i % 3 == 0 && e < hd[MH_USED].i && !g_heap[hd[MH_ENT].i + e * esize].i) *i = (i32)(++e * 3);
+			if (e >= hd[MH_USED].i) { out_s(")"); n--; continue; }
+			ent = g_heap + hd[MH_ENT].i + e * esize;
+			if (*i % 3 == 2) { /* the value was printed */
+				out_s(")");
+				(*i)++;
+				continue;
+			}
+			out_s(*i % 3 ? " " : " (");
+			(*i)++;
+			if (n == PRINT_DEPTH) { out_s("..."); continue; }
+			st[n].t = *i % 3 == 1 ? ti->key : ti->elem;
+			st[n].i = -1;
+			st[n].c = *i % 3 == 1 ? ent + 1 : ent + 2;
 			n++;
 			continue;
 		}
@@ -317,6 +347,109 @@ static int vec_push(i64 v, i64 size, const Cell *from)
 	return 1;
 }
 
+static u64 hash_key(i64 key, i64 is_str)
+{
+	u64 h;
+	if (is_str) { /* FNV-1a */
+		const char *p = STR_P(key);
+		u32 i, n = STR_LEN(key);
+		h = 14695981039346656037UL;
+		for (i = 0; i < n; i++) h = (h ^ (u8)p[i]) * 1099511628211UL;
+		return h;
+	}
+	h = (u64)key; /* the splitmix64 finish: an int, a bool or an enum value spread over all the bits */
+	h ^= h >> 30;
+	h *= 0xbf58476d1ce4e5b9UL;
+	h ^= h >> 27;
+	h *= 0x94d049bb133111ebUL;
+	return h ^ (h >> 31);
+}
+
+/* map_new VSIZE STR: an empty map whose values take VSIZE cells, keyed by strings when STR; -1 when the heap is full */
+static i64 map_new(i64 vsize, i64 is_str)
+{
+	i64 h = heap_alloc(MH_CELLS), ent = heap_alloc(8 * (2 + vsize)), idx = heap_alloc(16);
+	if (h < 0 || ent < 0 || idx < 0) return -1;
+	g_heap[h + MH_COUNT].i = 0;
+	g_heap[h + MH_USED].i = 0;
+	g_heap[h + MH_CAP].i = 8;
+	g_heap[h + MH_ENT].i = ent;
+	g_heap[h + MH_SLOTS].i = 16;
+	g_heap[h + MH_IDX].i = idx;
+	g_heap[h + MH_VSIZE].i = vsize;
+	g_heap[h + MH_STR].i = is_str;
+	memset(g_heap + idx, 0, 16 * sizeof(Cell));
+	return h;
+}
+
+/* map_find M KEY SLOT: the entry number of KEY, or -1; *SLOT gets the index slot where it is or would go */
+static i64 map_find(i64 m, i64 key, i64 *slot)
+{
+	const Cell *hd = g_heap + m;
+	i64 mask = hd[MH_SLOTS].i - 1, esize = 2 + hd[MH_VSIZE].i, at = (i64)(hash_key(key, hd[MH_STR].i) & (u64)mask);
+	for (;; at = (at + 1) & mask) {
+		i64 e = g_heap[hd[MH_IDX].i + at].i;
+		const Cell *ent;
+		if (!e) {
+			*slot = at;
+			return -1;
+		}
+		ent = g_heap + hd[MH_ENT].i + (e - 1) * esize;
+		if (ent[0].i && (hd[MH_STR].i ? str_eq(ent[1].i, key) : ent[1].i == key)) {
+			*slot = at;
+			return e - 1;
+		}
+	}
+}
+
+/* map_grow M: room for twice the entries, the dead ones packed out, the index made again (it stays at most half
+ * full, so a probe always ends); 0 when the heap is full */
+static int map_grow(i64 m)
+{
+	Cell *hd = g_heap + m;
+	i64 esize = 2 + hd[MH_VSIZE].i, cap = hd[MH_CAP].i * 2, slots = hd[MH_SLOTS].i * 2;
+	i64 ent = heap_alloc(cap * esize), idx = heap_alloc(slots), e, k = 0, slot;
+	if (ent < 0 || idx < 0) return 0;
+	for (e = 0; e < hd[MH_USED].i; e++) {
+		const Cell *from = g_heap + hd[MH_ENT].i + e * esize;
+		if (from[0].i) memcpy(g_heap + ent + k++ * esize, from, (size_t)esize * sizeof(Cell));
+	}
+	memset(g_heap + idx, 0, (size_t)slots * sizeof(Cell));
+	hd[MH_ENT].i = ent;
+	hd[MH_IDX].i = idx;
+	hd[MH_CAP].i = cap;
+	hd[MH_SLOTS].i = slots;
+	hd[MH_USED].i = k;
+	for (e = 0; e < k; e++) {
+		(void)map_find(m, g_heap[ent + e * esize + 1].i, &slot);
+		g_heap[idx + slot].i = e + 1;
+	}
+	return 1;
+}
+
+/* map_insert M KEY VALUE: add the entry, or give an existing key the new value; 0 when the heap is full */
+static int map_insert(i64 m, i64 key, const Cell *val)
+{
+	Cell *hd = g_heap + m, *ent;
+	i64 vsize = hd[MH_VSIZE].i, esize = 2 + vsize, slot, e = map_find(m, key, &slot);
+	if (e >= 0) {
+		memcpy(g_heap + hd[MH_ENT].i + e * esize + 2, val, (size_t)vsize * sizeof(Cell));
+		return 1;
+	}
+	if (hd[MH_USED].i == hd[MH_CAP].i) {
+		if (!map_grow(m)) return 0;
+		(void)map_find(m, key, &slot);
+	}
+	e = hd[MH_USED].i++;
+	ent = g_heap + hd[MH_ENT].i + e * esize;
+	ent[0].i = 1;
+	ent[1].i = key;
+	memcpy(ent + 2, val, (size_t)vsize * sizeof(Cell));
+	g_heap[hd[MH_IDX].i + slot].i = e + 1;
+	hd[MH_COUNT].i++;
+	return 1;
+}
+
 /* index_error LINE I LEN: the runtime error for an index outside a vec */
 static int index_error(i32 line, i64 i, i64 len)
 {
@@ -325,7 +458,7 @@ static int index_error(i32 line, i64 i, i64 len)
 	return vm_error(line, msg);
 }
 
-#define HEAP_FULL "out of memory for vecs (the heap is full)"
+#define HEAP_FULL "out of memory for vecs and maps (the heap is full)"
 
 /* the command line after the file name, copied into the text arena once */
 #define MAX_ARGS 4096
@@ -719,6 +852,60 @@ static int vm_run(i32 pc)
 				memcpy(s + sp, g_heap + hd[VH_DATA].i + hd[VH_LEN].i * in->a, (size_t)in->a * sizeof(Cell));
 			}
 			sp += in->a;
+			break;
+		}
+		case OP_MAP_NEW: { /* a: entries on the stack, b: value cells * 2 + (keys are strings) */
+			i64 vsize = in->b >> 1, k, m;
+			sp -= in->a * (1 + vsize);
+			if ((m = map_new(vsize, in->b & 1)) < 0) return vm_error(in->line, HEAP_FULL);
+			for (k = 0; k < in->a; k++) {
+				const Cell *e = s + sp + k * (1 + vsize);
+				if (!map_insert(m, e[0].i, e + 1)) return vm_error(in->line, HEAP_FULL);
+			}
+			s[sp++].i = m;
+			break;
+		}
+		case OP_MAP_INSERT:
+			sp -= in->a + 2;
+			if (!map_insert(s[sp].i, s[sp + 1].i, s + sp + 2)) return vm_error(in->line, HEAP_FULL);
+			break;
+		case OP_MAP_LOOKUP:
+		case OP_MAP_REMOVE: { /* the map and the key become the option: tag, value */
+			i64 m = s[sp - 2].i, slot, e = map_find(m, s[sp - 1].i, &slot);
+			sp -= 2;
+			s[sp].i = e >= 0;
+			if (e >= 0) {
+				Cell *ent = g_heap + g_heap[m + MH_ENT].i + e * (2 + in->a);
+				memcpy(s + sp + 1, ent + 2, (size_t)in->a * sizeof(Cell));
+				if (in->op == OP_MAP_REMOVE) {
+					ent[0].i = 0;
+					g_heap[m + MH_COUNT].i--;
+				}
+			} else {
+				memset(s + sp + 1, 0, (size_t)in->a * sizeof(Cell));
+			}
+			sp += 1 + in->a;
+			break;
+		}
+		case OP_MAP_HAS: {
+			i64 slot;
+			sp--;
+			s[sp - 1].i = map_find(s[sp - 1].i, s[sp].i, &slot) >= 0;
+			break;
+		}
+		case OP_MAP_LEN: s[sp - 1].i = g_heap[s[sp - 1].i + MH_COUNT].i; break;
+		case OP_MAP_KEYS:
+		case OP_MAP_VALUES: {
+			i64 m = s[sp - 1].i, esize = 2 + g_heap[m + MH_VSIZE].i, size = in->op == OP_MAP_KEYS ? 1 : g_heap[m + MH_VSIZE].i;
+			i64 e, k = 0, v = vec_new(g_heap[m + MH_COUNT].i, size, (const Cell *)0);
+			Cell *data;
+			if (v < 0) return vm_error(in->line, HEAP_FULL);
+			data = g_heap + g_heap[v + VH_DATA].i;
+			for (e = 0; e < g_heap[m + MH_USED].i; e++) {
+				const Cell *ent = g_heap + g_heap[m + MH_ENT].i + e * esize;
+				if (ent[0].i) memcpy(data + k++ * size, in->op == OP_MAP_KEYS ? ent + 1 : ent + 2, (size_t)size * sizeof(Cell));
+			}
+			s[sp - 1].i = v;
 			break;
 		}
 		case OP_SHOW:

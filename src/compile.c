@@ -13,12 +13,13 @@
 
 typedef u16 Ty;
 enum { T_ERR, T_UNIT, T_INT, T_FLOAT, T_BOOL, T_STR, T_NONE, T_ANY, T_USER };
-typedef enum { K_PRIM, K_STRUCT, K_ENUM, K_OPTION, K_VEC } TyKind;
+typedef enum { K_PRIM, K_STRUCT, K_ENUM, K_OPTION, K_VEC, K_MAP } TyKind;
 
 typedef struct {
 	const char *name;
 	u8 kind;
-	Ty elem;      /* option and vec: the type inside */
+	Ty elem;      /* option and vec: the type inside; map: the value type */
+	Ty key;       /* map: the key type */
 	i32 cells;    /* VM cells of one value */
 	i32 first, n; /* struct: its fields g_fields[first...]; enum: its variants g_variants[first...] */
 	i32 line;     /* where it was declared; 0 for the built-in and the option types */
@@ -36,14 +37,14 @@ typedef struct {
 #define MAX_FIELDS 16384
 #define MAX_VARIANTS 16384
 static TyInfo g_tys[MAX_TYS] = {
-	{ "<error>", K_PRIM, 0, 0, 0, 0, 0, 0, 0 },
-	{ "unit", K_PRIM, 0, 0, 0, 0, 0, 0, 0 },
-	{ "int", K_PRIM, 0, 1, 0, 0, 0, 0, 0 },
-	{ "float", K_PRIM, 0, 1, 0, 0, 0, 0, 0 },
-	{ "bool", K_PRIM, 0, 1, 0, 0, 0, 0, 0 },
-	{ "string", K_PRIM, 0, 1, 0, 0, 0, 0, 0 },
-	{ "<none>", K_PRIM, 0, 0, 0, 0, 0, 0, 0 },
-	{ "any value", K_PRIM, 0, 0, 0, 0, 0, 0, 0 }
+	{ "<error>", K_PRIM, 0, 0, 0, 0, 0, 0, 0, 0 },
+	{ "unit", K_PRIM, 0, 0, 0, 0, 0, 0, 0, 0 },
+	{ "int", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0 },
+	{ "float", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0 },
+	{ "bool", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0 },
+	{ "string", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0 },
+	{ "<none>", K_PRIM, 0, 0, 0, 0, 0, 0, 0, 0 },
+	{ "any value", K_PRIM, 0, 0, 0, 0, 0, 0, 0, 0 }
 };
 static i32 g_ntys = T_USER;
 static Field g_fields[MAX_FIELDS];
@@ -156,7 +157,7 @@ static u8 g_seen[MAX_VARIANTS];      /* match: the variants an arm already cover
 
 typedef enum {
 	F_START, F_CALL, F_IF, F_WHEN, F_WHILE, F_DO, F_LET, F_SET, F_AND, F_OR, F_NOT, F_ARITH, F_CMP, F_PRINT,
-	F_CONV, F_BUILTIN, F_NEW, F_SOME, F_MATCH, F_VEC, F_VECOP, F_FOR, F_DOT
+	F_CONV, F_BUILTIN, F_NEW, F_SOME, F_MATCH, F_VEC, F_VECOP, F_FOR, F_DOT, F_MAP, F_MAPOP
 } Form;
 
 typedef struct {
@@ -206,9 +207,12 @@ static int is_struct(Ty t) { return t < g_ntys && g_tys[t].kind == K_STRUCT; }
 static int is_enum(Ty t) { return t < g_ntys && g_tys[t].kind == K_ENUM; }
 static int is_option(Ty t) { return t < g_ntys && g_tys[t].kind == K_OPTION; }
 static int is_vec(Ty t) { return t < g_ntys && g_tys[t].kind == K_VEC; }
-static Ty elem_of(Ty t) { return is_vec(t) || is_option(t) ? g_tys[t].elem : (Ty)T_ERR; }
+static int is_map(Ty t) { return t < g_ntys && g_tys[t].kind == K_MAP; }
+static Ty elem_of(Ty t) { return is_vec(t) || is_option(t) || is_map(t) ? g_tys[t].elem : (Ty)T_ERR; }
+static Ty key_of(Ty t) { return is_map(t) ? g_tys[t].key : (Ty)T_ERR; }
 static int numeric(Ty t) { return t == T_INT || t == T_FLOAT; }
 static int comparable(Ty t) { return numeric(t) || t == T_BOOL || t == T_STR || is_enum(t); }
+static int key_type(Ty t) { return t == T_INT || t == T_BOOL || t == T_STR || is_enum(t); }
 static int matchable(Ty t) { return t == T_INT || t == T_BOOL || t == T_STR || is_enum(t) || is_option(t); }
 
 static o depth_add(i32 d)
@@ -243,6 +247,10 @@ static i32 effect(Op op, i32 a, i32 b)
 	case OP_VEC_GET: return a - 2;
 	case OP_VEC_PUT: return -(2 + a);
 	case OP_VEC_POP: return a;
+	case OP_MAP_NEW: return 1 - a * (1 + (b >> 1));
+	case OP_MAP_INSERT: return -(2 + a);
+	case OP_MAP_LOOKUP: case OP_MAP_REMOVE: return a - 1;
+	case OP_MAP_HAS: return -1;
 	case OP_SHOW: return -cells((Ty)a);
 	default: return builtin_effect(op);
 	}
@@ -309,7 +317,7 @@ static const char *const g_reserved[] = {
 	"if", "when", "while", "do", "let", "set", "and", "or", "not", "+", "-", "*", "/", "%", "<", "<=", ">", ">=", "=",
 	"!=", "print", "println", "int", "float", "bool", "string", "unit", "len", "sh", "defn", "def", "true", "false", ":",
 	"struct", "enum", "match", "some", "none", "option", "_", "format", "eprint", "eprintln", "vec", "push", "get", "put",
-	"pop", "for", "use", "."
+	"pop", "for", "use", ".", "map", "insert", "lookup", "has", "remove", "keys", "values"
 };
 
 static int is_builtin(const char *s);
@@ -328,7 +336,7 @@ static Ty find_named_type(const char *s)
 {
 	i32 i;
 	for (i = T_UNIT; i < g_ntys; i++) {
-		if (i == T_NONE || i == T_ANY || g_tys[i].kind == K_OPTION || g_tys[i].kind == K_VEC) continue;
+		if (i == T_NONE || i == T_ANY || g_tys[i].kind == K_OPTION || g_tys[i].kind == K_VEC || g_tys[i].kind == K_MAP) continue;
 		if (!strcmp(g_tys[i].name, s)) return (Ty)i;
 	}
 	return T_NONE;
@@ -356,6 +364,27 @@ static Ty intern_wrap(u8 kind, Ty elem)
 }
 
 static Ty intern_option(Ty elem) { return intern_wrap(K_OPTION, elem); }
+
+/* intern_map KEY VALUE: the type (map KEY VALUE), made once; one cell, a handle to the map on the heap */
+static Ty intern_map(Ty key, Ty val)
+{
+	char name[160];
+	TyInfo *t;
+	i32 i;
+	for (i = T_USER; i < g_ntys; i++) {
+		if (g_tys[i].kind == K_MAP && g_tys[i].key == key && g_tys[i].elem == val) return (Ty)i;
+	}
+	if (g_ntys == MAX_TYS) die("too many types");
+	sprintf(name, "(map %.70s %.70s)", tn(key), tn(val));
+	t = &g_tys[g_ntys];
+	memset(t, 0, sizeof(*t));
+	t->name = arena_strndup(&g_perm, name, strlen(name));
+	t->kind = K_MAP;
+	t->key = key;
+	t->elem = val;
+	t->cells = 1;
+	return (Ty)g_ntys++;
+}
 
 /* Builtins with a fixed signature. Argument and result types are letters: i int, f float, b bool, s string, u unit,
  * I (option int), F (option float), O (option string), S (vec string), x a string or a vec (len). params names the
@@ -445,40 +474,90 @@ static const char *a_type(Ty t)
 	return buf;
 }
 
-/* parse_type NODE: the type a node names - int, float, bool, string, unit, a struct, an enum, (option type) or
- * (vec type) - or an error and ERR */
-static Ty parse_type(i32 n)
+/* parse_type NODE: the type a node names - int, float, bool, string, unit, a struct, an enum, (option type),
+ * (vec type) or (map key value) - or an error and ERR. Types nest, so it keeps its own stack */
+static Ty parse_type(i32 root)
 {
-	u8 wraps[MAX_DEPTH];
-	i32 depth = 0, k;
-	Ty t;
-	while (n >= 0 && g_nodes[n].kind == N_LIST && (head_is(n, "option") || head_is(n, "vec")) && depth < MAX_DEPTH) {
-		i32 inner = next_of(first_of(n));
-		if (inner < 0 || next_of(inner) >= 0) {
-			err_node(n, head_is(n, "vec") ? "a vec type is (vec type), like (vec int)" : "an option type is (option type), like (option int)");
-			return T_ERR;
+	struct {
+		i32 node;
+		u8 phase;
+	} st[MAX_DEPTH + 1];
+	Ty res[MAX_DEPTH + 2]; /* finished types; a map's key waits here while its value is read */
+	i32 ns = 1, nr = 0;
+	st[0].node = root;
+	st[0].phase = 0;
+	while (ns > 0) {
+		i32 n = st[ns - 1].node, a1, a2;
+		Ty t;
+		if (n < 0) return T_ERR;
+		if (g_nodes[n].kind != N_LIST) {
+			if (!is_sym(n)) {
+				err_node(n, "expected a type here: int, float, bool, string, unit, a struct, an enum, (option type), (vec type) or (map key value)");
+				return T_ERR;
+			}
+			t = find_named_type(g_nodes[n].text);
+			if (t == T_NONE) {
+				err_node(n, "unknown type " NAME_FMT, g_nodes[n].text);
+				return T_ERR;
+			}
+			res[nr++] = t;
+			ns--;
+			continue;
 		}
-		wraps[depth++] = (u8)(head_is(n, "vec") ? K_VEC : K_OPTION);
-		n = inner;
-	}
-	if (n < 0) return T_ERR;
-	if (!is_sym(n)) {
-		err_node(n, "expected a type here: int, float, bool, string, unit, a struct, an enum, (option type) or (vec type)");
+		a1 = next_of(first_of(n));
+		a2 = next_of(a1);
+		if (head_is(n, "option") || head_is(n, "vec")) {
+			int vec = head_is(n, "vec");
+			if (a1 < 0 || a2 >= 0) {
+				err_node(n, vec ? "a vec type is (vec type), like (vec int)" : "an option type is (option type), like (option int)");
+				return T_ERR;
+			}
+			if (st[ns - 1].phase == 0) {
+				st[ns - 1].phase = 1;
+				st[ns].node = a1;
+				st[ns++].phase = 0;
+				continue;
+			}
+			t = res[--nr];
+			if (t == T_UNIT) {
+				err_node(a1, vec ? "(vec unit) holds nothing; count with an int" : "(option unit) holds nothing; use bool");
+				return T_ERR;
+			}
+			res[nr++] = intern_wrap((u8)(vec ? K_VEC : K_OPTION), t);
+			ns--;
+			continue;
+		}
+		if (head_is(n, "map")) {
+			Ty k;
+			if (a1 < 0 || a2 < 0 || next_of(a2) >= 0) {
+				err_node(n, "a map type is (map key value), like (map string int)");
+				return T_ERR;
+			}
+			if (st[ns - 1].phase < 2) {
+				st[ns].node = st[ns - 1].phase ? a2 : a1;
+				st[ns].phase = 0;
+				st[ns - 1].phase++;
+				ns++;
+				continue;
+			}
+			t = res[--nr];
+			k = res[--nr];
+			if (!key_type(k)) {
+				err_node(a1, "a map's key is an int, a bool, a string or an enum value, not %s", tn(k));
+				return T_ERR;
+			}
+			if (t == T_UNIT) {
+				err_node(a2, "a map of unit holds nothing; use (map %s bool)", tn(k));
+				return T_ERR;
+			}
+			res[nr++] = intern_map(k, t);
+			ns--;
+			continue;
+		}
+		err_node(n, "expected a type here: int, float, bool, string, unit, a struct, an enum, (option type), (vec type) or (map key value)");
 		return T_ERR;
 	}
-	t = find_named_type(g_nodes[n].text);
-	if (t == T_NONE) {
-		err_node(n, "unknown type " NAME_FMT, g_nodes[n].text);
-		return T_ERR;
-	}
-	for (k = depth - 1; k >= 0; k--) {
-		if (t == T_UNIT) {
-			err_node(n, wraps[k] == K_VEC ? "(vec unit) holds nothing; count with an int" : "(option unit) holds nothing; use bool");
-			return T_ERR;
-		}
-		t = intern_wrap(wraps[k], t);
-	}
-	return t;
+	return res[0];
 }
 
 static i32 add_int(i64 v)
@@ -686,6 +765,13 @@ static const char *const g_print_names[] = { "print", "println", "format", "epri
 static const Op g_print_ops[] = { OP_PRINT, OP_PRINTLN, OP_FORMAT, OP_PRINT, OP_PRINTLN };
 
 /* the builtins on a vec */
+/* the builtins on a map */
+enum { MO_INSERT, MO_LOOKUP, MO_HAS, MO_REMOVE, MO_KEYS, MO_VALUES };
+static const char *const g_mapop_names[] = { "insert", "lookup", "has", "remove", "keys", "values" };
+static const char *const g_mapop_usage[] = { "(insert m key value)", "(lookup m key)", "(has m key)", "(remove m key)", "(keys m)", "(values m)" };
+static const i32 g_mapop_args[] = { 3, 2, 2, 2, 1, 1 };
+static const Op g_mapop_ops[] = { OP_MAP_INSERT, OP_MAP_LOOKUP, OP_MAP_HAS, OP_MAP_REMOVE, OP_MAP_KEYS, OP_MAP_VALUES };
+
 enum { VO_PUSH, VO_GET, VO_PUT, VO_POP };
 static const char *const g_vecop_names[] = { "push", "get", "put", "pop" };
 static const char *const g_vecop_usage[] = { "(push v x)", "(get v i)", "(put v i x)", "(pop v)" };
@@ -855,6 +941,7 @@ static o start_list(Frame *f)
 	else if (!strcmp(s, "int") || !strcmp(s, "float")) { f->form = F_CONV; f->op = (u8)(s[0] == 'f' ? T_FLOAT : T_INT); }
 	else if (!strcmp(s, "some")) f->form = F_SOME;
 	else if (!strcmp(s, "vec")) f->form = F_VEC;
+	else if (!strcmp(s, "map")) f->form = F_MAP;
 	else if (!strcmp(s, "for")) f->form = F_FOR;
 	else if (!strcmp(s, "match")) f->form = F_MATCH;
 	else if (!strcmp(s, "defn") || !strcmp(s, "def") || !strcmp(s, "struct") || !strcmp(s, "enum") || !strcmp(s, "use")) {
@@ -877,6 +964,9 @@ static o start_list(Frame *f)
 		}
 		for (k = 0; k < GAEL_COUNT(g_vecop_names); k++) {
 			if (!strcmp(s, g_vecop_names[k])) { f->form = F_VECOP; f->op = (u8)k; break; }
+		}
+		for (k = 0; k < GAEL_COUNT(g_mapop_names); k++) {
+			if (!strcmp(s, g_mapop_names[k])) { f->form = F_MAPOP; f->op = (u8)k; break; }
 		}
 		if (f->form != F_START) return;
 		if (is_struct(t = find_named_type(s))) {
@@ -1507,7 +1597,8 @@ static o run_work(i32 base)
 			t2 = code_type(bi->args[f->k]);
 			if (bi->args[f->k] == 'x') {
 				if (is_vec(t)) f->c = 1; /* len of a vec */
-				else if (t != T_STR && t != T_ERR) err_node(f->cur, "len takes a string or a vec, not %s", tn(t));
+				else if (is_map(t)) f->c = 2;
+				else if (t != T_STR && t != T_ERR) err_node(f->cur, "len takes a string, a vec or a map, not %s", tn(t));
 			} else if (t != T_ERR && t != t2) {
 				if (nargs == 1) err_node(f->cur, "%s takes %s, not %s", bi->name, a_type(t2), tn(t));
 				else err_node(f->cur, "%s: %s is %s, it must be %s", bi->name, param_name(bi, f->k, pname), tn(t), tn(t2));
@@ -1515,7 +1606,7 @@ static o run_work(i32 base)
 			f->k++;
 			f->cur = next_of(f->cur);
 			if (f->cur >= 0) { push_child(f->cur, code_type(bi->args[f->k])); break; }
-			emit(f->c ? OP_VEC_LEN : bi->op, 0, 0, line);
+			emit(f->c == 1 ? OP_VEC_LEN : f->c == 2 ? OP_MAP_LEN : bi->op, 0, 0, line);
 			finish(code_type(bi->ret));
 			break;
 		}
@@ -1701,7 +1792,8 @@ static o run_work(i32 base)
 				f->rt = is_vec(f->want) ? g_tys[f->want].elem : (Ty)T_NONE; /* the element type, once known */
 				if (f->cur < 0) {
 					if (f->rt == T_NONE) {
-						err_node(f->node, "an empty vec needs to know what it holds; give it a type, like (let ((v : (vec int) (vec))) ...)");
+						if (f->want != T_ERR)
+							err_node(f->node, "an empty vec needs to know what it holds; give it a type, like (let ((v : (vec int) (vec))) ...)");
 						finish(T_ERR);
 						break;
 					}
@@ -1810,8 +1902,12 @@ static o run_work(i32 base)
 					push_child(next_of(next_of(name)), T_INT);
 					break;
 				}
+				if (is_map(t)) { /* over a map's keys, in the order they went in */
+					emit(OP_MAP_KEYS, 0, 0, line);
+					t = intern_wrap(K_VEC, key_of(t));
+				}
 				if (t != T_ERR && !is_vec(t)) {
-					err_node(next_of(name), "for: (x v) goes over a vec, this is %s; a range is (i from to)", tn(t));
+					err_node(next_of(name), "for: (x v) goes over a vec or the keys of a map, this is %s; a range is (i from to)", tn(t));
 					t = T_ERR;
 				}
 				f->rt = elem_of(t);
@@ -1860,6 +1956,116 @@ static o run_work(i32 base)
 				break;
 			}
 			break;
+
+		case F_MAP: /* (map (k v) ...), or (map) when the expected type says which */
+			if (f->phase == 0) {
+				i32 p;
+				f->rt = is_map(f->want) ? key_of(f->want) : (Ty)T_NONE;
+				f->res = is_map(f->want) ? elem_of(f->want) : (Ty)T_NONE;
+				for (p = f->cur; p >= 0; p = next_of(p)) {
+					if (g_nodes[p].kind != N_LIST || count_from(first_of(p)) != 2) {
+						err_node(p, "a map entry is (key value), like (map (\"a\" 1) (\"b\" 2))");
+						finish(T_ERR);
+						break;
+					}
+				}
+				if (p >= 0) break;
+				if (f->cur < 0) {
+					if (f->rt == T_NONE) {
+						if (f->want != T_ERR)
+							err_node(f->node, "an empty map needs to know what it holds; give it a type, like (let ((m : (map string int) (map))) ...)");
+						finish(T_ERR);
+						break;
+					}
+					emit(OP_MAP_NEW, 0, (cells(f->res) << 1) | (f->rt == T_STR), line);
+					finish(f->want);
+					break;
+				}
+				f->k = 0;
+				f->phase = 1;
+				push_child(first_of(f->cur), f->rt);
+				break;
+			}
+			t = pop_type();
+			if (f->phase == 1) { /* a key */
+				if (f->rt == T_NONE) {
+					if (t != T_ERR && !key_type(t)) err_node(first_of(f->cur), "a map's key is an int, a bool, a string or an enum value, not %s", tn(t));
+					f->rt = key_type(t) ? t : (Ty)T_ERR;
+				} else if (t != T_ERR && f->rt != T_ERR && t != f->rt) {
+					err_node(first_of(f->cur), "map: key %ld is %s, the keys are %s", (long)(f->k + 1), tn(t), tn(f->rt));
+				}
+				f->phase = 2;
+				push_child(next_of(first_of(f->cur)), f->res == T_ERR ? (Ty)T_NONE : f->res);
+				break;
+			}
+			if (t == T_UNIT) { /* a value */
+				err_node(next_of(first_of(f->cur)), "a map cannot hold unit");
+				t = T_ERR;
+			}
+			if (f->res == T_NONE) f->res = t;
+			else if (t != T_ERR && f->res != T_ERR && t != f->res)
+				err_node(next_of(first_of(f->cur)), "map: value %ld is %s, the values are %s", (long)(f->k + 1), tn(t), tn(f->res));
+			f->k++;
+			f->cur = next_of(f->cur);
+			if (f->cur >= 0) {
+				f->phase = 1;
+				push_child(first_of(f->cur), f->rt == T_ERR ? (Ty)T_NONE : f->rt);
+				break;
+			}
+			emit(OP_MAP_NEW, f->k, (cells(f->res) << 1) | (f->rt == T_STR), line);
+			finish(f->rt == T_ERR || f->res == T_ERR ? (Ty)T_ERR : intern_map(f->rt, f->res));
+			break;
+
+		case F_MAPOP: { /* (insert m k v) (lookup m k) (has m k) (remove m k) (keys m) (values m) */
+			const char *what = g_mapop_names[f->op];
+			Ty key = key_of(f->rt), val = elem_of(f->rt);
+			if (f->phase == 0) {
+				if (f->k != g_mapop_args[f->op]) {
+					err_node(f->node, "%s takes %ld value%s: %s", what, (long)g_mapop_args[f->op], g_mapop_args[f->op] == 1 ? "" : "s",
+					         g_mapop_usage[f->op]);
+					finish(T_ERR);
+					break;
+				}
+				f->phase = 1;
+				push_child(f->cur, T_NONE);
+				break;
+			}
+			t = pop_type();
+			if (f->phase == 1) { /* the map */
+				if (t != T_ERR && !is_map(t)) {
+					err_node(f->cur, "%s: the first value must be a map, this is %s", what, tn(t));
+					t = T_ERR;
+				}
+				f->rt = t;
+				key = key_of(t);
+				val = elem_of(t);
+				if (f->op == MO_KEYS || f->op == MO_VALUES) {
+					emit(g_mapop_ops[f->op], cells(val), 0, line);
+					finish(t == T_ERR ? (Ty)T_ERR : intern_wrap(K_VEC, f->op == MO_KEYS ? key : val));
+					break;
+				}
+				f->phase = 2;
+				f->cur = next_of(f->cur);
+				push_child(f->cur, t == T_ERR ? (Ty)T_NONE : key);
+				break;
+			}
+			if (f->phase == 2) { /* the key */
+				if (t != T_ERR && f->rt != T_ERR && t != key) err_node(f->cur, "%s: the keys are %s, this one is %s", what, tn(key), tn(t));
+				if (f->op != MO_INSERT) {
+					emit(g_mapop_ops[f->op], cells(val), 0, line);
+					finish(f->rt == T_ERR ? (Ty)T_ERR : f->op == MO_HAS ? (Ty)T_BOOL : intern_option(val));
+					break;
+				}
+				f->phase = 3;
+				f->cur = next_of(f->cur);
+				push_child(f->cur, f->rt == T_ERR ? (Ty)T_NONE : val);
+				break;
+			}
+			if (t != T_ERR && f->rt != T_ERR && t != val) err_node(f->cur, "insert: the values are %s, this one is %s", tn(val), tn(t));
+			emit(OP_MAP_INSERT, cells(val), 0, line);
+			finish(T_UNIT);
+			break;
+		}
 
 		case F_DOT: { /* (. expr pos.x): a field of the value of any expression; (f x).pos.x reads as this */
 			i32 path = next_of(f->cur), off = 0, slot;
