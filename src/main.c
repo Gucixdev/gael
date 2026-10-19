@@ -26,6 +26,9 @@ static const char g_usage[] =
 	"       gael -d FILE           compile and print the bytecode\n"
 	"       gael -e CODE ARGS...   compile and run CODE\n"
 	"       gael -h                this help\n";
+static const char g_usage_env[] =
+	"GAEL_CHECK=1 checks memory: freed blocks are filled with a pattern, and a program that ran to its end reports\n"
+	"the strings, vecs and maps it never freed\n";
 
 enum { RUN, CHECK, DIS };
 
@@ -227,6 +230,25 @@ static long balance(const char *s)
 	return in_str ? 1 : depth;
 }
 
+/* leaks: with GAEL_CHECK=1, after a program ran to its end its globals are freed too, and then nothing may be left on
+ * the heap. What is left was kept alive by a cycle (a vec or map that holds itself) or lost by a counting bug */
+static int leaks(void)
+{
+	static const char *const kinds[] = { "?", "string", "vec", "map" };
+	int k, any = 0;
+	if (!g_check || !leak_check()) return 0;
+	fflush(stdout);
+	fputs("gael: GAEL_CHECK: never freed:", stderr);
+	for (k = 1; k < 4; k++) {
+		if (!g_objects[k]) continue;
+		fprintf(stderr, "%s %ld %s%s", any ? "," : "", (long)g_objects[k], kinds[k], g_objects[k] == 1 ? "" : "s");
+		any = 1;
+	}
+	if (!any) fprintf(stderr, " %ld cells", (long)g_live);
+	fputc('\n', stderr);
+	return 1;
+}
+
 static char g_line_buf[1 << 16];
 
 static int repl(void)
@@ -262,22 +284,27 @@ static int repl(void)
 int main(int argc, char **argv)
 {
 	int st;
-	text_init();
+	compile_init();
+	vm_init(getenv("GAEL_CHECK") && !strcmp(getenv("GAEL_CHECK"), "1"));
 	if (argc == 1) return repl();
 	if (!strcmp(argv[1], "-h") || !strcmp(argv[1], "--help")) {
 		fputs(g_usage, stdout);
+		fputs(g_usage_env, stdout);
 		return 0;
 	}
 	if (argv[1][0] != '-') {
 		args_init(argc - 2, argv + 2);
 		st = load(argv[1], 0, 0, 0, RUN);
+		if (!st) st = leaks();
 	} else if (argc == 3 && (!strcmp(argv[1], "-c") || !strcmp(argv[1], "-d"))) {
 		st = load(argv[2], 0, 0, 0, argv[1][1] == 'c' ? CHECK : DIS);
 	} else if (argc >= 3 && !strcmp(argv[1], "-e")) {
 		args_init(argc - 3, argv + 3);
 		st = load("<-e>", argv[2], strlen(argv[2]), 0, RUN);
+		if (!st) st = leaks();
 	} else {
 		fputs(g_usage, stderr);
+		fputs(g_usage_env, stderr);
 		return 2;
 	}
 	fflush(stdout);

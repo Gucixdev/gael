@@ -1,3 +1,4 @@
-; vecs live on a heap of 4M cells that is never freed; filling it is a runtime error, not a crash
+; vecs, maps and the strings made at run time live on a heap of 4M cells (32 MiB); a program that holds more than
+; that gets a runtime error, not a crash
 (let ((v : (vec int) (vec)) (i 0))
   (while true (push v i) (set i (+ i 1))))

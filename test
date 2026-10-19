@@ -5,9 +5,12 @@
 #   tests/errors/NAME.gael  every line of NAME.err must appear on stderr, exit 1; stdout must equal NAME.out if there is one
 #   tests/repl.in           the REPL's stdout must equal tests/repl.out, every line of tests/repl.err on stderr
 #   README.md               every "$ ./gael ARGS" example prints exactly the lines shown under it
+# Every run has GAEL_CHECK=1: freed memory is overwritten, so a stale read shows, and a program that ends normally
+# must have freed every string, vec and map it made.
 # Exit 0 when everything passed. Build outputs go to a temp folder; the checkout is not touched.
 set -u
 cd "$(dirname "${BASH_SOURCE[0]}")" || exit 1
+export GAEL_CHECK=1
 
 out=$(mktemp -d "${TMPDIR:-/tmp}/gael-test.XXXXXX") || exit 1
 trap 'rm -rf -- "$out"' EXIT

@@ -211,11 +211,18 @@ convert on purpose. A comment starts with `;`.
 
 All the files of a program share one set of names. They are compiled in the order their `use`s need, and nothing
 runs until every one of them compiled without an error; then their top levels run in the same order (in the REPL a
-used file runs when it is loaded). A struct is a value and is copied; a vec or a map is a handle, so copying one (also inside a struct) shares its
-contents. A
-struct can hold a vec of itself, which makes a tree. A function's last form is its value. An integer literal must fit in 64 bits, and a float needs digits on both sides
-of its point (`4.2`, `4.2e3`; `1e3` and `.5` are errors). A runtime error stops the program and names the line it
-happened on:
+used file runs when it is loaded). A struct is a value and is copied; a vec or a map is a handle, so copying one (also
+inside a struct) shares its contents. A struct can hold a vec of itself, which makes a tree, and options of itself in
+that vec. A function's last form is its value. An integer literal must fit in 64 bits, and a float needs digits on
+both sides of its point (`4.2`, `4.2e3`; `1e3` and `.5` are errors).
+
+Memory needs no care in the program: a string made at run time, a vec and a map count their owners, and when the last
+one lets go it is freed on the spot, together with what it held. The compiler knows every type, so it puts the
+counting in; a read that only looks at a variable (`len`, `get`, `=`, `lookup`) borrows it and counts nothing. A
+cycle, like a node kept in its own list of children, is never freed. With `GAEL_CHECK=1` a program that runs to its
+end reports what it never freed, and freed memory is overwritten, so a read of it shows.
+
+A runtime error stops the program and names the line it happened on:
 
 ```
 $ ./gael tests/errors/div-zero.gael
@@ -236,8 +243,12 @@ tests/errors/div-zero.gael:1: runtime error: division by zero
   operand counts come from that list.
 - The VM's cells carry no type tag: the compiler has already proved the types, so `ADD_I` reads two ints. A value
   takes as many cells as its type says: one for a number, a bool, a string, an enum value or a vec, the sum of its
-  fields for a struct, and one more than the value inside for an option. A string's cell holds its offset and length
-  in the text arena, so `substr`, `split` and `trim` return pieces of the same text without copying it.
+  fields for a struct, and one more than the value inside for an option. A string is one cell too: the program's own
+  strings point into the text arena and are not counted, a string made at run time is an object on the heap.
+  `substr`, `split` and `trim` point into the program's own text and copy out of a string made at run time.
+- The heap is one static array of 4M cells with a buddy allocator: blocks of 2^k cells, split to fit and merged with
+  their free neighbour when freed. A growing vec doubles in place when the block after it is free. Freeing is a loop
+  over a chain of objects whose count reached 0, not a recursion.
 - A vec of structs is stored as columns, one per field (SoA), so going over one field of every element reads one
   run of memory; the program sees ordinary values, `get` gathers an element and `put` spreads it out again.
 - The compiler counts how deep each function's operand stack can get, and the VM checks that the whole frame fits
@@ -245,16 +256,17 @@ tests/errors/div-zero.gael:1: runtime error: division by zero
 
 ## Status
 
-Version 0.3, tested on Linux x86-64 with gcc 13.3 and clang 18.1. `./test` passes 63 checks per build (16 examples,
-41 compile and runtime error cases, one REPL session, five README examples) with gcc, clang and gcc with both sanitizers. GitHub Actions
-runs shellcheck on the scripts and `./test` on every push (`.github/workflows/test.yml`, ubuntu-24.04).
+Version 0.3, tested on Linux x86-64 with gcc 13.3 and clang 18.1. `./test` passes 68 checks per build (19 examples,
+43 compile and runtime error cases, one REPL session, five README examples) with gcc, clang and gcc with both
+sanitizers, every run with `GAEL_CHECK=1`. GitHub Actions runs shellcheck on the scripts and `./test` on every push
+(`.github/workflows/test.yml`, ubuntu-24.04).
 
-Not in 0.3: gems
-(packages with versions, see the spec), calling C, and the editor. The fixed limits are 8 parameters per function, 4096 functions, 4096 globals, 4096
-types and 2^18 instructions; per unit (a file, or one REPL form) 2^18 syntax nodes and an 8 MiB arena for the source
-and its names; at run time a stack of 65536 cells and at most 4096 nested calls. Every string, the program's and the
-ones `format` and `sh` make, lives in one 32 MiB arena, and every vec and map on a heap of 4M cells (32 MiB); neither is
-freed yet, and filling one is a runtime error.
+Not in 0.3: gems (packages with versions, see the spec), arenas and pools, calling C, and the editor. The fixed limits
+are 8 parameters per function, 4096 functions, 4096 globals, 4096 types and 2^18 instructions; per unit (a file, or
+one REPL form) 2^18 syntax nodes and an 8 MiB arena for the source and its names; at run time a stack of 65536 cells
+and at most 4096 nested calls. The program's own strings live in a 32 MiB text arena, which also holds a string while
+it is being built (a format, a command's output, a file); strings made at run time, vecs and maps live on a heap of 4M
+cells (32 MiB). Filling either is a runtime error.
 
 ## License
 

@@ -2,7 +2,11 @@
  * from this list (an x-macro), so they cannot drift apart.
  *
  * X(NAME, operands): operand a is a constant, string, slot, function, type, format or jump target; b is a count.
- * Stack effects are in the comments; i = int, f = float, b = bool, s = string, x... = a value of several cells. */
+ * Stack effects are in the comments; i = int, f = float, b = bool, s = string, x... = a value of several cells.
+ * An instruction consumes the values it takes: the strings, vecs and maps in them lose an owner, unless the
+ * instruction keeps them (a vec keeps the element pushed into it). A value it pushes is owned by whoever takes it.
+ * Where an operand says "borrowed", the value is a variable's that the instruction only reads: it was pushed without
+ * RETAIN and is not released. */
 
 #ifndef GAEL_OPS_H_
 #define GAEL_OPS_H_
@@ -25,18 +29,22 @@
 	X(STOREN_L, 2) /* x... --      a: first slot, b: cells */ \
 	X(LOADN_G, 2)  /* -- x...      a: first global cell, b: cells */ \
 	X(STOREN_G, 2) /* x... --      a: first global cell, b: cells */ \
+	X(RETAIN, 1)   /* x -- x       a: the type; the objects in the value on top get one owner more (it is a copy) */ \
+	X(DROP, 1)     /* x --         a: the type; throw the value away, its objects lose an owner */ \
+	X(RELEASE_L, 2) /* --          a: first slot, b: the type; the value kept there dies */ \
+	X(RELEASE_G, 2) /* --          a: first global cell, b: the type */ \
 	X(ADD_I, 0) X(SUB_I, 0) X(MUL_I, 0) X(DIV_I, 0) X(MOD_I, 0) X(NEG_I, 0) \
 	X(ADD_F, 0) X(SUB_F, 0) X(MUL_F, 0) X(DIV_F, 0) X(NEG_F, 0) \
 	X(LT_I, 0) X(LE_I, 0) X(GT_I, 0) X(GE_I, 0) X(EQ_I, 0) X(NE_I, 0) \
 	X(LT_F, 0) X(LE_F, 0) X(GT_F, 0) X(GE_F, 0) X(EQ_F, 0) X(NE_F, 0) \
-	X(EQ_S, 0) X(NE_S, 0) \
+	X(EQ_S, 1) X(NE_S, 1) /* a: bit 0 the first string is borrowed, bit 1 the second */ \
 	X(NOT, 0)      /* b -- b */ \
 	X(JMP, 1)      /* --           a: target */ \
 	X(JF, 1)       /* b --         jump to a when false */ \
 	X(JT, 1)       /* b --         jump to a when true */ \
 	X(I2F, 0)      /* i -- f */ \
 	X(F2I, 0)      /* f -- i       truncates toward zero */ \
-	X(LEN_S, 0)    /* s -- i       length in bytes */ \
+	X(LEN_S, 1)    /* s -- i       length in bytes; a: borrowed */ \
 	X(CALL, 1)     /* args -- r    a: function index */ \
 	X(RET_V, 0)    /* r --         return with a one-cell value */ \
 	X(RET_N, 1)    /* r... --      return with a value of a cells */ \
@@ -48,13 +56,13 @@
 	X(SYSTEM, 0)   /* s -- i       run a shell command, its exit status */ \
 	X(PARSE_I, 0)  /* s -- o       (option int): the string as an int, or none */ \
 	X(PARSE_F, 0)  /* s -- o       (option float) */ \
-	X(SUBSTR, 0)   /* s i i -- s   the bytes from the first index up to the second, the same text (no copy) */ \
-	X(BYTE, 0)     /* s i -- i     one byte, 0 to 255 */ \
+	X(SUBSTR, 0)   /* s i i -- s   the bytes from the first index up to the second (a copy; of the program's text, a view) */ \
+	X(BYTE, 1)     /* s i -- i     one byte, 0 to 255; a: the string is borrowed */ \
 	X(FIND, 0)     /* s s -- o     (option int): where the second string first starts in the first */ \
-	X(SPLIT, 0)    /* s s -- v     (vec string): the pieces between the separators (no copies) */ \
+	X(SPLIT, 0)    /* s s -- v     (vec string): the pieces between the separators */ \
 	X(JOIN, 0)     /* v s -- s     the strings of a vec with the separator between them, a new string */ \
 	X(CHAR, 0)     /* i -- s       the one-byte string of 0 to 255 */ \
-	X(TRIM, 0)     /* s -- s       without the spaces, tabs and newlines around it (no copy) */ \
+	X(TRIM, 0)     /* s -- s       without the spaces, tabs and newlines around it */ \
 	X(READ_FILE, 0)  /* s -- o     (option string): the whole file, or none when it cannot be read */ \
 	X(WRITE_FILE, 2) /* s s -- b   write a string to a file, false on failure; a: 1 appends, b: 1 when the text comes first */ \
 	X(READ_LINE, 0)  /* -- o       (option string): one line of standard input without its newline; none at the end */ \
@@ -65,20 +73,20 @@
 	X(PID, 0)      /* -- i         the process id, bash's $$ */ \
 	X(ENV, 0)      /* s -- s       an environment variable, "" when it is not set */ \
 	X(INC_L, 1)    /* --           a: local slot; adds 1 to the int in it */ \
-	X(VEC_NEW, 2)  /* x... -- v    a: elements on the stack, b: cells of one */ \
-	X(VEC_LEN, 0)  /* v -- i */ \
-	X(VEC_PUSH, 1) /* v x... --    a: cells of an element */ \
-	X(VEC_GET, 1)  /* v i -- x...  a: cells of an element; the index is checked */ \
-	X(VEC_PUT, 1)  /* v i x... --  a: cells of an element; the index is checked */ \
-	X(VEC_POP, 1)  /* v -- o...    (option element): the last one, taken off; none when empty */ \
-	X(MAP_NEW, 2)  /* k x... -- m  a: entries on the stack, b: cells of a value * 2, + 1 when the keys are strings */ \
-	X(MAP_INSERT, 1) /* m k x... -- a: cells of a value; adds the entry or replaces its value */ \
-	X(MAP_LOOKUP, 1) /* m k -- o... (option value) */ \
-	X(MAP_HAS, 0)  /* m k -- b */ \
-	X(MAP_REMOVE, 1) /* m k -- o... (option value): the value it had */ \
-	X(MAP_LEN, 0)  /* m -- i */ \
-	X(MAP_KEYS, 0) /* m -- v       (vec key) in the order they went in */ \
-	X(MAP_VALUES, 1) /* m -- v     (vec value) in the same order; a: cells of a value */ \
+	X(VEC_NEW, 2)  /* x... -- v    a: elements on the stack, b: the vec type */ \
+	X(VEC_LEN, 1)  /* v -- i       a: borrowed */ \
+	X(VEC_PUSH, 2) /* v x... --    a: cells of an element; b: the vec is borrowed */ \
+	X(VEC_GET, 2)  /* v i -- x...  a: cells of an element, b: borrowed; the index is checked; a copy, the vec keeps its own */ \
+	X(VEC_PUT, 2)  /* v i x... --  a: cells of an element, b: borrowed; the index is checked; the element it replaces dies */ \
+	X(VEC_POP, 2)  /* v -- o...    (option element): the last one, taken off; none when empty; b: borrowed */ \
+	X(MAP_NEW, 2)  /* k x... -- m  a: entries on the stack, b: the map type */ \
+	X(MAP_INSERT, 2) /* m k x... -- a: cells of a value; adds the entry or replaces its value; b: the map is borrowed */ \
+	X(MAP_LOOKUP, 2) /* m k -- o... (option value), a copy; b: bit 0 the map is borrowed, bit 1 the key */ \
+	X(MAP_HAS, 1)  /* m k -- b     a: bit 0 the map is borrowed, bit 1 the key */ \
+	X(MAP_REMOVE, 2) /* m k -- o... (option value): the value it had; b: as for MAP_LOOKUP */ \
+	X(MAP_LEN, 1)  /* m -- i       a: borrowed */ \
+	X(MAP_KEYS, 2) /* m -- v       (vec key) in the order they went in; a: that vec type, b: the map is borrowed */ \
+	X(MAP_VALUES, 2) /* m -- v     (vec value) in the same order; a: that vec type, b: the map is borrowed */ \
 	X(SHOW, 1)     /* x... --      the REPL's "=> value : type"; a: the type */
 
 #define GAEL_OP_ENUM_(name, n) OP_##name,

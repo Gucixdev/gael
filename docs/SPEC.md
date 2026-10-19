@@ -215,17 +215,42 @@ Potem: makra i moduły (0.2), manifest i resolver gemów (0.3), bufor i okno (0.
 - **Pola wyrażeń:** `(get v 0).pos.x` - czytnik zamienia `.pole` tuż po `)` na `(. wyrażenie pole)`.
 - **Mapy:** `(map K V)` z kluczem int/bool/string/enum, kolejność wstawiania zachowana, otwarte adresowanie na
   stercie; `insert`, `lookup` i `remove` (opcje), `has`, `keys`, `values`, `len`, `for` po kluczach.
-- **Pamięć - decyzja 2026-10-19: refcount.** Licznik mają stringi z czasu wykonania, `vec` i `map`; kompilator zna
-  typy, więc sam wstawia retain/release. Sterta dostaje pule bloków z listami wolnych zamiast samego przyrostu.
-  Koszty: `substr`, `split` i `trim` zaczną kopiować bajty; cykl (węzeł we własnej liście dzieci) wycieknie.
+- **Refcount (zrobiony 2026-10-19).** Licznik właścicieli mają stringi z czasu wykonania, `vec` i `map`. Kompilator
+  zna typy, więc sam wstawia liczenie: odczyt zmiennej to kopia (`RETAIN`), wyrzucona wartość i koniec zakresu
+  zmiennej oddają swoje (`DROP`, `RELEASE`), instrukcja zużywa to, co bierze. Odczyt, który tylko patrzy (`len`,
+  `get`, `=`, `lookup`, ukryty wektor pętli `for`), pożycza zmienną bez liczenia, jeśli dalsze argumenty nie mogą
+  jej zmienić (lokalnej: nie ma w nich `set` tej nazwy; globalnej: same atomy). Obiekt z licznikiem 0 jest zwalniany
+  od razu, a to, co trzymał, idzie na ten sam łańcuch, więc zwalnianie nie jest rekurencyjne. Sterta to buddy
+  allocator na jednej statycznej tablicy (bloki 2^k, łączone z wolnym sąsiadem); rosnący `vec` podwaja się w miejscu,
+  gdy blok za nim jest wolny. Stringi programu (stałe) leżą w arenie tekstu z bitem 63 i nie są liczone; `substr`,
+  `split` i `trim` kopiują ze stringów z czasu wykonania. Cykl (węzeł we własnej liście dzieci) nie zostanie
+  zwolniony: `GAEL_CHECK=1` zgłasza go na końcu programu i zamazuje zwolnioną pamięć, więc nieaktualny odczyt widać w
+  wyniku. `./test` uruchamia wszystko z `GAEL_CHECK=1`. Pomiar (gcc -O2, 5 przebiegów): pętle po wektorze 2M intów
+  ~565 ms wobec ~575 ms przed refcountem, `fib 30` ~54 ms wobec ~60 ms, 200k `format` z mapą ~45 ms wobec ~37 ms
+  (przydział i zwolnienie zamiast samego przyrostu areny). Poprawiony przy okazji błąd: `(option Self)` w polu
+  `(vec ...)` struktury miało rozmiar policzony, zanim struktura go znała.
+- **Pamięć - podział (decyzja 2026-10-19).** Refcount dla tego, co długo działa i zmienia się w trakcie: edytor, jego
+  gemy i tryby (bufory: wektor, pixel art, raster, rysunek techniczny, rzeźba 3D, tekst), serwer, backend strony.
+  Arena i pool dla wydanych gier: `pool` (stała pojemność, SoA, uchwyty z generacją) na encje, komponenty i
+  cząsteczki; `arena` na pamięć klatki, poziomu albo jednego żądania serwera, zwalnianą naraz. Ten sam kod w dwóch
+  trybach: w edytorze obiekty z areny też są liczone, a koniec areny sprawdza, że nic z niej nie zostało w użyciu
+  (ucieczka to błąd z linią); w buildzie do wydania liczenie dla aren znika (czysty bump, reset w O(1)). Sterta jako
+  jedna wielka tablica jak `ARENA_BACKEND_FLAT` z holyc (rezerwacja mmap, strony przy zapisie); uchwyty to indeksy,
+  więc snapshot, rollback i persistent arena to kopia bloku pamięci.
+- **Scheme jako wzór (decyzja 2026-10-19).** Jedna przestrzeń nazw (Lisp-1): funkcja jest wartością typu
+  `(fn (int int) int)`, nazwa lokalna przesłania wszystko. Makra higieniczne w stylu `syntax-rules` (wzorzec →
+  szablon, nazwy z szablonu wiązane w miejscu definicji makra, zmienne makra nie łapią nazw z miejsca użycia),
+  rozwijane przed sprawdzaniem typów. Wywołania ogonowe bez wzrostu stosu, named let, `cond`, `case`; domknięcia po
+  refcouncie. Bez `call/cc` i typów dynamicznych.
 - **Operatory basha:** `(|> x (f a) g)` (wartość jako pierwszy argument kroku), `(| "ls" "wc -l")`,
   `(<<< tekst "sort")`, `(> tekst plik)` i `(>> tekst plik)` (na liczbach `>` dalej porównuje), `($ "date")`, `$$`,
   `$HOME`, `&&` i `||` z komendami jak w bashu i z boolami jak `and`/`or`.
 - **SoA:** `(vec struktura)` trzyma pola jako kolumny (komórka c elementu i pod `dane + c * pojemność + i`);
   `get` zbiera element, `put` i `push` go rozkładają. Odczyt jednego pola wszystkich elementów to dziś nadal pełny
   `get`; czytanie samej kolumny przez kompilator to następny krok optymalizacji.
-- **Następne, po kolei:** refcount, typy o rozmiarze (`i8`..`u64`, `f32`, `f64`), potem makra, traits, manifest
-  gemów, bufor i okno. Numery wersji przesuwają się względem planu wyżej.
+- **Następne, po kolei:** sterta jako jedna rezerwacja mmap, `pool`, `arena` z trybem wydania, typy o rozmiarze
+  (`i8`..`u64`, `f32`, `f64`), jedna przestrzeń nazw z funkcjami jako wartościami i wywołaniami ogonowymi, makra
+  higieniczne, traits, manifest gemów, bufor i okno. Numery wersji przesuwają się względem planu wyżej.
 
 ## Notatki → stan
 
@@ -244,7 +269,9 @@ Każdy punkt z notatek o godot-rs i gaelu, z tym, co się z nim stało. ✓ zrob
   gdy kończy się kodem 0); ✓ klej jak w bashu: `sh`, `system`, `args`, `getenv`, pliki.
 - ✓ część edycji tekstu z Perla: `substr`, `find`, `split`, `join`, `trim`, `byte`, `char`; ○ operatory Perla (`=~`,
   wyrażenia regularne).
-- → pamięć: refcount (decyzja); ○ arena per klatka, pool na encje, persistent arena pod snapshoty.
+- ✓ refcount (stringi z czasu wykonania, `vec`, `map`; liczenie wstawia kompilator); → arena per klatka, poziom i
+  żądanie, pool na encje z uchwytami z generacją, tryb wydania bez liczenia; ○ persistent arena pod snapshoty.
+- → Scheme jako wzór: jedna przestrzeń nazw, funkcje jako wartości, makra higieniczne, wywołania ogonowe.
 - ○ makra (dostęp do ECS przez makra gemu ecs: `ecs-query`), traits, abstrakcje bez boilerplate i bez pułapek C++.
 - ✓ zasada nazw: typy i formy gemu z prefiksem systemu (`ECSEntity`, `(ecs-query ...)`, `DBQuery`).
 - ✓ x-macro dla opkodów (`src/ops.h`).

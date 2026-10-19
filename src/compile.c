@@ -7,9 +7,11 @@
  *
  * A value takes as many VM cells as its type says: one for a number, a bool, a string or an enum variant, the sum of
  * its fields for a struct, and one more than the value inside for an option (the tag comes first). Structs are
- * values, copied like ints; nothing is allocated. A parent tells a child which type it expects (want), so `none`
- * knows which option it is; T_UNIT as the expected type means the value is dropped. The compiler also counts how deep
- * each frame's operand stack gets, so the VM can check that a whole frame fits before entering it. */
+ * values, copied like ints. A string made at run time, a vec and a map are objects on the heap that count their
+ * owners: reading a variable copies its value (RETAIN), and a value that is dropped or a variable whose scope ends
+ * gives its objects up (DROP, RELEASE). A parent tells a child which type it expects (want), so `none` knows which
+ * option it is; T_UNIT as the expected type means the value is dropped. The compiler also counts how deep each
+ * frame's operand stack gets, so the VM can check that a whole frame fits before entering it. */
 
 typedef u16 Ty;
 enum { T_ERR, T_UNIT, T_INT, T_FLOAT, T_BOOL, T_STR, T_NONE, T_ANY, T_USER };
@@ -25,6 +27,7 @@ typedef struct {
 	i32 line;     /* where it was declared; 0 for the built-in and the option types */
 	const char *file;
 	u8 broken;    /* its declaration had an error (already reported): uses of it stay quiet */
+	i32 leaf_first, nleaf; /* the objects inside a value: g_leaves[leaf_first...] */
 } TyInfo;
 
 typedef struct {
@@ -37,20 +40,33 @@ typedef struct {
 #define MAX_FIELDS 16384
 #define MAX_VARIANTS 16384
 static TyInfo g_tys[MAX_TYS] = {
-	{ "<error>", K_PRIM, 0, 0, 0, 0, 0, 0, 0, 0 },
-	{ "unit", K_PRIM, 0, 0, 0, 0, 0, 0, 0, 0 },
-	{ "int", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0 },
-	{ "float", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0 },
-	{ "bool", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0 },
-	{ "string", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0 },
-	{ "<none>", K_PRIM, 0, 0, 0, 0, 0, 0, 0, 0 },
-	{ "any value", K_PRIM, 0, 0, 0, 0, 0, 0, 0, 0 }
+	{ "<error>", K_PRIM, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+	{ "unit", K_PRIM, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+	{ "int", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0 },
+	{ "float", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0 },
+	{ "bool", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0 },
+	{ "string", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1 },
+	{ "<none>", K_PRIM, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+	{ "any value", K_PRIM, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }
 };
 static i32 g_ntys = T_USER;
 static Field g_fields[MAX_FIELDS];
 static i32 g_nfields;
 static const char *g_variants[MAX_VARIANTS];
 static i32 g_nvariants;
+
+/* A leaf is a cell inside a value that holds an object (a string, a vec, a map). It holds one only when every guard
+ * of it - the tag cell of each option around it - is not 0. The VM walks a type's leaves to count owners and free */
+typedef struct {
+	i32 off, guard_first, nguards;
+} Leaf;
+
+#define MAX_LEAVES (1 << 16)
+static Leaf g_leaves[MAX_LEAVES]; /* leaf 0: the value's only cell (a string, a vec, a map); shared by those types */
+static i32 g_nleaves = 1;
+static i32 g_guards[MAX_LEAVES];
+static i32 g_nguards;
+static Ty g_vec_str; /* (vec string), the type split and args make */
 
 typedef struct {
 	u8 op;
@@ -121,15 +137,13 @@ static i32 g_nfmt_tys;
 static u64 g_perm_mem[(8u << 20) / 8];
 static Arena g_perm = { (u8 *)g_perm_mem, sizeof(g_perm_mem), 0, "permanent" };
 
-/* Every string's bytes, the program's and the ones made at run time, each followed by a 0. A string value is one
- * cell: its offset in this arena in the high 32 bits and its length in the low 32. Nothing in it is freed. */
+/* The program's own strings, each followed by a 0, and scratch space for strings being built at run time. A string
+ * of the program is one cell: bit 63 set, its offset in this arena in bits 32 to 62 and its length in the low 32. It
+ * lives as long as the process; a string made at run time is an object on the VM's heap (vm.c). */
 static u64 g_text_mem[(32u << 20) / 8];
 static Arena g_text = { (u8 *)g_text_mem, sizeof(g_text_mem), 0, "text" };
 
-static i64 str_cell(size_t off, size_t len) { return (i64)(((u64)off << 32) | (u64)len); }
-#define STR_LEN(v) ((u32)((u64)(v) & 0xffffffffu))
-#define STR_OFF(v) ((size_t)((u64)(v) >> 32))
-#define STR_P(v) ((char *)g_text.base + STR_OFF(v))
+static i64 str_cell(size_t off, size_t len) { return (i64)((u64)1 << 63 | (u64)off << 32 | (u64)len); }
 
 /* text_init: the 256 one-byte strings that (char n) returns, at the start of the text arena */
 static o text_init(void)
@@ -210,6 +224,7 @@ static int is_vec(Ty t) { return t < g_ntys && g_tys[t].kind == K_VEC; }
 static int is_map(Ty t) { return t < g_ntys && g_tys[t].kind == K_MAP; }
 static Ty elem_of(Ty t) { return is_vec(t) || is_option(t) || is_map(t) ? g_tys[t].elem : (Ty)T_ERR; }
 static Ty key_of(Ty t) { return is_map(t) ? g_tys[t].key : (Ty)T_ERR; }
+static int has_refs(Ty t) { return t < g_ntys && g_tys[t].nleaf > 0; }
 static int numeric(Ty t) { return t == T_INT || t == T_FLOAT; }
 static int comparable(Ty t) { return numeric(t) || t == T_BOOL || t == T_STR || is_enum(t); }
 static int key_type(Ty t) { return t == T_INT || t == T_BOOL || t == T_STR || is_enum(t); }
@@ -231,6 +246,8 @@ static i32 effect(Op op, i32 a, i32 b)
 	case OP_ZERO: return a;
 	case OP_LOADN_L: case OP_LOADN_G: return b;
 	case OP_POPN: return -a;
+	case OP_DROP: return -cells((Ty)a);
+	case OP_RETAIN: case OP_RELEASE_L: case OP_RELEASE_G: return 0;
 	case OP_STOREN_L: case OP_STOREN_G: return -b;
 	case OP_POP: case OP_STORE_L: case OP_STORE_G: case OP_JF: case OP_JT:
 	case OP_ADD_I: case OP_SUB_I: case OP_MUL_I: case OP_DIV_I: case OP_MOD_I:
@@ -242,12 +259,12 @@ static i32 effect(Op op, i32 a, i32 b)
 	case OP_PRINT: case OP_PRINTLN: return -g_fmts[a].cells;
 	case OP_FORMAT: return 1 - g_fmts[a].cells;
 	case OP_PARSE_I: case OP_PARSE_F: return 1;
-	case OP_VEC_NEW: return 1 - a * b;
+	case OP_VEC_NEW: return 1 - a * cells(elem_of((Ty)b));
 	case OP_VEC_PUSH: return -(1 + a);
 	case OP_VEC_GET: return a - 2;
 	case OP_VEC_PUT: return -(2 + a);
 	case OP_VEC_POP: return a;
-	case OP_MAP_NEW: return 1 - a * (1 + (b >> 1));
+	case OP_MAP_NEW: return 1 - a * (1 + cells(elem_of((Ty)b)));
 	case OP_MAP_INSERT: return -(2 + a);
 	case OP_MAP_LOOKUP: case OP_MAP_REMOVE: return a - 1;
 	case OP_MAP_HAS: return -1;
@@ -285,10 +302,67 @@ static o emit_store(int global, i32 at, Ty t, i32 line)
 	else if (n > 1) emit(global ? OP_STOREN_G : OP_STOREN_L, at, n, line);
 }
 
+/* emit_copy GLOBAL AT TYPE LINE: push a copy of the value kept at AT; the objects in it get one owner more */
+static o emit_copy(int global, i32 at, Ty t, i32 line)
+{
+	emit_load(global, at, t, line);
+	if (has_refs(t)) emit(OP_RETAIN, t, 0, line);
+}
+
+/* emit_release GLOBAL AT TYPE LINE: the value kept at AT dies; the objects in it lose an owner */
+static o emit_release(int global, i32 at, Ty t, i32 line)
+{
+	if (has_refs(t)) emit(global ? OP_RELEASE_G : OP_RELEASE_L, at, t, line);
+}
+
+/* borrow_last ARG REST: when ARG, just compiled, is a variable read (a LOAD and a RETAIN) and the operands REST after
+ * it cannot give that variable a new value before the instruction runs, the RETAIN goes: the instruction borrows the
+ * variable's value instead of consuming a copy. Only a set can change a local, so REST must not set one of that name;
+ * any call may set a global, so after a global REST must be atoms. 1 when it did */
+static i32 next_of(i32 n);
+static i32 first_of(i32 n);
+
+static int borrow_last(i32 arg, i32 rest)
+{
+	static i32 stack[MAX_WORK];
+	const char *name, *dot;
+	size_t len;
+	i32 n = 0;
+	int local;
+	if (arg < 0 || g_nodes[arg].kind != N_SYM || g_ncode < 2 || g_code[g_ncode - 1].op != OP_RETAIN) return 0;
+	local = g_code[g_ncode - 2].op == OP_LOAD_L || g_code[g_ncode - 2].op == OP_LOADN_L;
+	name = g_nodes[arg].text;
+	dot = strchr(name, '.');
+	len = dot ? (size_t)(dot - name) : strlen(name);
+	for (; rest >= 0; rest = next_of(rest)) {
+		if (n == MAX_WORK) return 0;
+		stack[n++] = rest;
+	}
+	while (n > 0) { /* every list in REST, nested ones too */
+		i32 k = stack[--n], head = first_of(k), x;
+		const char *target;
+		if (g_nodes[k].kind != N_LIST) continue;
+		if (!local) return 0;
+		if (head >= 0 && g_nodes[head].kind == N_SYM && !strcmp(g_nodes[head].text, "set") && (x = next_of(head)) >= 0 &&
+		    g_nodes[x].kind == N_SYM) {
+			target = g_nodes[x].text;
+			if (!strncmp(target, name, len) && (target[len] == 0 || target[len] == '.')) return 0;
+		}
+		for (x = head; x >= 0; x = next_of(x)) {
+			if (n == MAX_WORK) return 0;
+			stack[n++] = x;
+		}
+	}
+	g_ncode--;
+	return 1;
+}
+
+/* emit_pop TYPE LINE: throw away the value on top */
 static o emit_pop(Ty t, i32 line)
 {
 	i32 n = cells(t);
-	if (n == 1) emit(OP_POP, 0, 0, line);
+	if (has_refs(t)) emit(OP_DROP, t, 0, line);
+	else if (n == 1) emit(OP_POP, 0, 0, line);
 	else if (n > 1) emit(OP_POPN, n, 0, line);
 }
 
@@ -343,6 +417,44 @@ static Ty find_named_type(const char *s)
 	return T_NONE;
 }
 
+/* add_leaf LEAF SHIFT GUARD: a leaf of a type inside the one being made, SHIFT cells further on; with GUARD it sits in
+ * an option whose tag is the cell before SHIFT */
+static o add_leaf(const Leaf *from, i32 shift, int guard)
+{
+	Leaf *lf;
+	i32 j;
+	if (g_nleaves == MAX_LEAVES || g_nguards + from->nguards + 1 > MAX_LEAVES) die("too many strings, vecs and maps inside types");
+	lf = &g_leaves[g_nleaves++];
+	lf->off = from->off + shift;
+	lf->guard_first = g_nguards;
+	lf->nguards = from->nguards + guard;
+	if (guard) g_guards[g_nguards++] = shift - 1;
+	for (j = 0; j < from->nguards; j++) g_guards[g_nguards++] = g_guards[from->guard_first + j] + shift;
+}
+
+/* set_leaves TYPE: where the objects inside a value of TYPE are, from the leaves of the types it holds */
+static o set_leaves(Ty t)
+{
+	TyInfo *ti = &g_tys[t];
+	i32 first = g_nleaves, i, k;
+	if (ti->kind == K_VEC || ti->kind == K_MAP) {
+		ti->leaf_first = 0;
+		ti->nleaf = 1;
+		return;
+	}
+	if (ti->kind == K_OPTION) {
+		const TyInfo *e = &g_tys[ti->elem];
+		for (k = 0; k < e->nleaf; k++) add_leaf(&g_leaves[e->leaf_first + k], 1, 1);
+	}
+	for (i = 0; ti->kind == K_STRUCT && i < ti->n; i++) {
+		const Field *fd = &g_fields[ti->first + i];
+		const TyInfo *e = &g_tys[fd->type];
+		for (k = 0; k < e->nleaf; k++) add_leaf(&g_leaves[e->leaf_first + k], fd->offset, 0);
+	}
+	ti->leaf_first = first;
+	ti->nleaf = g_nleaves - first;
+}
+
 /* intern_wrap KIND TYPE: the type (option TYPE) or (vec TYPE), made once. An option holds its value in place (a tag
  * cell first); a vec is one cell, a handle to its elements on the heap */
 static Ty intern_wrap(u8 kind, Ty elem)
@@ -361,6 +473,7 @@ static Ty intern_wrap(u8 kind, Ty elem)
 	t->kind = kind;
 	t->elem = elem;
 	t->cells = kind == K_VEC ? 1 : 1 + cells(elem);
+	set_leaves((Ty)g_ntys);
 	return (Ty)g_ntys++;
 }
 
@@ -384,7 +497,15 @@ static Ty intern_map(Ty key, Ty val)
 	t->key = key;
 	t->elem = val;
 	t->cells = 1;
+	set_leaves((Ty)g_ntys);
 	return (Ty)g_ntys++;
+}
+
+/* compile_init: what every program starts with */
+static o compile_init(void)
+{
+	text_init();
+	g_vec_str = intern_wrap(K_VEC, T_STR);
 }
 
 /* Builtins with a fixed signature. Argument and result types are letters: i int, f float, b bool, s string, u unit,
@@ -893,7 +1014,7 @@ static o compile_atom(i32 n, Ty want)
 	pl.type = T_ERR;
 	r = resolve_place(n, &pl);
 	if (r > 0) {
-		emit_load(pl.global, pl.at, pl.type, nd->line);
+		emit_copy(pl.global, pl.at, pl.type, nd->line);
 		push_type(pl.type);
 		return;
 	}
@@ -1213,7 +1334,7 @@ static o start_arm(Frame *f)
 			if (t == T_INT) emit(OP_PUSH_I, add_int(g_nodes[p].ival), 0, line);
 			else if (t == T_STR) emit(OP_PUSH_S, add_str(g_nodes[p].text, g_nodes[p].len), 0, line);
 			else emit(OP_PUSH_K, pattern_variant(t, p), 0, line);
-			emit(t == T_STR ? OP_EQ_S : OP_EQ_I, 0, 0, line);
+			emit(t == T_STR ? OP_EQ_S : OP_EQ_I, t == T_STR, 0, line); /* the matched string is borrowed */
 			f->b = emit(OP_JF, -1, 0, line);
 		}
 	}
@@ -1413,6 +1534,7 @@ static o run_work(i32 base)
 			}
 			default:
 				t = pop_type();
+				for (i = g_nlocals - 1; i >= f->mark; i--) emit_release(0, g_locals[i].slot, g_locals[i].type, line);
 				g_nlocals = f->mark;
 				g_slots = f->mark2;
 				finish(t);
@@ -1444,6 +1566,7 @@ static o run_work(i32 base)
 			if (f->c > 0) {
 				if (f->rt != T_ERR && t != T_ERR && t != f->rt)
 					err_node(next_of(f->cur), "set: " NAME_FMT " is %s, the value is %s", g_nodes[f->cur].text, tn(f->rt), tn(t));
+				emit_release(f->op, f->a, f->rt, line);
 				emit_store(f->op, f->a, f->rt, line);
 			}
 			finish(T_UNIT);
@@ -1554,10 +1677,12 @@ static o run_work(i32 base)
 			if (f->phase == 1) {
 				f->phase = 2;
 				t = g_types[g_ntypes - 1];
+				if (f->op >= 4) f->b = borrow_last(f->cur, next_of(f->cur)); /* = and != only read their strings */
 				f->cur = next_of(f->cur);
 				push_child(f->cur, t == T_ERR ? (Ty)T_NONE : t);
 				break;
 			}
+			if (f->op >= 4 && borrow_last(f->cur, -1)) f->b |= 2;
 			t2 = pop_type();
 			t = pop_type();
 			if (t != T_ERR && t2 != T_ERR) {
@@ -1572,7 +1697,7 @@ static o run_work(i32 base)
 				else if (!comparable(t))
 					err_node(f->cur, "%s compares int, float, bool, string and enum values, not %s", g_cmp_names[f->op], tn(t));
 				else
-					emit(cmp_op(f->op, t), 0, 0, line);
+					emit(cmp_op(f->op, t), f->b, 0, line);
 			}
 			finish(T_BOOL);
 			break;
@@ -1661,6 +1786,7 @@ static o run_work(i32 base)
 				break;
 			}
 			t = pop_type();
+			if (!f->k && (bi->op == OP_LEN_S || bi->op == OP_BYTE)) f->b = borrow_last(f->cur, next_of(f->cur));
 			t2 = code_type(bi->args[f->k]);
 			if (bi->args[f->k] == 'x') {
 				if (is_vec(t)) f->c = 1; /* len of a vec */
@@ -1673,7 +1799,8 @@ static o run_work(i32 base)
 			f->k++;
 			f->cur = next_of(f->cur);
 			if (f->cur >= 0) { push_child(f->cur, code_type(bi->args[f->k])); break; }
-			emit(f->c == 1 ? OP_VEC_LEN : f->c == 2 ? OP_MAP_LEN : bi->op, f->c ? 0 : bi->a, f->c ? 0 : bi->b, line);
+			emit(f->c == 1 ? OP_VEC_LEN : f->c == 2 ? OP_MAP_LEN : bi->op, bi->op == OP_LEN_S || bi->op == OP_BYTE ? f->b : bi->a,
+			     f->c ? 0 : bi->b, line);
 			finish(code_type(bi->ret));
 			break;
 		}
@@ -1844,6 +1971,7 @@ static o run_work(i32 base)
 				}
 				if (f->b >= 0) patch(f->b, g_ncode);
 				for (i = f->c; i < g_npatches; i++) patch(g_patches[i], g_ncode);
+				emit_release(0, f->a, f->rt, line);
 				g_npatches = f->c;
 				g_nlocals = f->mark;
 				g_slots = f->mark2;
@@ -1864,7 +1992,7 @@ static o run_work(i32 base)
 						finish(T_ERR);
 						break;
 					}
-					emit(OP_VEC_NEW, 0, cells(f->rt), line);
+					emit(OP_VEC_NEW, 0, f->want, line);
 					finish(f->want);
 					break;
 				}
@@ -1884,8 +2012,9 @@ static o run_work(i32 base)
 			f->k++;
 			f->cur = next_of(f->cur);
 			if (f->cur >= 0) { push_child(f->cur, f->rt == T_ERR ? (Ty)T_NONE : f->rt); break; }
-			emit(OP_VEC_NEW, f->k, cells(f->rt), line);
-			finish(f->rt == T_ERR ? (Ty)T_ERR : intern_wrap(K_VEC, f->rt));
+			t = f->rt == T_ERR ? (Ty)T_ERR : intern_wrap(K_VEC, f->rt);
+			emit(OP_VEC_NEW, f->k, t, line);
+			finish(t);
 			break;
 
 		case F_VECOP: { /* (push v x) (get v i) (put v i x) (pop v) */
@@ -1904,6 +2033,7 @@ static o run_work(i32 base)
 			}
 			t = pop_type();
 			if (f->phase == 1) { /* the vec */
+				f->b = borrow_last(f->cur, next_of(f->cur));
 				if (t != T_ERR && !is_vec(t)) {
 					err_node(f->cur, "%s: the first value must be a vec, this is %s", what, tn(t));
 					t = T_ERR;
@@ -1911,7 +2041,7 @@ static o run_work(i32 base)
 				f->rt = t;
 				elem = elem_of(t);
 				if (f->op == VO_POP) {
-					emit(OP_VEC_POP, cells(elem), 0, line);
+					emit(OP_VEC_POP, cells(elem), f->b, line);
 					finish(t == T_ERR ? (Ty)T_ERR : intern_option(elem));
 					break;
 				}
@@ -1923,7 +2053,7 @@ static o run_work(i32 base)
 			if (f->phase == 2 && f->op != VO_PUSH) { /* the index */
 				if (t != T_INT && t != T_ERR) err_node(f->cur, "%s: the index is %s, it must be int", what, tn(t));
 				if (f->op == VO_GET) {
-					emit(OP_VEC_GET, cells(elem), 0, line);
+					emit(OP_VEC_GET, cells(elem), f->b, line);
 					finish(elem);
 					break;
 				}
@@ -1935,7 +2065,7 @@ static o run_work(i32 base)
 			/* the element of a push or a put */
 			if (t != T_ERR && f->rt != T_ERR && t != elem)
 				err_node(f->cur, "%s: the vec holds %s, this value is %s", what, tn(elem), tn(t));
-			emit(f->op == VO_PUSH ? OP_VEC_PUSH : OP_VEC_PUT, cells(elem), 0, line);
+			emit(f->op == VO_PUSH ? OP_VEC_PUSH : OP_VEC_PUT, cells(elem), f->b, line);
 			finish(T_UNIT);
 			break;
 		}
@@ -1970,27 +2100,28 @@ static o run_work(i32 base)
 					break;
 				}
 				if (is_map(t)) { /* over a map's keys, in the order they went in */
-					emit(OP_MAP_KEYS, 0, 0, line);
 					t = intern_wrap(K_VEC, key_of(t));
+					emit(OP_MAP_KEYS, t, 0, line);
 				}
 				if (t != T_ERR && !is_vec(t)) {
 					err_node(next_of(name), "for: (x v) goes over a vec or the keys of a map, this is %s; a range is (i from to)", tn(t));
 					t = T_ERR;
 				}
 				f->rt = elem_of(t);
+				f->res = t;
 				f->a = new_slots(2 + cells(f->rt)); /* the vec, the index, the element */
 				emit(OP_STORE_L, f->a, 0, line);
 				emit(OP_PUSH_I, add_int(0), 0, line);
 				emit(OP_STORE_L, f->a + 1, 0, line);
 				f->c = g_ncode;
 				emit(OP_LOAD_L, f->a + 1, 0, line);
-				emit(OP_LOAD_L, f->a, 0, line);
-				emit(OP_VEC_LEN, 0, 0, line);
+				emit(OP_LOAD_L, f->a, 0, line); /* the hidden slot holds the vec; these reads borrow it */
+				emit(OP_VEC_LEN, 1, 0, line);
 				emit(OP_LT_I, 0, 0, line);
 				f->b = emit(OP_JF, -1, 0, line);
 				emit(OP_LOAD_L, f->a, 0, line);
 				emit(OP_LOAD_L, f->a + 1, 0, line);
-				emit(OP_VEC_GET, cells(f->rt), 0, line);
+				emit(OP_VEC_GET, cells(f->rt), 1, line);
 				emit_store(0, f->a + 2, f->rt, line);
 				add_local(g_nodes[name].text, f->rt, f->a + 2);
 				f->phase = 3;
@@ -2014,9 +2145,11 @@ static o run_work(i32 base)
 			}
 			default:
 				(void)pop_type();
+				if (!f->op) emit_release(0, f->a + 2, f->rt, line); /* this round's element */
 				emit(OP_INC_L, f->op ? f->a : f->a + 1, 0, line);
 				emit(OP_JMP, f->c, 0, line);
 				patch(f->b, g_ncode);
+				if (!f->op) emit_release(0, f->a, f->res, line); /* the vec */
 				g_nlocals = f->mark;
 				g_slots = f->mark2;
 				finish(T_UNIT);
@@ -2068,7 +2201,7 @@ static o run_work(i32 base)
 						finish(T_ERR);
 						break;
 					}
-					emit(OP_MAP_NEW, 0, (cells(f->res) << 1) | (f->rt == T_STR), line);
+					emit(OP_MAP_NEW, 0, f->want, line);
 					finish(f->want);
 					break;
 				}
@@ -2103,8 +2236,9 @@ static o run_work(i32 base)
 				push_child(first_of(f->cur), f->rt == T_ERR ? (Ty)T_NONE : f->rt);
 				break;
 			}
-			emit(OP_MAP_NEW, f->k, (cells(f->res) << 1) | (f->rt == T_STR), line);
-			finish(f->rt == T_ERR || f->res == T_ERR ? (Ty)T_ERR : intern_map(f->rt, f->res));
+			t = f->rt == T_ERR || f->res == T_ERR ? (Ty)T_ERR : intern_map(f->rt, f->res);
+			emit(OP_MAP_NEW, f->k, t, line);
+			finish(t);
 			break;
 
 		case F_MAPOP: { /* (insert m k v) (lookup m k) (has m k) (remove m k) (keys m) (values m) */
@@ -2123,6 +2257,7 @@ static o run_work(i32 base)
 			}
 			t = pop_type();
 			if (f->phase == 1) { /* the map */
+				f->b = borrow_last(f->cur, next_of(f->cur));
 				if (t != T_ERR && !is_map(t)) {
 					err_node(f->cur, "%s: the first value must be a map, this is %s", what, tn(t));
 					t = T_ERR;
@@ -2131,8 +2266,9 @@ static o run_work(i32 base)
 				key = key_of(t);
 				val = elem_of(t);
 				if (f->op == MO_KEYS || f->op == MO_VALUES) {
-					emit(g_mapop_ops[f->op], cells(val), 0, line);
-					finish(t == T_ERR ? (Ty)T_ERR : intern_wrap(K_VEC, f->op == MO_KEYS ? key : val));
+					t = t == T_ERR ? (Ty)T_ERR : intern_wrap(K_VEC, f->op == MO_KEYS ? key : val);
+					emit(g_mapop_ops[f->op], t, f->b, line);
+					finish(t);
 					break;
 				}
 				f->phase = 2;
@@ -2142,8 +2278,10 @@ static o run_work(i32 base)
 			}
 			if (f->phase == 2) { /* the key */
 				if (t != T_ERR && f->rt != T_ERR && t != key) err_node(f->cur, "%s: the keys are %s, this one is %s", what, tn(key), tn(t));
-				if (f->op != MO_INSERT) {
-					emit(g_mapop_ops[f->op], cells(val), 0, line);
+				if (f->op != MO_INSERT) { /* the key is only looked up: it can be borrowed too */
+					if (borrow_last(f->cur, -1)) f->b |= 2;
+					if (f->op == MO_HAS) emit(OP_MAP_HAS, f->b, 0, line);
+					else emit(g_mapop_ops[f->op], cells(val), f->b, line);
 					finish(f->rt == T_ERR ? (Ty)T_ERR : f->op == MO_HAS ? (Ty)T_BOOL : intern_option(val));
 					break;
 				}
@@ -2153,7 +2291,7 @@ static o run_work(i32 base)
 				break;
 			}
 			if (t != T_ERR && f->rt != T_ERR && t != val) err_node(f->cur, "insert: the values are %s, this one is %s", tn(val), tn(t));
-			emit(OP_MAP_INSERT, cells(val), 0, line);
+			emit(OP_MAP_INSERT, cells(val), f->b, line);
 			finish(T_UNIT);
 			break;
 		}
@@ -2197,10 +2335,11 @@ static o run_work(i32 base)
 				ft = fd->type;
 				if (!end) break;
 			}
-			if (ft != T_ERR) { /* the whole value to scratch slots, then the field back */
+			if (ft != T_ERR) { /* the whole value to scratch slots, a copy of the field back, the rest dies */
 				slot = new_slots(cells(t));
 				emit_store(0, slot, t, line);
-				emit_load(0, slot + off, ft, line);
+				emit_copy(0, slot + off, ft, line);
+				emit_release(0, slot, t, line);
 				g_slots = slot;
 			}
 			finish(ft);
@@ -2284,7 +2423,7 @@ static int declared_below(i32 from, const char *name)
  * struct itself inside a vec (a tree) */
 static o declare_struct(i32 n, int repl)
 {
-	i32 name = next_of(first_of(n)), p, q, first = g_nfields, ncells = 0, nf = 0, bad = 0;
+	i32 name = next_of(first_of(n)), p, q, first = g_nfields, ncells = 0, nf = 0, bad = 0, i;
 	Ty old, self;
 	if (!new_name_ok(name, n, "struct")) return;
 	old = find_named_type(g_nodes[name].text);
@@ -2343,6 +2482,12 @@ static o declare_struct(i32 n, int repl)
 	g_tys[self].n = nf;
 	g_tys[self].cells = ncells;
 	g_tys[self].broken = (u8)(bad > 0);
+	set_leaves(self);
+	for (i = self + 1; i < g_ntys; i++) { /* an (option Self) in a field's (vec ...) was made while Self had no size */
+		if (g_tys[i].kind != K_OPTION) continue;
+		g_tys[i].cells = 1 + cells(g_tys[i].elem);
+		set_leaves((Ty)i);
+	}
 }
 
 /* declare_enum ENUM REPL: (enum Name variant ...) */
@@ -2479,6 +2624,8 @@ static o compile_fn(i32 n)
 	push_body(body, 1, rt);
 	run_work(g_nwork - 1);
 	t = pop_type();
+	for (k = 0; k < g_fns[fi].nparams; k++) /* the parameters die; the result on top stays */
+		emit_release(0, g_locals[g_local_floor + k].slot, g_fns[fi].params[k], g_nodes[n].line);
 	if (rt == T_UNIT) {
 		emit_pop(t, g_nodes[n].line);
 		emit(OP_RET_U, 0, 0, g_nodes[n].line);
@@ -2543,12 +2690,13 @@ static o compile_def(i32 n, int repl)
 		g_globals[gi].file = g_unit.file;
 		g_nglobal_cells += cells(type);
 	}
+	emit_release(1, g_globals[gi].cell, type, g_nodes[name].line); /* the REPL's new value for it; a new global holds 0 */
 	emit_store(1, g_globals[gi].cell, type, g_nodes[name].line);
 }
 
 /* everything a failed unit may have added, so the REPL can forget it */
 static struct {
-	i32 ncode, nints, nfloats, nstrs, nfns, nglobals, nglobal_cells, ntys, nfields, nvariants, nfmts, nfmt_tys;
+	i32 ncode, nints, nfloats, nstrs, nfns, nglobals, nglobal_cells, ntys, nfields, nvariants, nfmts, nfmt_tys, nleaves, nguards;
 	size_t perm, text;
 } g_snap;
 static i32 g_snap_entry[MAX_FNS], g_snap_slots[MAX_FNS], g_snap_depth[MAX_FNS];
@@ -2571,6 +2719,8 @@ static i32 compile_unit(i32 top, int repl)
 	g_snap.nvariants = g_nvariants;
 	g_snap.nfmts = g_nfmts;
 	g_snap.nfmt_tys = g_nfmt_tys;
+	g_snap.nleaves = g_nleaves;
+	g_snap.nguards = g_nguards;
 	g_snap.perm = g_perm.used;
 	g_snap.text = g_text.used;
 	for (i = 0; i < g_nfns; i++) {
@@ -2624,6 +2774,8 @@ static i32 compile_unit(i32 top, int repl)
 	g_nvariants = g_snap.nvariants;
 	g_nfmts = g_snap.nfmts;
 	g_nfmt_tys = g_snap.nfmt_tys;
+	g_nleaves = g_snap.nleaves;
+	g_nguards = g_snap.nguards;
 	g_perm.used = g_snap.perm;
 	g_text.used = g_snap.text;
 	for (i = 0; i < g_nfns; i++) {

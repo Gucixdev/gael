@@ -1,11 +1,19 @@
 /* vm.c - the bytecode machine: one operand stack of untyped cells and a stack of call frames.
  *
- * The compiler already proved every type, so a cell carries no tag: ADD_I reads two ints, ADD_F two floats. A string
- * is its place in the text arena. A struct or an option is a run of cells; a vec is one cell, the heap index of its
- * header (length, capacity, where its elements are). Integer arithmetic wraps (done in u64,
- * no undefined behaviour); dividing by zero and running out of stack are runtime errors with the line they happened
- * on. A frame needs its slots plus the deepest operand stack the compiler counted for it, and the VM checks that all
- * of it fits before it enters the frame, so no instruction inside can write past the stack. */
+ * The compiler already proved every type, so a cell carries no tag: ADD_I reads two ints, ADD_F two floats. A struct
+ * or an option is a run of cells. Integer arithmetic wraps (done in u64, no undefined behaviour); dividing by zero
+ * and running out of stack are runtime errors with the line they happened on. A frame needs its slots plus the
+ * deepest operand stack the compiler counted for it, and the VM checks that all of it fits before it enters the
+ * frame, so no instruction inside can write past the stack.
+ *
+ * Memory: strings made at run time, vecs and maps are objects on the heap with a reference count. The compiler emits
+ * RETAIN when it copies a value out of a variable, DROP when it throws one away and RELEASE when a variable's value
+ * dies; an instruction consumes the values it takes, once it is done with them, unless it only borrows a variable's.
+ * An object whose count reaches 0 goes on a chain through its own count cell and is freed at once; the objects a
+ * freed one held join the chain and the same loop frees them, so freeing never recurses. The heap is a buddy
+ * allocator: blocks of 2^k cells, split to fit and merged with their free neighbour (buddy) when freed, so memory a
+ * growing vec gave back can make one big block again. The program's own strings live in the text arena, marked by
+ * bit 63, and are never counted. */
 
 typedef union {
 	i64 i;
@@ -20,16 +28,171 @@ typedef struct {
 } VFrame;
 
 static Cell g_global_cells[MAX_GLOBAL_CELLS];
+static Cell g_vstack[VM_STACK];
+static VFrame g_vframes[VM_FRAMES];
 
-/* the heap: vecs and maps, laid out flat. A vec that outgrows its room moves to a new block twice the size; nothing is
- * freed */
-#define HEAP_CELLS (1 << 22)
+/* The heap: blocks of 2^k cells (k from 2 to HEAP_ORDER), each starting at a multiple of its size. A block's buddy
+ * is the other half of the block twice its size. Free blocks of each size are a doubly linked list through their
+ * first two cells, -(next + 2) and -(prev + 2), so a freed object's count cell reads as freed (below 1). Cells 0 to
+ * 3 are a block of their own that is never freed: an empty string, so a cell of 0 (a zeroed slot) reads as "" and as
+ * no object */
+#define HEAP_ORDER 22
+#define HEAP_CELLS (1 << HEAP_ORDER)
 static Cell g_heap[HEAP_CELLS];
-static i64 g_nheap;
-enum { VH_LEN, VH_CAP, VH_DATA, VH_CELLS };
+static i64 g_free_head[HEAP_ORDER + 1];  /* the first free block of each size, -1 when none */
+static u8 g_free_order[HEAP_CELLS >> 2]; /* k + 1 when a free block of 2^k cells starts at this cell * 4, else 0 */
+static i64 g_live;                       /* cells handed out and not freed yet, for the leak check */
+static int g_check;                      /* GAEL_CHECK=1: freed blocks get a pattern, leaks are reported */
 
-/* A vec keeps its elements as columns (SoA): cell C of element I sits at data + C * cap + I, so one field of every
- * element is one run of memory. With one-cell elements that is a plain array */
+static o free_push(i64 at, i32 k)
+{
+	i64 head = g_free_head[k];
+	g_heap[at].i = -(head + 2);
+	g_heap[at + 1].i = -1; /* no previous one */
+	if (head >= 0) g_heap[head + 1].i = -(at + 2);
+	g_free_head[k] = at;
+	g_free_order[at >> 2] = (u8)(k + 1);
+}
+
+static o free_unlink(i64 at, i32 k)
+{
+	i64 next = -g_heap[at].i - 2, prev = -g_heap[at + 1].i - 2;
+	if (prev >= 0) g_heap[prev].i = -(next + 2);
+	else g_free_head[k] = next;
+	if (next >= 0) g_heap[next + 1].i = -(prev + 2);
+	g_free_order[at >> 2] = 0;
+}
+
+static i32 order_of(i64 n)
+{
+	i32 k = 2;
+	while (((i64)1 << k) < n) k++;
+	return k;
+}
+
+/* heap_alloc N: a block of at least N cells, the smallest free one split down to size; 0 for N = 0, -1 when the heap
+ * has no free block that big */
+static i64 heap_alloc(i64 n)
+{
+	i32 k, j;
+	i64 at;
+	if (n <= 0) return 0;
+	k = order_of(n);
+	for (j = k; j <= HEAP_ORDER && g_free_head[j] < 0; j++) {}
+	if (j > HEAP_ORDER) return -1;
+	at = g_free_head[j];
+	free_unlink(at, j);
+	while (j > k) { /* the upper half of each split stays free */
+		j--;
+		free_push(at + ((i64)1 << j), j);
+	}
+	g_live += (i64)1 << k;
+	return at;
+}
+
+/* heap_free AT N: give back the block heap_alloc N returned, merged with its buddy while that one is free too */
+static o heap_free(i64 at, i64 n)
+{
+	i32 k;
+	if (at <= 0 || n <= 0) return;
+	k = order_of(n);
+	g_live -= (i64)1 << k;
+	if (g_check) memset(g_heap + at, 0xa5, ((size_t)1 << k) * sizeof(Cell)); /* a stale read shows, a stale count dies */
+	while (k < HEAP_ORDER) {
+		i64 buddy = at ^ ((i64)1 << k);
+		if (g_free_order[buddy >> 2] != k + 1) break;
+		free_unlink(buddy, k);
+		at &= ~((i64)1 << k);
+		k++;
+	}
+	free_push(at, k);
+}
+
+/* heap_grow AT N: make the block heap_alloc N returned twice as big where it is, when it is the lower half of its
+ * pair and the upper half (its buddy) is free; 1 when it did. Afterwards it is the block heap_alloc 2N would return */
+static int heap_grow(i64 at, i64 n)
+{
+	i32 k;
+	i64 buddy;
+	if (at <= 0 || n <= 0) return 0;
+	k = order_of(n);
+	buddy = at + ((i64)1 << k);
+	if (k >= HEAP_ORDER || (at & ((i64)1 << k)) || g_free_order[buddy >> 2] != k + 1) return 0;
+	free_unlink(buddy, k);
+	g_live += (i64)1 << k;
+	return 1;
+}
+
+/* vm_init CHECK: the whole heap one free block, then cells 0 to 3 taken for the empty string */
+static o vm_init(int check)
+{
+	i32 k;
+	g_check = check;
+	for (k = 0; k <= HEAP_ORDER; k++) g_free_head[k] = -1;
+	free_push(0, HEAP_ORDER);
+	(void)heap_alloc(4);
+	memset(g_heap, 0, 4 * sizeof(Cell));
+	g_live = 0;
+}
+
+/* every object starts with its count and its kind; the kind cell holds the type above the low 8 bits (the vec or
+ * map type) or, for a string, its length */
+enum { OB_RC, OB_KIND };
+enum { KIND_STR = 1, KIND_VEC, KIND_MAP };
+
+static Ty obj_type(i64 h) { return (Ty)((u64)g_heap[h + OB_KIND].i >> 8); }
+
+/* a string value: bit 63 set - the program's own text, offset and length in the text arena; else the heap index of
+ * a string object [count][length][bytes and a 0] */
+#define STR_LEN(v) ((v) < 0 ? (u32)((u64)(v) & 0xffffffffu) : (u32)((u64)g_heap[(v) + OB_KIND].i >> 8))
+#define STR_P(v) ((v) < 0 ? (char *)g_text.base + (((u64)(v) >> 32) & 0x7fffffffu) : (char *)(g_heap + (v) + 2))
+#define STR_OFF(v) ((size_t)(((u64)(v) >> 32) & 0x7fffffffu))
+static i64 str_cells(u64 len) { return 2 + (i64)((len + 8) / 8); }
+
+static i64 g_pending;    /* objects whose count reached 0, chained through their count cells */
+static int g_draining;   /* the chain is being freed: a release inside only adds to it */
+static i64 g_objects[4]; /* the strings, vecs and maps alive, by kind */
+
+#define USED_FREED "internal error: an object was used after it was freed"
+
+static o drain(void);
+
+static o obj_retain(i64 h)
+{
+	if (h <= 0) return; /* no object, or the program's own string */
+	if (g_heap[h + OB_RC].i <= 0) die(USED_FREED);
+	g_heap[h + OB_RC].i++;
+}
+
+static o obj_release(i64 h)
+{
+	if (h <= 0) return;
+	if (g_heap[h + OB_RC].i <= 0) die(USED_FREED);
+	if (--g_heap[h + OB_RC].i) return;
+	g_heap[h + OB_RC].i = -(g_pending + 1);
+	g_pending = h;
+	if (!g_draining) drain();
+}
+
+/* refs V STRIDE TYPE RETAIN: every object inside a value of TYPE, whose cell C is at V + C * STRIDE, gets one owner
+ * more (RETAIN) or one less. An object inside a none is not there */
+static o refs(const Cell *v, i64 stride, Ty t, int retain)
+{
+	i32 k, j, n = g_tys[t].nleaf, first = g_tys[t].leaf_first;
+	for (k = 0; k < n; k++) {
+		const Leaf *lf = &g_leaves[first + k];
+		for (j = 0; j < lf->nguards && v[g_guards[lf->guard_first + j] * stride].i; j++) {}
+		if (j < lf->nguards) continue;
+		if (retain) obj_retain(v[lf->off * stride].i);
+		else obj_release(v[lf->off * stride].i);
+	}
+}
+
+/* A vec: [count][kind][len][cap][data]; its elements are columns (SoA): cell C of element I sits at data + C * cap + I,
+ * so one field of every element is one run of memory. With one-cell elements that is a plain array */
+enum { VH_LEN = 2, VH_CAP, VH_DATA, VH_CELLS };
+
+static Ty vec_elem(i64 v) { return g_tys[obj_type(v)].elem; }
 static Cell *vec_cell(const Cell *hd, i64 i, i64 c) { return g_heap + hd[VH_DATA].i + c * hd[VH_CAP].i + i; }
 
 static o vec_load(const Cell *hd, i64 i, i64 size, Cell *to)
@@ -44,12 +207,61 @@ static o vec_store(const Cell *hd, i64 i, i64 size, const Cell *from)
 	for (c = 0; c < size; c++) *vec_cell(hd, i, c) = from[c];
 }
 
-/* A map: this header; its entries in the order they went in, each an alive flag, the key and the value's cells; and
- * an index of SLOTS cells holding an entry's number + 1 (0: empty), probed linearly from the key's hash. A removed
- * entry stays in place, dead, until the map grows and packs the live ones together */
-enum { MH_COUNT, MH_USED, MH_CAP, MH_ENT, MH_SLOTS, MH_IDX, MH_VSIZE, MH_STR, MH_CELLS };
-static Cell g_vstack[VM_STACK];
-static VFrame g_vframes[VM_FRAMES];
+/* A map: [count][kind][entries][used][cap][ent][slots][idx]; its entries in the order they went in, each an alive
+ * flag, the key and the value's cells; an index of SLOTS cells holding an entry's number + 1 (0: empty), probed
+ * linearly from the key's hash. A removed entry stays in place, dead, until the map grows and packs the live ones */
+enum { MH_COUNT = 2, MH_USED, MH_CAP, MH_ENT, MH_SLOTS, MH_IDX, MH_CELLS };
+
+static i64 map_vsize(i64 m) { return cells(g_tys[obj_type(m)].elem); }
+static int map_strkeys(i64 m) { return g_tys[obj_type(m)].key == T_STR; }
+
+/* obj_free H: give back an object whose count reached 0; what it held loses an owner */
+static o obj_free(i64 h)
+{
+	Cell *hd = g_heap + h;
+	g_objects[hd[OB_KIND].i & 3]--;
+	switch (hd[OB_KIND].i & 0xff) {
+	case KIND_STR:
+		heap_free(h, str_cells((u64)hd[OB_KIND].i >> 8));
+		break;
+	case KIND_VEC: {
+		Ty et = vec_elem(h);
+		i64 i, size = cells(et);
+		for (i = 0; g_tys[et].nleaf && i < hd[VH_LEN].i; i++) refs(vec_cell(hd, i, 0), hd[VH_CAP].i, et, 0);
+		heap_free(hd[VH_DATA].i, hd[VH_CAP].i * size);
+		heap_free(h, VH_CELLS);
+		break;
+	}
+	case KIND_MAP: {
+		Ty vt = g_tys[obj_type(h)].elem;
+		i64 e, esize = 2 + cells(vt);
+		int strkeys = map_strkeys(h);
+		for (e = 0; e < hd[MH_USED].i; e++) {
+			const Cell *ent = g_heap + hd[MH_ENT].i + e * esize;
+			if (!ent[0].i) continue;
+			if (strkeys) obj_release(ent[1].i);
+			refs(ent + 2, 1, vt, 0);
+		}
+		heap_free(hd[MH_ENT].i, hd[MH_CAP].i * esize);
+		heap_free(hd[MH_IDX].i, hd[MH_SLOTS].i);
+		heap_free(h, MH_CELLS);
+		break;
+	}
+	default:
+		die(USED_FREED);
+	}
+}
+
+static o drain(void)
+{
+	g_draining = 1;
+	while (g_pending) {
+		i64 h = g_pending;
+		g_pending = -g_heap[h + OB_RC].i - 1;
+		obj_free(h);
+	}
+	g_draining = 0;
+}
 
 static int vm_error(i32 line, const char *msg)
 {
@@ -58,31 +270,56 @@ static int vm_error(i32 line, const char *msg)
 	return 1;
 }
 
-/* Printing goes to g_sink, or, when it is 0, onto the end of the text arena: the string being built */
-static FILE *g_sink;
-static int g_sink_full; /* the text arena had no room for the whole string */
+#define HEAP_FULL "out of memory (the heap is full)"
+#define NOT_MADE "this vec or map was never made: a global read before its def ran"
+#define MADE(h) if ((h) <= 0) return vm_error(in->line, NOT_MADE)
+#define TEXT_FULL "out of memory for strings (the text arena is full)"
 
+/* Strings made at run time are first written to the free end of the text arena, then copied into a string object
+ * (text_take); the arena goes back to where it was */
 static int text_put(const char *p, size_t n)
 {
-	if (g_text.cap - g_text.used < n + 1) return 0; /* + 1: the 0 after the string */
+	if (g_text.cap - g_text.used < n + 1) return 0; /* + 1: room for a 0 after it */
 	memcpy(g_text.base + g_text.used, p, n);
 	g_text.used += n;
 	return 1;
 }
 
-/* text_end START: close the string that began at START, return its value; the caller checked text_room first */
-static i64 text_end(size_t start)
-{
-	g_text.base[g_text.used] = 0; /* text_put and text_room keep room for it */
-	g_text.used++;
-	return str_cell(start, g_text.used - 1 - start);
-}
-
 static int text_room(void) { return g_text.used < g_text.cap; }
 
-/* c_str STR: the string with a 0 after it, for the C library. It is written to the free end of the text arena and
- * stays valid until the next string is made; 0 when there is no room. A string can be a piece of another, so it
- * has no 0 of its own */
+/* str_new P N: a string object with these bytes (0, the empty string kept at the start of the heap, when there are
+ * none); -1 when the heap is full */
+static i64 str_new(const char *p, size_t n)
+{
+	i64 h;
+	if (!n) return 0;
+	if ((h = heap_alloc(str_cells(n))) < 0) return -1;
+	g_heap[h + OB_RC].i = 1;
+	g_heap[h + OB_KIND].i = KIND_STR | (i64)((u64)n << 8);
+	g_objects[KIND_STR]++;
+	memcpy(g_heap + h + 2, p, n);
+	((char *)(g_heap + h + 2))[n] = 0;
+	return h;
+}
+
+/* text_take START: what was written since START as a new string; -1 when the heap is full */
+static i64 text_take(size_t start)
+{
+	i64 h = str_new((const char *)g_text.base + start, g_text.used - start);
+	g_text.used = start;
+	return h;
+}
+
+/* text_const START: what was written since START, kept in the arena for good as a string of the program's own */
+static i64 text_const(size_t start)
+{
+	size_t len = g_text.used - start;
+	g_text.base[g_text.used++] = 0;
+	return str_cell(start, len);
+}
+
+/* c_str STR: the string with a 0 after it, for the C library, written to the free end of the text arena; valid until
+ * the next string is made, 0 when there is no room */
 static const char *c_str(i64 v)
 {
 	char *d = (char *)g_text.base + g_text.used;
@@ -103,6 +340,20 @@ static i64 str_find(i64 hay, i64 part, i64 from)
 	}
 	return -1;
 }
+
+/* str_piece S FROM LEN: bytes of S as a string: a view when S is the program's own text, a copy otherwise (an object
+ * of its own, so it outlives S); -1 when the heap is full */
+static i64 str_piece(i64 v, i64 from, i64 len)
+{
+	if (v < 0) return str_cell(STR_OFF(v) + (size_t)from, (size_t)len);
+	return str_new(STR_P(v) + from, (size_t)len);
+}
+
+static int str_eq(i64 a, i64 b) { return STR_LEN(a) == STR_LEN(b) && !memcmp(STR_P(a), STR_P(b), STR_LEN(a)); }
+
+/* Printing goes to g_sink, or, when it is 0, onto the free end of the text arena: the string being built */
+static FILE *g_sink;
+static int g_sink_full; /* the text arena had no room for the whole string */
 
 static o out(const char *p, size_t n)
 {
@@ -178,7 +429,7 @@ static o print_value(Ty type, const Cell *c)
 		}
 		if (ti->kind == K_MAP) { /* (map (k v) ...): *i counts three steps per entry - "(", key, value */
 			const Cell *hd = g_heap + v->i, *ent;
-			i64 esize = 2 + hd[MH_VSIZE].i, e;
+			i64 esize = 2 + cells(ti->elem), e;
 			if (*i < 0) {
 				out_s("(map");
 				*i = 0;
@@ -244,7 +495,7 @@ static o print_value(Ty type, const Cell *c)
 	}
 }
 
-/* print_fmt FORMAT ARGS: a print or println; the compiler checked every % code against its value */
+/* print_fmt FORMAT ARGS: a print, println or format; the compiler checked every % code against its value */
 static o print_fmt(const Fmt *fm, const Cell *args)
 {
 	const Str *fmt = &g_strs[fm->str];
@@ -259,7 +510,15 @@ static o print_fmt(const Fmt *fm, const Cell *args)
 	}
 }
 
-static int str_eq(i64 a, i64 b) { return STR_LEN(a) == STR_LEN(b) && !memcmp(STR_P(a), STR_P(b), STR_LEN(a)); }
+/* release_args FORMAT ARGS: the printed values are consumed */
+static o release_args(const Fmt *fm, const Cell *args)
+{
+	i32 k;
+	for (k = 0; k < fm->n; k++) {
+		refs(args, 1, g_fmt_tys[fm->first + k], 0);
+		args += cells(g_fmt_tys[fm->first + k]);
+	}
+}
 
 /* trimmed STR START LEN: the string without spaces, tabs and newlines around it */
 static o trimmed(i64 v, const char **p, u32 *n)
@@ -305,9 +564,11 @@ static int parse_float(i64 v, f64 *out_v)
 	return *end == 0;
 }
 
+static const char *g_fail; /* why the last helper below failed */
+
 /* run_cmd CMD RES: run a command (0-terminated) and return its standard output as a new string, the newlines at its
- * end left out; 0 when the text arena filled up (the rest of the output is still read, so the command can finish).
- * CMD may sit at the free end of the text arena: popen has passed it to the child before the output lands on it */
+ * end left out; 0 when there was no room (the rest of the output is still read, so the command can finish). CMD may
+ * sit at the free end of the text arena: popen has passed it to the child before the output lands on it */
 static int run_cmd(const char *c, i64 *res)
 {
 	size_t start = g_text.used;
@@ -324,19 +585,18 @@ static int run_cmd(const char *c, i64 *res)
 		}
 		pclose(pipe);
 	}
+	g_fail = TEXT_FULL;
 	if (full) {
 		g_text.used = start;
 		return 0;
 	}
 	while (g_text.used > start && g_text.base[g_text.used - 1] == '\n') g_text.used--;
-	*res = text_end(start);
-	return 1;
+	g_fail = HEAP_FULL;
+	return (*res = text_take(start)) >= 0;
 }
 
-static int run_sh(i64 cmd, i64 *res) { return run_cmd(c_str(cmd), res); }
-
 /* run_pipe CMDS N INPUT RES: the commands joined into one pipeline, each in its own subshell; with INPUT the first
- * string goes to its stdin through a temporary file. 0 when the text arena filled up or no file could be made */
+ * string goes to the first command's stdin through a temporary file */
 static int run_pipe(const Cell *cmds, i64 n, int input, i64 *res)
 {
 	size_t start = g_text.used;
@@ -347,6 +607,7 @@ static int run_pipe(const Cell *cmds, i64 n, int input, i64 *res)
 		const char *dir = getenv("TMPDIR");
 		if (!dir || strlen(dir) > 500) dir = "/tmp";
 		sprintf(tmp, "%s/gael-stdin.XXXXXX", dir);
+		g_fail = "<<<: no temporary file for the text";
 		if ((fd = mkstemp(tmp)) < 0) return 0;
 		ok = write(fd, STR_P(cmds[0].i), STR_LEN(cmds[0].i)) == (long)STR_LEN(cmds[0].i);
 		close(fd);
@@ -363,43 +624,65 @@ static int run_pipe(const Cell *cmds, i64 n, int input, i64 *res)
 		ok = run_cmd((const char *)g_text.base + start, res);
 	} else {
 		g_text.used = start;
+		g_fail = TEXT_FULL;
 	}
 	if (input) unlink(tmp);
 	return ok;
 }
 
-/* heap_alloc N: N cells off the heap; -1 when it is full */
-static i64 heap_alloc(i64 n)
+/* read_into FILE RES: everything left in FILE as a new string */
+static int read_into(FILE *in, i64 *res)
 {
-	i64 at = g_nheap;
-	if (n > HEAP_CELLS - g_nheap) return -1;
-	g_nheap += n;
-	return at;
+	size_t start = g_text.used;
+	int ok = text_room();
+	for (;;) {
+		char buf[4096];
+		size_t got = fread(buf, 1, sizeof(buf), in);
+		if (!got) break;
+		if (ok && !text_put(buf, got)) ok = 0;
+	}
+	g_fail = TEXT_FULL;
+	if (!ok) {
+		g_text.used = start;
+		return 0;
+	}
+	g_fail = HEAP_FULL;
+	return (*res = text_take(start)) >= 0;
 }
 
-/* vec_new N SIZE FROM: a vec of the N elements (SIZE cells each) at FROM, or of N zeros without FROM; -1 when the heap
- * is full */
-static i64 vec_new(i64 n, i64 size, const Cell *from)
+/* vec_new TYPE N FROM: a vec of type TYPE holding the N elements at FROM (moved in), or N zeros without FROM; -1 when
+ * the heap is full */
+static i64 vec_new(Ty vt, i64 n, const Cell *from)
 {
-	i64 cap = n < 4 ? 4 : n, h = heap_alloc(VH_CELLS + cap * size), i;
-	if (h < 0) return -1;
+	i64 size = cells(g_tys[vt].elem), cap = n < 4 ? 4 : n, h = heap_alloc(VH_CELLS), data = heap_alloc(cap * size), i;
+	if (h < 0 || data < 0) return -1;
+	g_heap[h + OB_RC].i = 1;
+	g_heap[h + OB_KIND].i = KIND_VEC | (i64)((u64)vt << 8);
+	g_objects[KIND_VEC]++;
 	g_heap[h + VH_LEN].i = n;
 	g_heap[h + VH_CAP].i = cap;
-	g_heap[h + VH_DATA].i = h + VH_CELLS;
-	memset(g_heap + h + VH_CELLS, 0, (size_t)(cap * size) * sizeof(Cell));
-	for (i = 0; from && i < n; i++) vec_store(g_heap + h, i, size, from + i * size); /* the stack has them one after another */
+	g_heap[h + VH_DATA].i = data;
+	if (data) memset(g_heap + data, 0, (size_t)(cap * size) * sizeof(Cell));
+	for (i = 0; from && i < n; i++) vec_store(g_heap + h, i, size, from + i * size); /* the stack has them in a row */
 	return h;
 }
 
-/* vec_push V SIZE FROM: append one element; 0 when the heap is full */
-static int vec_push(i64 v, i64 size, const Cell *from)
+/* vec_push V FROM: move one element in at the end; 0 when the heap is full */
+static int vec_push(i64 v, const Cell *from)
 {
 	Cell *hd = g_heap + v;
-	if (hd[VH_LEN].i == hd[VH_CAP].i) { /* each column moves to its place in a block twice the size */
-		i64 cap = hd[VH_CAP].i * 2, data = heap_alloc(cap * size), c;
-		if (data < 0) return 0;
-		for (c = 0; c < size; c++)
-			memcpy(g_heap + data + c * cap, vec_cell(hd, 0, c), (size_t)hd[VH_LEN].i * sizeof(Cell));
+	i64 size = cells(vec_elem(v));
+	if (hd[VH_LEN].i == hd[VH_CAP].i) { /* twice the room; each column moves to its place in it */
+		i64 old = hd[VH_CAP].i, cap = old * 2, data = hd[VH_DATA].i, c;
+		if (heap_grow(data, old * size)) { /* in place: the last column first, each moves up */
+			for (c = size - 1; c > 0; c--)
+				memmove(g_heap + data + c * cap, g_heap + data + c * old, (size_t)hd[VH_LEN].i * sizeof(Cell));
+		} else {
+			if ((data = heap_alloc(cap * size)) < 0) return 0;
+			for (c = 0; c < size; c++)
+				memcpy(g_heap + data + c * cap, vec_cell(hd, 0, c), (size_t)hd[VH_LEN].i * sizeof(Cell));
+			heap_free(hd[VH_DATA].i, old * size);
+		}
 		hd[VH_DATA].i = data;
 		hd[VH_CAP].i = cap;
 	}
@@ -408,7 +691,7 @@ static int vec_push(i64 v, i64 size, const Cell *from)
 	return 1;
 }
 
-static u64 hash_key(i64 key, i64 is_str)
+static u64 hash_key(i64 key, int is_str)
 {
 	u64 h;
 	if (is_str) { /* FNV-1a */
@@ -426,19 +709,20 @@ static u64 hash_key(i64 key, i64 is_str)
 	return h ^ (h >> 31);
 }
 
-/* map_new VSIZE STR: an empty map whose values take VSIZE cells, keyed by strings when STR; -1 when the heap is full */
-static i64 map_new(i64 vsize, i64 is_str)
+/* map_new TYPE: an empty map of this map type; -1 when the heap is full */
+static i64 map_new(Ty mt)
 {
-	i64 h = heap_alloc(MH_CELLS), ent = heap_alloc(8 * (2 + vsize)), idx = heap_alloc(16);
+	i64 esize = 2 + cells(g_tys[mt].elem), h = heap_alloc(MH_CELLS), ent = heap_alloc(8 * esize), idx = heap_alloc(16);
 	if (h < 0 || ent < 0 || idx < 0) return -1;
+	g_heap[h + OB_RC].i = 1;
+	g_heap[h + OB_KIND].i = KIND_MAP | (i64)((u64)mt << 8);
+	g_objects[KIND_MAP]++;
 	g_heap[h + MH_COUNT].i = 0;
 	g_heap[h + MH_USED].i = 0;
 	g_heap[h + MH_CAP].i = 8;
 	g_heap[h + MH_ENT].i = ent;
 	g_heap[h + MH_SLOTS].i = 16;
 	g_heap[h + MH_IDX].i = idx;
-	g_heap[h + MH_VSIZE].i = vsize;
-	g_heap[h + MH_STR].i = is_str;
 	memset(g_heap + idx, 0, 16 * sizeof(Cell));
 	return h;
 }
@@ -447,7 +731,8 @@ static i64 map_new(i64 vsize, i64 is_str)
 static i64 map_find(i64 m, i64 key, i64 *slot)
 {
 	const Cell *hd = g_heap + m;
-	i64 mask = hd[MH_SLOTS].i - 1, esize = 2 + hd[MH_VSIZE].i, at = (i64)(hash_key(key, hd[MH_STR].i) & (u64)mask);
+	int strkeys = map_strkeys(m);
+	i64 mask = hd[MH_SLOTS].i - 1, esize = 2 + map_vsize(m), at = (i64)(hash_key(key, strkeys) & (u64)mask);
 	for (;; at = (at + 1) & mask) {
 		i64 e = g_heap[hd[MH_IDX].i + at].i;
 		const Cell *ent;
@@ -456,7 +741,7 @@ static i64 map_find(i64 m, i64 key, i64 *slot)
 			return -1;
 		}
 		ent = g_heap + hd[MH_ENT].i + (e - 1) * esize;
-		if (ent[0].i && (hd[MH_STR].i ? str_eq(ent[1].i, key) : ent[1].i == key)) {
+		if (ent[0].i && (strkeys ? str_eq(ent[1].i, key) : ent[1].i == key)) {
 			*slot = at;
 			return e - 1;
 		}
@@ -468,14 +753,24 @@ static i64 map_find(i64 m, i64 key, i64 *slot)
 static int map_grow(i64 m)
 {
 	Cell *hd = g_heap + m;
-	i64 esize = 2 + hd[MH_VSIZE].i, cap = hd[MH_CAP].i * 2, slots = hd[MH_SLOTS].i * 2;
-	i64 ent = heap_alloc(cap * esize), idx = heap_alloc(slots), e, k = 0, slot;
-	if (ent < 0 || idx < 0) return 0;
-	for (e = 0; e < hd[MH_USED].i; e++) {
+	i64 esize = 2 + map_vsize(m), cap = hd[MH_CAP].i * 2, slots = hd[MH_SLOTS].i * 2, ent, idx, e, k = 0, slot;
+	int idx_here = heap_grow(hd[MH_IDX].i, hd[MH_SLOTS].i), ent_here; /* each grows in place when it can */
+	idx = idx_here ? hd[MH_IDX].i : heap_alloc(slots);
+	if (idx < 0) return 0;
+	ent_here = heap_grow(hd[MH_ENT].i, hd[MH_CAP].i * esize);
+	ent = ent_here ? hd[MH_ENT].i : heap_alloc(cap * esize);
+	if (ent < 0) { /* the map stays as it was */
+		if (idx_here) heap_free(idx + hd[MH_SLOTS].i, hd[MH_SLOTS].i);
+		else heap_free(idx, slots);
+		return 0;
+	}
+	for (e = 0; e < hd[MH_USED].i; e++) { /* the live entries, packed; in place they only move down */
 		const Cell *from = g_heap + hd[MH_ENT].i + e * esize;
-		if (from[0].i) memcpy(g_heap + ent + k++ * esize, from, (size_t)esize * sizeof(Cell));
+		if (from[0].i) memmove(g_heap + ent + k++ * esize, from, (size_t)esize * sizeof(Cell));
 	}
 	memset(g_heap + idx, 0, (size_t)slots * sizeof(Cell));
+	if (!ent_here) heap_free(hd[MH_ENT].i, hd[MH_CAP].i * esize);
+	if (!idx_here) heap_free(hd[MH_IDX].i, hd[MH_SLOTS].i);
 	hd[MH_ENT].i = ent;
 	hd[MH_IDX].i = idx;
 	hd[MH_CAP].i = cap;
@@ -488,13 +783,18 @@ static int map_grow(i64 m)
 	return 1;
 }
 
-/* map_insert M KEY VALUE: add the entry, or give an existing key the new value; 0 when the heap is full */
+/* map_insert M KEY VALUE: move the entry in, or give an existing key the new value (the old value and the key just
+ * passed lose an owner); 0 when the heap is full */
 static int map_insert(i64 m, i64 key, const Cell *val)
 {
 	Cell *hd = g_heap + m, *ent;
-	i64 vsize = hd[MH_VSIZE].i, esize = 2 + vsize, slot, e = map_find(m, key, &slot);
+	Ty vt = g_tys[obj_type(m)].elem;
+	i64 vsize = cells(vt), esize = 2 + vsize, slot, e = map_find(m, key, &slot);
 	if (e >= 0) {
-		memcpy(g_heap + hd[MH_ENT].i + e * esize + 2, val, (size_t)vsize * sizeof(Cell));
+		ent = g_heap + hd[MH_ENT].i + e * esize;
+		refs(ent + 2, 1, vt, 0);
+		memcpy(ent + 2, val, (size_t)vsize * sizeof(Cell));
+		if (map_strkeys(m)) obj_release(key);
 		return 1;
 	}
 	if (hd[MH_USED].i == hd[MH_CAP].i) {
@@ -519,9 +819,15 @@ static int index_error(i32 line, i64 i, i64 len)
 	return vm_error(line, msg);
 }
 
-#define HEAP_FULL "out of memory for vecs and maps (the heap is full)"
+/* range_error LINE FROM TO LEN: substr's bytes FROM up to TO do not fit a string of LEN, or TO is before FROM */
+static int range_error(i32 line, i64 from, i64 to, i64 len)
+{
+	char msg[160];
+	sprintf(msg, "substr %ld %ld does not fit a string of %ld bytes", (long)from, (long)to, (long)len);
+	return vm_error(line, msg);
+}
 
-/* the command line after the file name, copied into the text arena once */
+/* the command line after the file name, kept in the text arena as the program's own strings */
 #define MAX_ARGS 4096
 static i64 g_arg_cells[MAX_ARGS];
 static i64 g_nargs;
@@ -532,36 +838,8 @@ static o args_init(int argc, char **argv)
 	for (i = 0; i < argc && i < MAX_ARGS; i++) {
 		size_t start = g_text.used;
 		if (!text_put(argv[i], strlen(argv[i]))) die("arguments too long for the text arena");
-		g_arg_cells[g_nargs++] = text_end(start);
+		g_arg_cells[g_nargs++] = text_const(start);
 	}
-}
-
-/* read_into FILE: everything left in FILE as a new string; 0 when the text arena filled up */
-static int read_into(FILE *in, i64 *res)
-{
-	size_t start = g_text.used;
-	int ok = text_room();
-	for (;;) {
-		char buf[4096];
-		size_t got = fread(buf, 1, sizeof(buf), in);
-		if (!got) break;
-		if (ok && !text_put(buf, got)) ok = 0;
-	}
-	if (!ok) {
-		g_text.used = start;
-		return 0;
-	}
-	*res = text_end(start);
-	return 1;
-}
-#define TEXT_FULL "out of memory for strings (the text arena is full)"
-
-/* range_error LINE FROM TO LEN: substr's bytes FROM up to TO do not fit a string of LEN, or TO is before FROM */
-static int range_error(i32 line, i64 from, i64 to, i64 len)
-{
-	char msg[160];
-	sprintf(msg, "substr %ld %ld does not fit a string of %ld bytes", (long)from, (long)to, (long)len);
-	return vm_error(line, msg);
 }
 
 /* vm_run PC: run from PC until HALT; 0 when it finished, 1 after a runtime error */
@@ -569,8 +847,9 @@ static int vm_run(i32 pc)
 {
 	i32 sp = 0, fp = 0, nf = 0;
 	Cell *s = g_vstack;
+	const Ins *in = 0;
 	for (;;) {
-		const Ins *in = &g_code[pc++];
+		in = &g_code[pc++];
 		switch ((Op)in->op) {
 		case OP_HALT: return 0;
 		case OP_ENTER:
@@ -592,6 +871,10 @@ static int vm_run(i32 pc)
 		case OP_STOREN_L: sp -= in->b; memcpy(s + fp + in->a, s + sp, (size_t)in->b * sizeof(Cell)); break;
 		case OP_LOADN_G: memcpy(s + sp, g_global_cells + in->a, (size_t)in->b * sizeof(Cell)); sp += in->b; break;
 		case OP_STOREN_G: sp -= in->b; memcpy(g_global_cells + in->a, s + sp, (size_t)in->b * sizeof(Cell)); break;
+		case OP_RETAIN: refs(s + sp - cells((Ty)in->a), 1, (Ty)in->a, 1); break;
+		case OP_DROP: sp -= cells((Ty)in->a); refs(s + sp, 1, (Ty)in->a, 0); break;
+		case OP_RELEASE_L: refs(s + fp + in->a, 1, (Ty)in->b, 0); break;
+		case OP_RELEASE_G: refs(g_global_cells + in->a, 1, (Ty)in->b, 0); break;
 
 		case OP_ADD_I: sp--; s[sp - 1].i = (i64)((u64)s[sp - 1].i + (u64)s[sp].i); break;
 		case OP_SUB_I: sp--; s[sp - 1].i = (i64)((u64)s[sp - 1].i - (u64)s[sp].i); break;
@@ -625,8 +908,16 @@ static int vm_run(i32 pc)
 		case OP_GE_F: sp--; s[sp - 1].i = s[sp - 1].f >= s[sp].f; break;
 		case OP_EQ_F: sp--; s[sp - 1].i = s[sp - 1].f == s[sp].f; break;
 		case OP_NE_F: sp--; s[sp - 1].i = s[sp - 1].f != s[sp].f; break;
-		case OP_EQ_S: sp--; s[sp - 1].i = str_eq(s[sp - 1].i, s[sp].i); break;
-		case OP_NE_S: sp--; s[sp - 1].i = !str_eq(s[sp - 1].i, s[sp].i); break;
+		case OP_EQ_S:
+		case OP_NE_S: { /* a: bit 0 the first string is borrowed, bit 1 the second */
+			i64 a = s[sp - 2].i, b = s[sp - 1].i;
+			int eq = str_eq(a, b);
+			if (!(in->a & 1)) obj_release(a);
+			if (!(in->a & 2)) obj_release(b);
+			sp--;
+			s[sp - 1].i = in->op == OP_EQ_S ? eq : !eq;
+			break;
+		}
 		case OP_NOT: s[sp - 1].i = !s[sp - 1].i; break;
 
 		case OP_JMP: pc = in->a; break;
@@ -641,7 +932,12 @@ static int vm_run(i32 pc)
 			s[sp - 1].i = (i64)v;
 			break;
 		}
-		case OP_LEN_S: s[sp - 1].i = (i64)STR_LEN(s[sp - 1].i); break;
+		case OP_LEN_S: {
+			i64 v = s[sp - 1].i;
+			s[sp - 1].i = (i64)STR_LEN(v);
+			if (!in->a) obj_release(v);
+			break;
+		}
 
 		case OP_CALL: {
 			const Fn *fn = &g_fns[in->a];
@@ -686,67 +982,83 @@ static int vm_run(i32 pc)
 			g_sink = in->b ? stderr : stdout;
 			print_fmt(&g_fmts[in->a], s + sp);
 			if (in->op == OP_PRINTLN) putc('\n', g_sink);
+			release_args(&g_fmts[in->a], s + sp);
 			break;
 		case OP_FORMAT: {
 			size_t start = g_text.used;
+			i64 h;
 			sp -= g_fmts[in->a].cells;
 			g_sink = 0;
 			g_sink_full = !text_room();
 			print_fmt(&g_fmts[in->a], s + sp);
 			if (g_sink_full) return vm_error(in->line, TEXT_FULL);
-			s[sp++].i = text_end(start);
+			release_args(&g_fmts[in->a], s + sp);
+			if ((h = text_take(start)) < 0) return vm_error(in->line, HEAP_FULL);
+			s[sp++].i = h;
 			break;
 		}
-		case OP_SH:
-			if (!run_sh(s[sp - 1].i, &s[sp - 1].i)) return vm_error(in->line, TEXT_FULL);
+		case OP_SH: {
+			i64 cmd = s[sp - 1].i, res;
+			if (!run_cmd(c_str(cmd), &res)) return vm_error(in->line, g_fail);
+			obj_release(cmd);
+			s[sp - 1].i = res;
 			break;
+		}
 		case OP_SHPIPE: {
-			i64 res;
+			i64 res, k;
 			sp -= in->a;
-			if (!run_pipe(s + sp, in->a, in->b, &res))
-				return vm_error(in->line, in->b ? "<<<: no room for the text, or no temporary file for it" : TEXT_FULL);
+			if (!run_pipe(s + sp, in->a, in->b, &res)) return vm_error(in->line, g_fail);
+			for (k = 0; k < in->a; k++) obj_release(s[sp + k].i);
 			s[sp++].i = res;
 			break;
 		}
 		case OP_PID: s[sp++].i = (i64)getpid(); break;
 		case OP_ENV: {
-			const char *name = c_str(s[sp - 1].i), *val;
-			size_t start = g_text.used;
-			if (!name) return vm_error(in->line, TEXT_FULL);
-			val = getenv(name);
+			i64 name = s[sp - 1].i, h;
+			const char *c = c_str(name), *val;
+			if (!c) return vm_error(in->line, TEXT_FULL);
+			val = getenv(c);
 			if (!val) val = "";
-			if (!text_put(val, strlen(val)) || !text_room()) return vm_error(in->line, TEXT_FULL);
-			s[sp - 1].i = text_end(start);
+			if ((h = str_new(val, strlen(val))) < 0) return vm_error(in->line, HEAP_FULL);
+			obj_release(name);
+			s[sp - 1].i = h;
 			break;
 		}
 		case OP_SYSTEM: {
-			const char *c = c_str(s[sp - 1].i);
+			i64 cmd = s[sp - 1].i;
+			const char *c = c_str(cmd);
 			int st;
 			if (!c) return vm_error(in->line, TEXT_FULL);
 			fflush(stdout);
 			st = system(c);
+			obj_release(cmd);
 			s[sp - 1].i = st == -1 ? -1 : (st >> 8) & 0xff; /* the exit status as the shell reports it (Linux) */
 			break;
 		}
 		case OP_PARSE_I: {
-			i64 v = 0;
-			int ok = parse_int(s[sp - 1].i, &v);
+			i64 v = 0, str = s[sp - 1].i;
+			int ok = parse_int(str, &v);
+			obj_release(str);
 			s[sp - 1].i = ok;
 			s[sp++].i = v;
 			break;
 		}
 		case OP_PARSE_F: {
+			i64 str = s[sp - 1].i;
 			f64 v = 0;
-			int ok = parse_float(s[sp - 1].i, &v);
+			int ok = parse_float(str, &v);
+			obj_release(str);
 			s[sp - 1].i = ok;
 			s[sp++].f = ok ? v : 0;
 			break;
 		}
 		case OP_SUBSTR: {
-			i64 v = s[sp - 3].i, from = s[sp - 2].i, to = s[sp - 1].i;
+			i64 v = s[sp - 3].i, from = s[sp - 2].i, to = s[sp - 1].i, h;
 			if (from < 0 || from > to || to > STR_LEN(v)) return range_error(in->line, from, to, STR_LEN(v));
+			if ((h = str_piece(v, from, to - from)) == -1) return vm_error(in->line, HEAP_FULL);
+			obj_release(v);
 			sp -= 2;
-			s[sp - 1].i = str_cell(STR_OFF(v) + (size_t)from, (size_t)(to - from));
+			s[sp - 1].i = h;
 			break;
 		}
 		case OP_BYTE: {
@@ -758,35 +1070,44 @@ static int vm_run(i32 pc)
 			}
 			sp--;
 			s[sp - 1].i = (u8)STR_P(v)[i];
+			if (!in->a) obj_release(v);
 			break;
 		}
 		case OP_FIND: { /* the two strings become the option's two cells */
-			i64 at = str_find(s[sp - 2].i, s[sp - 1].i, 0);
+			i64 a = s[sp - 2].i, b = s[sp - 1].i, at = str_find(a, b, 0);
+			obj_release(a);
+			obj_release(b);
 			s[sp - 2].i = at >= 0;
 			s[sp - 1].i = at >= 0 ? at : 0;
 			break;
 		}
 		case OP_SPLIT: {
-			i64 v = s[sp - 2].i, sep = s[sp - 1].i, n = 1, at, start = 0, h;
+			i64 v = s[sp - 2].i, sep = s[sp - 1].i, n = 1, at, start = 0, h, piece;
 			Cell *data;
 			if (!STR_LEN(sep)) return vm_error(in->line, "split: the separator is empty");
 			for (at = str_find(v, sep, 0); at >= 0; at = str_find(v, sep, at + STR_LEN(sep))) n++;
-			if ((h = vec_new(n, 1, 0)) < 0) return vm_error(in->line, HEAP_FULL);
+			if ((h = vec_new(g_vec_str, n, 0)) < 0) return vm_error(in->line, HEAP_FULL);
 			data = g_heap + g_heap[h + VH_DATA].i;
-			for (n = 0; (at = str_find(v, sep, start)) >= 0; start = at + STR_LEN(sep))
-				data[n++].i = str_cell(STR_OFF(v) + (size_t)start, (size_t)(at - start));
-			data[n].i = str_cell(STR_OFF(v) + (size_t)start, (size_t)(STR_LEN(v) - start));
+			for (n = 0;; start = at + STR_LEN(sep)) {
+				at = str_find(v, sep, start);
+				if ((piece = str_piece(v, start, (at >= 0 ? at : STR_LEN(v)) - start)) == -1) return vm_error(in->line, HEAP_FULL);
+				data[n++].i = piece;
+				if (at < 0) break;
+			}
+			obj_release(v);
+			obj_release(sep);
 			sp--;
 			s[sp - 1].i = h;
 			break;
 		}
 		case OP_JOIN: {
-			const Cell *hd = g_heap + s[sp - 2].i;
-			i64 sep = s[sp - 1].i, k;
+			i64 v = s[sp - 2].i, sep = s[sp - 1].i, k, h;
+			const Cell *hd = g_heap + v;
 			size_t start = g_text.used;
 			int ok = text_room();
+			MADE(v);
 			for (k = 0; ok && k < hd[VH_LEN].i; k++) {
-				i64 e = g_heap[hd[VH_DATA].i + k].i;
+				i64 e = vec_cell(hd, k, 0)->i;
 				if (k) ok = text_put(STR_P(sep), STR_LEN(sep));
 				if (ok) ok = text_put(STR_P(e), STR_LEN(e));
 			}
@@ -794,8 +1115,11 @@ static int vm_run(i32 pc)
 				g_text.used = start;
 				return vm_error(in->line, TEXT_FULL);
 			}
+			if ((h = text_take(start)) < 0) return vm_error(in->line, HEAP_FULL);
+			obj_release(v);
+			obj_release(sep);
 			sp--;
-			s[sp - 1].i = text_end(start);
+			s[sp - 1].i = h;
 			break;
 		}
 		case OP_CHAR:
@@ -807,34 +1131,39 @@ static int vm_run(i32 pc)
 			s[sp - 1].i = str_cell((size_t)(2 * s[sp - 1].i), 1);
 			break;
 		case OP_TRIM: {
+			i64 v = s[sp - 1].i, h;
 			const char *p;
 			u32 n;
-			trimmed(s[sp - 1].i, &p, &n);
-			s[sp - 1].i = str_cell((size_t)(p - (const char *)g_text.base), n);
+			trimmed(v, &p, &n);
+			if ((h = str_piece(v, p - STR_P(v), n)) == -1) return vm_error(in->line, HEAP_FULL);
+			obj_release(v);
+			s[sp - 1].i = h;
 			break;
 		}
 		case OP_READ_FILE: { /* the path's cell becomes the option's two: tag, string */
-			const char *path = c_str(s[sp - 1].i);
+			i64 pathv = s[sp - 1].i, v = 0;
+			const char *path = c_str(pathv);
 			FILE *file = path ? fopen(path, "rb") : 0;
-			i64 v = 0;
-			int ok = 1;
 			if (!path) return vm_error(in->line, TEXT_FULL);
 			if (file) {
-				ok = read_into(file, &v);
+				int ok = read_into(file, &v);
 				fclose(file);
-				if (!ok) return vm_error(in->line, TEXT_FULL);
+				if (!ok) return vm_error(in->line, g_fail);
 			}
+			obj_release(pathv);
 			s[sp - 1].i = file != 0;
 			s[sp++].i = v;
 			break;
 		}
 		case OP_WRITE_FILE: { /* a: append, b: the text is below the path */
-			i64 text = s[sp - (in->b ? 2 : 1)].i;
-			const char *path = c_str(s[sp - (in->b ? 1 : 2)].i);
+			i64 text = s[sp - (in->b ? 2 : 1)].i, pathv = s[sp - (in->b ? 1 : 2)].i;
+			const char *path = c_str(pathv);
 			FILE *file = path ? fopen(path, in->a ? "ab" : "wb") : 0;
 			int ok = file && fwrite(STR_P(text), 1, STR_LEN(text), file) == STR_LEN(text);
 			if (file && fclose(file)) ok = 0;
 			if (!path) return vm_error(in->line, TEXT_FULL);
+			obj_release(text);
+			obj_release(pathv);
 			sp--;
 			s[sp - 1].i = ok;
 			break;
@@ -842,6 +1171,7 @@ static int vm_run(i32 pc)
 		case OP_READ_LINE: {
 			size_t start = g_text.used;
 			int c = EOF, any = 0;
+			i64 h;
 			fflush(stdout); /* a prompt printed before it shows up first */
 			while ((c = getchar()) != EOF) {
 				char ch = (char)c;
@@ -853,36 +1183,32 @@ static int vm_run(i32 pc)
 				}
 			}
 			if (g_text.used > start && g_text.base[g_text.used - 1] == '\r') g_text.used--;
-			if (!any || !text_room()) {
+			if (!any) {
 				g_text.used = start;
 				s[sp++].i = 0;
 				s[sp++].i = 0;
-				if (any) return vm_error(in->line, TEXT_FULL);
 				break;
 			}
+			if ((h = text_take(start)) < 0) return vm_error(in->line, HEAP_FULL);
 			s[sp++].i = 1;
-			s[sp++].i = text_end(start);
+			s[sp++].i = h;
 			break;
 		}
 		case OP_GETENV: {
-			const char *name = c_str(s[sp - 1].i), *val;
-			size_t start = g_text.used;
-			if (!name) return vm_error(in->line, TEXT_FULL);
-			val = getenv(name);
+			i64 name = s[sp - 1].i, h = 0;
+			const char *c = c_str(name), *val;
+			if (!c) return vm_error(in->line, TEXT_FULL);
+			val = getenv(c);
+			if (val && (h = str_new(val, strlen(val))) < 0) return vm_error(in->line, HEAP_FULL);
+			obj_release(name);
 			s[sp - 1].i = val != 0;
-			s[sp].i = 0;
-			if (val) {
-				if (!text_put(val, strlen(val))) return vm_error(in->line, TEXT_FULL);
-				s[sp].i = text_end(start);
-			}
-			sp++;
+			s[sp++].i = h;
 			break;
 		}
 		case OP_ARGS: {
-			i64 h = vec_new(g_nargs, 1, (const Cell *)0);
-			i64 k;
+			i64 h = vec_new(g_vec_str, g_nargs, 0), k;
 			if (h < 0) return vm_error(in->line, HEAP_FULL);
-			for (k = 0; k < g_nargs; k++) g_heap[g_heap[h + VH_DATA].i + k].i = g_arg_cells[k];
+			for (k = 0; k < g_nargs; k++) vec_cell(g_heap + h, k, 0)->i = g_arg_cells[k];
 			s[sp++].i = h;
 			break;
 		}
@@ -890,39 +1216,56 @@ static int vm_run(i32 pc)
 			fflush(stdout);
 			exit((int)(s[sp - 1].i & 0xff));
 		case OP_INC_L: s[fp + in->a].i = (i64)((u64)s[fp + in->a].i + 1); break;
-		case OP_VEC_NEW: {
+		case OP_VEC_NEW: { /* a: elements on the stack, b: the vec type */
 			i64 h;
-			sp -= in->a * in->b;
-			if ((h = vec_new(in->a, in->b, s + sp)) < 0) return vm_error(in->line, HEAP_FULL);
+			sp -= in->a * cells(g_tys[in->b].elem);
+			if ((h = vec_new((Ty)in->b, in->a, s + sp)) < 0) return vm_error(in->line, HEAP_FULL);
 			s[sp++].i = h;
 			break;
 		}
-		case OP_VEC_LEN: s[sp - 1].i = g_heap[s[sp - 1].i + VH_LEN].i; break;
+		case OP_VEC_LEN: {
+			i64 v = s[sp - 1].i;
+			MADE(v);
+			s[sp - 1].i = g_heap[v + VH_LEN].i;
+			if (!in->a) obj_release(v);
+			break;
+		}
 		case OP_VEC_PUSH:
 			sp -= in->a + 1;
-			if (!vec_push(s[sp].i, in->a, s + sp + 1)) return vm_error(in->line, HEAP_FULL);
+			MADE(s[sp].i);
+			if (!vec_push(s[sp].i, s + sp + 1)) return vm_error(in->line, HEAP_FULL);
+			if (!in->b) obj_release(s[sp].i);
 			break;
-		case OP_VEC_GET: {
-			const Cell *hd = g_heap + s[sp - 2].i;
-			i64 i = s[sp - 1].i;
+		case OP_VEC_GET: { /* a copy of the element: the vec keeps its own */
+			i64 v = s[sp - 2].i, i = s[sp - 1].i;
+			const Cell *hd = g_heap + v;
+			MADE(v);
 			if (i < 0 || i >= hd[VH_LEN].i) return index_error(in->line, i, hd[VH_LEN].i);
 			sp -= 2;
 			vec_load(hd, i, in->a, s + sp);
+			refs(s + sp, 1, vec_elem(v), 1);
 			sp += in->a;
+			if (!in->b) obj_release(v);
 			break;
 		}
 		case OP_VEC_PUT: {
 			const Cell *hd;
-			i64 i;
+			i64 i, v;
 			sp -= in->a + 2;
-			hd = g_heap + s[sp].i;
+			v = s[sp].i;
+			hd = g_heap + v;
 			i = s[sp + 1].i;
+			MADE(v);
 			if (i < 0 || i >= hd[VH_LEN].i) return index_error(in->line, i, hd[VH_LEN].i);
+			refs(vec_cell(hd, i, 0), hd[VH_CAP].i, vec_elem(v), 0); /* the element it replaces */
 			vec_store(hd, i, in->a, s + sp + 2);
+			if (!in->b) obj_release(v);
 			break;
 		}
-		case OP_VEC_POP: {
-			Cell *hd = g_heap + s[sp - 1].i;
+		case OP_VEC_POP: { /* the last element moves out */
+			i64 v = s[sp - 1].i;
+			Cell *hd = g_heap + v;
+			MADE(v);
 			if (!hd[VH_LEN].i) { /* none */
 				s[sp - 1].i = 0;
 				memset(s + sp, 0, (size_t)in->a * sizeof(Cell));
@@ -932,12 +1275,13 @@ static int vm_run(i32 pc)
 				vec_load(hd, hd[VH_LEN].i, in->a, s + sp);
 			}
 			sp += in->a;
+			if (!in->b) obj_release(v);
 			break;
 		}
-		case OP_MAP_NEW: { /* a: entries on the stack, b: value cells * 2 + (keys are strings) */
-			i64 vsize = in->b >> 1, k, m;
+		case OP_MAP_NEW: { /* a: entries on the stack, b: the map type */
+			i64 vsize = cells(g_tys[in->b].elem), k, m;
 			sp -= in->a * (1 + vsize);
-			if ((m = map_new(vsize, in->b & 1)) < 0) return vm_error(in->line, HEAP_FULL);
+			if ((m = map_new((Ty)in->b)) < 0) return vm_error(in->line, HEAP_FULL);
 			for (k = 0; k < in->a; k++) {
 				const Cell *e = s + sp + k * (1 + vsize);
 				if (!map_insert(m, e[0].i, e + 1)) return vm_error(in->line, HEAP_FULL);
@@ -947,42 +1291,65 @@ static int vm_run(i32 pc)
 		}
 		case OP_MAP_INSERT:
 			sp -= in->a + 2;
+			MADE(s[sp].i);
 			if (!map_insert(s[sp].i, s[sp + 1].i, s + sp + 2)) return vm_error(in->line, HEAP_FULL);
+			if (!in->b) obj_release(s[sp].i);
 			break;
 		case OP_MAP_LOOKUP:
 		case OP_MAP_REMOVE: { /* the map and the key become the option: tag, value */
-			i64 m = s[sp - 2].i, slot, e = map_find(m, s[sp - 1].i, &slot);
+			i64 m = s[sp - 2].i, key = s[sp - 1].i, slot, e;
+			int strkeys = map_strkeys(m);
+			MADE(m);
+			e = map_find(m, key, &slot);
 			sp -= 2;
 			s[sp].i = e >= 0;
 			if (e >= 0) {
 				Cell *ent = g_heap + g_heap[m + MH_ENT].i + e * (2 + in->a);
 				memcpy(s + sp + 1, ent + 2, (size_t)in->a * sizeof(Cell));
-				if (in->op == OP_MAP_REMOVE) {
+				if (in->op == OP_MAP_LOOKUP) {
+					refs(s + sp + 1, 1, g_tys[obj_type(m)].elem, 1); /* a copy: the map keeps its own */
+				} else { /* the value moves out, the entry dies with its key */
 					ent[0].i = 0;
 					g_heap[m + MH_COUNT].i--;
+					if (strkeys) obj_release(ent[1].i);
 				}
 			} else {
 				memset(s + sp + 1, 0, (size_t)in->a * sizeof(Cell));
 			}
+			if (strkeys && !(in->b & 2)) obj_release(key);
+			if (!(in->b & 1)) obj_release(m);
 			sp += 1 + in->a;
 			break;
 		}
 		case OP_MAP_HAS: {
-			i64 slot;
+			i64 m = s[sp - 2].i, key = s[sp - 1].i, slot, found;
+			MADE(m);
+			found = map_find(m, key, &slot) >= 0;
+			if (map_strkeys(m) && !(in->a & 2)) obj_release(key);
+			if (!(in->a & 1)) obj_release(m);
 			sp--;
-			s[sp - 1].i = map_find(s[sp - 1].i, s[sp].i, &slot) >= 0;
+			s[sp - 1].i = found;
 			break;
 		}
-		case OP_MAP_LEN: s[sp - 1].i = g_heap[s[sp - 1].i + MH_COUNT].i; break;
+		case OP_MAP_LEN: {
+			i64 m = s[sp - 1].i;
+			MADE(m);
+			s[sp - 1].i = g_heap[m + MH_COUNT].i;
+			if (!in->a) obj_release(m);
+			break;
+		}
 		case OP_MAP_KEYS:
-		case OP_MAP_VALUES: {
-			i64 m = s[sp - 1].i, esize = 2 + g_heap[m + MH_VSIZE].i, size = in->op == OP_MAP_KEYS ? 1 : g_heap[m + MH_VSIZE].i;
-			i64 e, k = 0, v = vec_new(g_heap[m + MH_COUNT].i, size, (const Cell *)0);
-			if (v < 0) return vm_error(in->line, HEAP_FULL);
+		case OP_MAP_VALUES: { /* a: the vec type made; its elements are copies */
+			i64 m = s[sp - 1].i, e, k = 0, v, size = cells(g_tys[in->a].elem), esize = 2 + map_vsize(m);
+			MADE(m);
+			if ((v = vec_new((Ty)in->a, g_heap[m + MH_COUNT].i, 0)) < 0) return vm_error(in->line, HEAP_FULL);
 			for (e = 0; e < g_heap[m + MH_USED].i; e++) {
 				const Cell *ent = g_heap + g_heap[m + MH_ENT].i + e * esize;
-				if (ent[0].i) vec_store(g_heap + v, k++, size, in->op == OP_MAP_KEYS ? ent + 1 : ent + 2);
+				if (!ent[0].i) continue;
+				refs(in->op == OP_MAP_KEYS ? ent + 1 : ent + 2, 1, g_tys[in->a].elem, 1);
+				vec_store(g_heap + v, k++, size, in->op == OP_MAP_KEYS ? ent + 1 : ent + 2);
 			}
+			if (!in->b) obj_release(m);
 			s[sp - 1].i = v;
 			break;
 		}
@@ -992,11 +1359,21 @@ static int vm_run(i32 pc)
 			fputs("=> ", stdout);
 			print_value((Ty)in->a, s + sp);
 			printf(" : %s\n", tn((Ty)in->a));
+			refs(s + sp, 1, (Ty)in->a, 0);
 			break;
 		default:
 			return vm_error(in->line, "internal: unknown instruction");
 		}
 	}
+}
+
+/* leak_check: free what the globals hold; 0 when that leaves nothing on the heap */
+static i64 leak_check(void)
+{
+	i32 i;
+	for (i = 0; i < g_nglobals; i++) refs(g_global_cells + g_globals[i].cell, 1, g_globals[i].type, 0);
+	drain();
+	return g_live;
 }
 
 #define GAEL_OP_NAME_(name, n) #name,
@@ -1018,7 +1395,10 @@ static o disassemble(i32 from, i32 to)
 		if (in->op == OP_PUSH_S) printf("\t(\"%.40s\")", g_strs[in->a].p);
 		if (in->op == OP_PRINT || in->op == OP_PRINTLN || in->op == OP_FORMAT) printf("\t(\"%.40s\")", g_strs[g_fmts[in->a].str].p);
 		if (in->op == OP_CALL) printf("\t(%.40s)", g_fns[in->a].name);
-		if (in->op == OP_SHOW) printf("\t(%.40s)", tn((Ty)in->a));
+		if (in->op == OP_SHOW || in->op == OP_RETAIN || in->op == OP_DROP || in->op == OP_MAP_KEYS || in->op == OP_MAP_VALUES)
+			printf("\t(%.40s)", tn((Ty)in->a));
+		if (in->op == OP_RELEASE_L || in->op == OP_RELEASE_G || in->op == OP_VEC_NEW || in->op == OP_MAP_NEW)
+			printf("\t(%.40s)", tn((Ty)in->b));
 		if (in->line) printf("\t; line %ld", (long)in->line);
 		putchar('\n');
 	}
