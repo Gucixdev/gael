@@ -221,8 +221,11 @@ Potem: makra i moduły (0.2), manifest i resolver gemów (0.3), bufor i okno (0.
 - **Operatory basha:** `(|> x (f a) g)` (wartość jako pierwszy argument kroku), `(| "ls" "wc -l")`,
   `(<<< tekst "sort")`, `(> tekst plik)` i `(>> tekst plik)` (na liczbach `>` dalej porównuje), `($ "date")`, `$$`,
   `$HOME`, `&&` i `||` z komendami jak w bashu i z boolami jak `and`/`or`.
-- **Następne, po kolei:** automatyczne SoA dla `(vec struktura)`, refcount, typy o rozmiarze (`i8`..`u64`, `f32`, `f64`), potem makra,
-  traits, manifest gemów, bufor i okno. Numery wersji przesuwają się względem planu wyżej.
+- **SoA:** `(vec struktura)` trzyma pola jako kolumny (komórka c elementu i pod `dane + c * pojemność + i`);
+  `get` zbiera element, `put` i `push` go rozkładają. Odczyt jednego pola wszystkich elementów to dziś nadal pełny
+  `get`; czytanie samej kolumny przez kompilator to następny krok optymalizacji.
+- **Następne, po kolei:** refcount, typy o rozmiarze (`i8`..`u64`, `f32`, `f64`), potem makra, traits, manifest
+  gemów, bufor i okno. Numery wersji przesuwają się względem planu wyżej.
 
 ## Notatki → stan
 
@@ -236,7 +239,7 @@ Każdy punkt z notatek o godot-rs i gaelu, z tym, co się z nim stało. ✓ zrob
 - ✓ `printf`/`println` (`print`, `println`, `format`, `%v`), `option`, krótkie spięcie `and`/`or`, `&&`, `||`, `|>`.
 - ✓ listy/array/dict/map/table: `vec` i `map`; ✓ hashmap.
 - → typy o określonym rozmiarze, „można określać, ale nie trzeba” (`int` = `i64`, `float` = `f64`).
-- → automatyczne SoA zamiast AoS na poziomie języka.
+- ✓ automatyczne SoA zamiast AoS na poziomie języka: `(vec struktura)` trzyma każde pole w osobnej kolumnie.
 - ✓ operatory basha: `|>`, `|`, `<<<`, `>`, `>>`, `$`, `$$`, `$ZMIENNA`, `&&` i `||` jak w bashu (komenda = prawda,
   gdy kończy się kodem 0); ✓ klej jak w bashu: `sh`, `system`, `args`, `getenv`, pliki.
 - ✓ część edycji tekstu z Perla: `substr`, `find`, `split`, `join`, `trim`, `byte`, `char`; ○ operatory Perla (`=~`,

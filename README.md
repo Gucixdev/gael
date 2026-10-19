@@ -238,6 +238,8 @@ tests/errors/div-zero.gael:1: runtime error: division by zero
   takes as many cells as its type says: one for a number, a bool, a string, an enum value or a vec, the sum of its
   fields for a struct, and one more than the value inside for an option. A string's cell holds its offset and length
   in the text arena, so `substr`, `split` and `trim` return pieces of the same text without copying it.
+- A vec of structs is stored as columns, one per field (SoA), so going over one field of every element reads one
+  run of memory; the program sees ordinary values, `get` gathers an element and `put` spreads it out again.
 - The compiler counts how deep each function's operand stack can get, and the VM checks that the whole frame fits
   before it enters it, so no instruction can write past the stack.
 
