@@ -4,6 +4,7 @@
 #   examples/NAME.gael      stdout must equal examples/NAME.out, exit 0
 #   tests/errors/NAME.gael  every line of NAME.err must appear on stderr, exit 1
 #   tests/repl.in           the REPL's stdout must equal tests/repl.out, every line of tests/repl.err on stderr
+#   README.md               every "$ ./gael ARGS" example prints exactly the lines shown under it
 # Exit 0 when everything passed. Build outputs go to a temp folder; the checkout is not touched.
 set -u
 cd "$(dirname "${BASH_SOURCE[0]}")" || exit 1
@@ -38,6 +39,13 @@ check() {	# check NAME OK: count a result, say what failed
 	if [ "$2" = 1 ]; then pass=$((pass + 1)); else fail=$((fail + 1)); echo "FAIL $1"; fi
 }
 
+# README examples: a fenced line "$ ./gael ARGS" and the lines under it are a command and its whole output
+readme=$(awk -v dir="$out" '
+	/^```/ { if (n) close(file); n = 0; next }
+	/^\$ \.\/gael ./ { k++; n = 1; file = dir "/readme-" k; print substr($0, 10) > (file ".args"); printf "" > file; next }
+	n { print > file }
+	END { print k + 0 }' README.md)
+
 for bin in "${builds[@]}"; do
 	b=${bin##*/}
 	for f in examples/*.gael; do
@@ -66,6 +74,13 @@ for bin in "${builds[@]}"; do
 	done < tests/repl.err
 	grep -q 'Sanitizer' "$out/stderr" && ok=0
 	check "$b repl" "$ok"
+	for ((k = 1; k <= readme; k++)); do
+		read -r -a args < "$out/readme-$k.args"
+		"$bin" "${args[@]}" > "$out/stdout" 2>&1
+		ok=1
+		cmp -s "$out/stdout" "$out/readme-$k" || { ok=0; diff "$out/readme-$k" "$out/stdout" | head -5; }
+		check "$b README: gael ${args[*]}" "$ok"
+	done
 done
 
 echo "$pass passed, $fail failed (${#builds[@]} builds)"
