@@ -33,7 +33,13 @@ gael -h                this help
 GAEL_HEAP=SIZE  the heap for strings, vecs, maps and pools, and as much again for arenas and for the program's
                 own text (default 1G; K, M, G; the system gives pages only where they are written)
 GAEL_CHECK=1    freed memory is overwritten, and a program that ran to its end reports what it never freed
+GAEL_HOME=DIR   gael's own folder (default ~/.gael): the REPL runs main.gael from there first and appends
+                what ran to repldump.gael; set to nothing, it does neither
 ```
+
+gael's own folder is like `~/.emacs.d`: the REPL starts by running `main.gael` from it, and every form that ran
+without an error is appended to `repldump.gael` there, under a line with the date and the directory of the session.
+`gael < ~/.gael/repldump.gael` plays a session again.
 
 The exit status is 0 when everything went fine, 1 after a compile or runtime error (or what `GAEL_CHECK=1` found),
 and 2 for bad usage.
@@ -278,8 +284,8 @@ tests/errors/div-zero.gael:1: runtime error: division by zero
 
 ## Status
 
-Version 0.3, tested on Linux x86-64 with gcc 13.3 and clang 18.1. `./test` passes 78 checks per build (23 examples,
-49 compile and runtime error cases, one REPL session, five README examples) with gcc, clang and gcc with both
+Version 0.3, tested on Linux x86-64 with gcc 13.3 and clang 18.1. `./test` passes 79 checks per build (23 examples,
+49 compile and runtime error cases, two REPL sessions, five README examples) with gcc, clang and gcc with both
 sanitizers, every run with `GAEL_CHECK=1`. GitHub Actions runs shellcheck on the scripts and `./test` on every push
 (`.github/workflows/test.yml`, ubuntu-24.04).
 

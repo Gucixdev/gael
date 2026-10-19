@@ -126,6 +126,14 @@ odwołania do nodów i komponentów w zapytaniach ECS - wszystko przed uruchomie
     :provides (:nodes (StateMachine) :commands (fsm-graph)))
   ```
 
+- **Kształt gemu (decyzja 2026-10-20):** każdy gem to osobna rzecz. Gem z jednego pliku to jeden plik
+  (`nazwa.gael`); gem z więcej niż jednego pliku to folder (`nazwa/`, wejście `nazwa/main.gael`, manifest obok).
+- **Folder gaela (decyzja 2026-10-20),** jak `~/.emacs.d`: `$GAEL_HOME` albo `~/.gael`. W nim tylko kilka plików
+  (`main.gael` - jak `init.el`, `repldump.gael` - zapis REPL-a, później ustawienia), a gemy jako pliki albo foldery
+  według zasady wyżej (`gems/`). Już działa: REPL na starcie uruchamia `main.gael`, a każdą formę, która przeszła bez
+  błędu, dopisuje do `repldump.gael` pod linią z datą i katalogiem sesji (odtworzenie: `gael < ~/.gael/repldump.gael`,
+  bo REPL pozwala na ponowne definicje). `GAEL_HOME=` (pusty) wyłącza jedno i drugie; `./test` używa folderu
+  tymczasowego.
 - **Nowy projekt:** wybór gemów (2d, 3d, sdf, aabb, noise...). **Ustawienia:** globalne i per projekt, warstwami
   (domyślne gemu, globalne, projekt).
 - **Rejestr:** wszystkie gemy na Twoim GitHubie, Ty decydujesz o merge'ach; gałąź `experimental` dla chętnych. Prosty

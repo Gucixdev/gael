@@ -7,6 +7,10 @@
  *   gael -e CODE ARGS...   compile and run CODE
  *   gael -h                this help
  *
+ * gael's own folder is $GAEL_HOME or ~/.gael (like ~/.emacs.d). The REPL first runs main.gael from there when there is
+ * one (like init.el), then appends every form that ran without an error to repldump.gael there, under a line with the
+ * date and the directory it ran in. GAEL_HOME= (empty) turns both off.
+ *
  * A file can use others: (use "lib.gael") at its top level, the path relative to the file. Every file is compiled
  * once, the used ones first, and the program runs only when none of them has an error.
  *
@@ -14,6 +18,9 @@
  * One translation unit (this file includes the others), C89, no malloc and no recursion. */
 
 #include "base.h"
+#include <errno.h>
+#include <sys/stat.h>
+#include <time.h>
 #include "ops.h"
 #include "read.c"
 #include "compile.c"
@@ -29,7 +36,9 @@ static const char g_usage[] =
 static const char g_usage_env[] =
 	"GAEL_HEAP=SIZE  the heap for strings, vecs, maps and pools, and as much again for arenas and for the program's\n"
 	"                own text (default 1G; K, M, G; the system gives pages only where they are written)\n"
-	"GAEL_CHECK=1    freed memory is overwritten, and a program that ran to its end reports what it never freed\n";
+	"GAEL_CHECK=1    freed memory is overwritten, and a program that ran to its end reports what it never freed\n"
+	"GAEL_HOME=DIR   gael's own folder (default ~/.gael): the REPL runs main.gael from there first and appends\n"
+	"                what ran to repldump.gael; set to nothing, it does neither\n";
 
 enum { RUN, CHECK, DIS };
 
@@ -252,12 +261,58 @@ static int leaks(void)
 
 static char g_line_buf[1 << 16];
 
+/* gael_home PATH: gael's own folder - $GAEL_HOME, or ~/.gael - into PATH (1024 bytes), made when it is not there;
+ * 0 when there is none: GAEL_HOME set to "", or no HOME */
+static int gael_home(char *path)
+{
+	const char *home = getenv("GAEL_HOME"), *h = getenv("HOME");
+	if (home && !*home) return 0;
+	if (!home && (!h || !*h)) return 0;
+	if (strlen(home ? home : h) > 900) return 0;
+	if (home) strcpy(path, home);
+	else sprintf(path, "%s/.gael", h);
+	mkdir(path, 0755); /* there already, or it cannot be made: opening a file in it says which */
+	return 1;
+}
+
+static FILE *g_dump; /* repldump.gael, opened for appending when the REPL starts */
+static int g_dumped; /* the session's first line is written */
+
+/* dump FORM: append a form that ran without an error, after a line that says when and where the session ran */
+static o dump(const char *form)
+{
+	char stamp[64], dir[900];
+	time_t now = time(0);
+	size_t n = strlen(form);
+	if (!g_dump) return;
+	if (!g_dumped) {
+		strftime(stamp, sizeof(stamp), "%Y-%m-%d %H:%M:%S", localtime(&now));
+		if (!getcwd(dir, sizeof(dir))) strcpy(dir, "?");
+		fseek(g_dump, 0, SEEK_END);
+		fprintf(g_dump, "%s; REPL session, %s, in %s\n", ftell(g_dump) > 0 ? "\n" : "", stamp, dir);
+		g_dumped = 1;
+	}
+	fputs(form, g_dump);
+	if (n && form[n - 1] != '\n') fputc('\n', g_dump);
+	fflush(g_dump); /* on disk now, even if the session is killed */
+}
+
 static int repl(void)
 {
 	size_t used = 0;
 	int interactive = 0;
-	FILE *tty = fopen("/dev/tty", "r");
+	char home[1024], path[1100];
+	FILE *tty = fopen("/dev/tty", "r"), *f;
 	if (tty) { interactive = 1; fclose(tty); } /* a prompt only where someone types */
+	if (gael_home(home)) {
+		sprintf(path, "%s/main.gael", home);
+		if ((f = fopen(path, "r")) != 0) { /* its definitions are there for the session; an error in it is reported */
+			fclose(f);
+			(void)load(path, 0, 0, 1, RUN);
+		}
+		sprintf(path, "%s/repldump.gael", home);
+		if (!(g_dump = fopen(path, "a"))) fprintf(stderr, "gael: the REPL is not saved: %s: %s\n", path, strerror(errno));
+	}
 	if (interactive) puts("gael 0.3 - :q quits, a form may span lines");
 	for (;;) {
 		if (interactive) {
@@ -276,7 +331,7 @@ static int repl(void)
 			continue;
 		}
 		if (balance(g_line_buf) > 0) continue;
-		(void)load("<repl>", g_line_buf, used, 1, RUN);
+		if (!load("<repl>", g_line_buf, used, 1, RUN)) dump(g_line_buf);
 		fflush(stdout);
 		used = 0;
 	}

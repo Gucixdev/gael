@@ -4,7 +4,8 @@
 #   examples/NAME.gael      stdout must equal examples/NAME.out, exit 0; NAME.in is its stdin, NAME.args its arguments
 #   tests/errors/NAME.gael  every line of NAME.err must appear on stderr, exit 1; stdout must equal NAME.out if there is one
 #   (for both, NAME.env holds VAR=value words for its environment, like a smaller heap)
-#   tests/repl.in           the REPL's stdout must equal tests/repl.out, every line of tests/repl.err on stderr
+#   tests/repl.in           the REPL's stdout must equal tests/repl.out, every line of tests/repl.err on stderr, and
+#                           what it saved to repldump.gael (its header lines aside) must equal tests/repl.dump
 #   README.md               every "$ ./gael ARGS" example prints exactly the lines shown under it
 # Every run has GAEL_CHECK=1: freed memory is overwritten, so a stale read shows, and a program that ends normally
 # must have freed every string, vec and map it made.
@@ -15,6 +16,7 @@ export GAEL_CHECK=1
 
 out=$(mktemp -d "${TMPDIR:-/tmp}/gael-test.XXXXXX") || exit 1
 trap 'rm -rf -- "$out"' EXIT
+export GAEL_HOME="$out/home" # gael's own folder: never the real ~/.gael
 flags=(-std=c89 -pedantic -Wall -Wextra -Werror)
 builds=()
 pass=0 fail=0
@@ -78,13 +80,20 @@ for bin in "${builds[@]}"; do
 		check "$b $f" "$ok"
 	done
 	ok=1
-	"$bin" < tests/repl.in > "$out/stdout" 2> "$out/stderr" || ok=0
+	GAEL_HOME="$out/home-$b" "$bin" < tests/repl.in > "$out/stdout" 2> "$out/stderr" || ok=0
 	cmp -s "$out/stdout" tests/repl.out || { ok=0; diff tests/repl.out "$out/stdout" | head -5; }
+	grep -v '^; REPL session, ' "$out/home-$b/repldump.gael" | cmp -s - tests/repl.dump || { ok=0; echo "  repldump.gael differs"; }
 	while IFS= read -r line; do
 		grep -qxF -- "$line" "$out/stderr" || { ok=0; echo "  missing: $line"; }
 	done < tests/repl.err
 	grep -q 'Sanitizer' "$out/stderr" && ok=0
 	check "$b repl" "$ok"
+	mkdir -p "$out/home-main-$b" # the REPL runs main.gael from gael's folder first
+	printf '(def greeting (format "hi %%s" "there"))\n' > "$out/home-main-$b/main.gael"
+	ok=1
+	printf 'greeting\n' | GAEL_HOME="$out/home-main-$b" "$bin" > "$out/stdout" 2>&1 || ok=0
+	[ "$(cat "$out/stdout")" = '=> hi there : string' ] || { ok=0; head -3 "$out/stdout"; }
+	check "$b repl with main.gael" "$ok"
 	for ((k = 1; k <= readme; k++)); do
 		read -r -a args < "$out/readme-$k.args"
 		"$bin" "${args[@]}" > "$out/stdout" 2>&1

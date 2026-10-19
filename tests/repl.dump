@@ -1,0 +1,22 @@
+(def x 41)
+(+ x 1)
+(defn sq ((n : int)) : int
+  (* n n))
+(sq 12)
+(sq 3)
+"str"
+(= 1.5 1.5)
+(defn sq ((n : int)) : int (+ n 1))
+(sq 3)
+(struct P (x : int) (y : int))
+(P 1 2)
+(def p (P :y 5 :x 4))
+p.y
+(enum Light red green)
+Light.green
+(some (P 0 0))
+(match (some 3) ((some v) (* v 2)) (none 0))
+(struct P (x : int) (y : int))
+p
+(use "examples/lib/shapes.gael")
+(width (Rect origin (Vec2 2.0 0.0)))
