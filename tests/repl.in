@@ -20,5 +20,7 @@ Light.green
 (struct P (x : int) (y : int))
 (struct P (x : int))
 p
+(use "examples/lib/shapes.gael")
+(width (Rect origin (Vec2 2.0 0.0)))
 :q
 (println "not reached")

@@ -2,7 +2,7 @@
 # test - build gael with every compiler here (C89, pedantic, warnings as errors) and once with AddressSanitizer and
 # UndefinedBehaviorSanitizer, then run each build against:
 #   examples/NAME.gael      stdout must equal examples/NAME.out, exit 0; NAME.in is its stdin, NAME.args its arguments
-#   tests/errors/NAME.gael  every line of NAME.err must appear on stderr, exit 1
+#   tests/errors/NAME.gael  every line of NAME.err must appear on stderr, exit 1; stdout must equal NAME.out if there is one
 #   tests/repl.in           the REPL's stdout must equal tests/repl.out, every line of tests/repl.err on stderr
 #   README.md               every "$ ./gael ARGS" example prints exactly the lines shown under it
 # Exit 0 when everything passed. Build outputs go to a temp folder; the checkout is not touched.
@@ -62,8 +62,9 @@ for bin in "${builds[@]}"; do
 	done
 	for f in tests/errors/*.gael; do
 		ok=1
-		"$bin" "$f" > /dev/null 2> "$out/stderr"
+		"$bin" "$f" > "$out/stdout" 2> "$out/stderr"
 		[ $? = 1 ] || ok=0
+		[ -f "${f%.gael}.out" ] && ! cmp -s "$out/stdout" "${f%.gael}.out" && { ok=0; echo "  stdout differs"; }
 		while IFS= read -r line; do
 			grep -qxF -- "$line" "$out/stderr" || { ok=0; echo "  missing: $line"; }
 		done < "${f%.gael}.err"

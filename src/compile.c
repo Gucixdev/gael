@@ -22,6 +22,7 @@ typedef struct {
 	i32 cells;    /* VM cells of one value */
 	i32 first, n; /* struct: its fields g_fields[first...]; enum: its variants g_variants[first...] */
 	i32 line;     /* where it was declared; 0 for the built-in and the option types */
+	const char *file;
 	u8 broken;    /* its declaration had an error (already reported): uses of it stay quiet */
 } TyInfo;
 
@@ -35,14 +36,14 @@ typedef struct {
 #define MAX_FIELDS 16384
 #define MAX_VARIANTS 16384
 static TyInfo g_tys[MAX_TYS] = {
-	{ "<error>", K_PRIM, 0, 0, 0, 0, 0, 0 },
-	{ "unit", K_PRIM, 0, 0, 0, 0, 0, 0 },
-	{ "int", K_PRIM, 0, 1, 0, 0, 0, 0 },
-	{ "float", K_PRIM, 0, 1, 0, 0, 0, 0 },
-	{ "bool", K_PRIM, 0, 1, 0, 0, 0, 0 },
-	{ "string", K_PRIM, 0, 1, 0, 0, 0, 0 },
-	{ "<none>", K_PRIM, 0, 0, 0, 0, 0, 0 },
-	{ "any value", K_PRIM, 0, 0, 0, 0, 0, 0 }
+	{ "<error>", K_PRIM, 0, 0, 0, 0, 0, 0, 0 },
+	{ "unit", K_PRIM, 0, 0, 0, 0, 0, 0, 0 },
+	{ "int", K_PRIM, 0, 1, 0, 0, 0, 0, 0 },
+	{ "float", K_PRIM, 0, 1, 0, 0, 0, 0, 0 },
+	{ "bool", K_PRIM, 0, 1, 0, 0, 0, 0, 0 },
+	{ "string", K_PRIM, 0, 1, 0, 0, 0, 0, 0 },
+	{ "<none>", K_PRIM, 0, 0, 0, 0, 0, 0, 0 },
+	{ "any value", K_PRIM, 0, 0, 0, 0, 0, 0, 0 }
 };
 static i32 g_ntys = T_USER;
 static Field g_fields[MAX_FIELDS];
@@ -70,6 +71,7 @@ typedef struct {
 	Ty params[MAX_PARAMS];
 	i32 pcells; /* cells the arguments take on the stack */
 	i32 entry, nslots, maxdepth, line;
+	const char *file;
 	i32 decl_unit, decl_node; /* the defn that declared it, so only that one compiles a body into it */
 } Fn;
 
@@ -77,6 +79,8 @@ typedef struct {
 	const char *name;
 	Ty type;
 	i32 cell; /* the first of its cells in the global area */
+	i32 line;
+	const char *file;
 } Global;
 
 typedef struct {
@@ -185,6 +189,15 @@ static o err_node(i32 n, const char *fmt, ...)
 	vsprintf(msg, fmt, ap);
 	va_end(ap);
 	error_at(g_nodes[n].line, g_nodes[n].col, "%s", msg);
+}
+
+/* where FILE LINE: "line 3" in the file being compiled, "lib.gael:3" in another one */
+static const char *where(const char *file, i32 line)
+{
+	static char buf[300];
+	if (!file || !strcmp(file, g_unit.file)) sprintf(buf, "line %ld", (long)line);
+	else sprintf(buf, "%.250s:%ld", file, (long)line);
+	return buf;
 }
 
 static const char *tn(Ty t) { return t < g_ntys ? g_tys[t].name : "<error>"; }
@@ -296,7 +309,7 @@ static const char *const g_reserved[] = {
 	"if", "when", "while", "do", "let", "set", "and", "or", "not", "+", "-", "*", "/", "%", "<", "<=", ">", ">=", "=",
 	"!=", "print", "println", "int", "float", "bool", "string", "unit", "len", "sh", "defn", "def", "true", "false", ":",
 	"struct", "enum", "match", "some", "none", "option", "_", "format", "eprint", "eprintln", "vec", "push", "get", "put",
-	"pop", "for"
+	"pop", "for", "use"
 };
 
 static int is_builtin(const char *s);
@@ -843,7 +856,7 @@ static o start_list(Frame *f)
 	else if (!strcmp(s, "vec")) f->form = F_VEC;
 	else if (!strcmp(s, "for")) f->form = F_FOR;
 	else if (!strcmp(s, "match")) f->form = F_MATCH;
-	else if (!strcmp(s, "defn") || !strcmp(s, "def") || !strcmp(s, "struct") || !strcmp(s, "enum")) {
+	else if (!strcmp(s, "defn") || !strcmp(s, "def") || !strcmp(s, "struct") || !strcmp(s, "enum") || !strcmp(s, "use")) {
 		err_node(head, NAME_FMT " is only allowed at the top level of a file", s);
 		finish(T_ERR);
 		return;
@@ -1889,6 +1902,7 @@ static Ty new_type(i32 name, u8 kind)
 	t->name = arena_strndup(&g_perm, g_nodes[name].text, g_nodes[name].len);
 	t->kind = kind;
 	t->line = g_nodes[name].line;
+	t->file = g_unit.file;
 	return (Ty)g_ntys++;
 }
 
@@ -1905,7 +1919,7 @@ static o same_type(i32 name, Ty old, u8 kind, i32 first, i32 n, int repl)
 		else
 			same = !strcmp(g_variants[ot->first + i], g_variants[first + i]);
 	}
-	if (!same) err_node(name, NAME_FMT " is already a type (line %ld)", g_nodes[name].text, (long)ot->line);
+	if (!same) err_node(name, NAME_FMT " is already a type (%s)", g_nodes[name].text, where(ot->file, ot->line));
 	if (kind == K_STRUCT) g_nfields = first; else g_nvariants = first;
 }
 
@@ -2075,13 +2089,14 @@ static o declare_fn(i32 n, int repl)
 	}
 	fn.ret = ret >= 0 ? parse_type(ret) : (Ty)T_UNIT;
 	fn.line = g_nodes[n].line;
+	fn.file = g_unit.file;
 	fn.entry = -1;
 	fn.decl_unit = g_unit_id;
 	fn.decl_node = n;
 	if ((fi = find_fn(g_nodes[name].text)) >= 0) {
 		Fn *old = &g_fns[fi];
 		if (!repl || old->nparams != fn.nparams || old->ret != fn.ret || memcmp(old->params, fn.params, fn.nparams * sizeof(Ty))) {
-			err_node(name, NAME_FMT " is already defined (line %ld)", g_nodes[name].text, (long)old->line);
+			err_node(name, NAME_FMT " is already defined (%s)", g_nodes[name].text, where(old->file, old->line));
 			return;
 		}
 		old->decl_unit = g_unit_id; /* REPL: same signature, the new body replaces the old one */
@@ -2167,7 +2182,7 @@ static o compile_def(i32 n, int repl)
 	if (type == T_UNIT) err_node(name, NAME_FMT " would hold no value (unit)", s);
 	if ((gi = find_global(s)) >= 0) {
 		if (!repl || g_globals[gi].type != type) {
-			err_node(name, NAME_FMT " is already defined", s);
+			err_node(name, NAME_FMT " is already defined (%s)", s, where(g_globals[gi].file, g_globals[gi].line));
 			return;
 		}
 	} else {
@@ -2177,6 +2192,8 @@ static o compile_def(i32 n, int repl)
 		g_globals[gi].name = arena_strndup(&g_perm, s, g_nodes[name].len);
 		g_globals[gi].type = type;
 		g_globals[gi].cell = g_nglobal_cells;
+		g_globals[gi].line = g_nodes[name].line;
+		g_globals[gi].file = g_unit.file;
 		g_nglobal_cells += cells(type);
 	}
 	emit_store(1, g_globals[gi].cell, type, g_nodes[name].line);
@@ -2233,6 +2250,11 @@ static i32 compile_unit(i32 top, int repl)
 		if (head_is(n, "defn")) { compile_fn(n); continue; }
 		if (head_is(n, "def")) { compile_def(n, repl); continue; }
 		if (head_is(n, "struct") || head_is(n, "enum")) continue;
+		if (head_is(n, "use")) { /* the loader compiled the file already; here only its shape is checked */
+			i32 arg = next_of(first_of(n));
+			if (arg < 0 || g_nodes[arg].kind != N_STR || next_of(arg) >= 0) err_node(n, "use takes one file name: (use \"lib.gael\")");
+			continue;
+		}
 		compile_expr(n, shown ? (Ty)T_NONE : (Ty)T_UNIT);
 		t = pop_type();
 		if (shown && t != T_UNIT && t != T_ERR) emit(OP_SHOW, t, 0, g_nodes[n].line);
