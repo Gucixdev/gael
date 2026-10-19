@@ -24,12 +24,12 @@ AddressSanitizer and UndefinedBehaviorSanitizer when one of the compilers has th
 Command line:
 
 ```
-gael               the REPL
-gael FILE          compile FILE; when there are no errors, run it
-gael -c FILE       only compile: report every type error, run nothing
-gael -d FILE       compile and print the bytecode
-gael -e CODE       compile and run CODE
-gael -h            this help
+gael                   the REPL
+gael FILE ARGS...      compile FILE; when there are no errors, run it; (args) gives it ARGS
+gael -c FILE           only compile: report every type error, run nothing
+gael -d FILE           compile and print the bytecode
+gael -e CODE ARGS...   compile and run CODE
+gael -h                this help
 ```
 
 The exit status is 0 when everything went fine, 1 after a compile or runtime error, and 2 for bad usage.
@@ -185,7 +185,7 @@ convert on purpose. A comment starts with `;`.
 | `(for (x v) body...)`, `(for (i 0 n) body...)` | go over a vec (`x` is a copy of each element) or over 0, 1, ..., n - 1 |
 | `(some 5)`, `none` | the two kinds of `(option int)` value; `none` takes its type from where it goes: a declared binding, a parameter, a field, a return type, or the else branch of an `if` whose then branch has one |
 | `(match x (pattern body...)...)` | patterns are `_`, int and string literals, `true` and `false`, enum values (`north` or `Dir.north`), `(some name)` and `none`; every value must be covered, and an arm that can never run is an error |
-| `(print "fmt" args...)`, `(println "fmt" args...)` | `%d` int, `%f` float, `%s` string, `%b` bool, `%v` any value, `%%`; the codes are checked against the arguments when compiling |
+| `(print "fmt" args...)`, `(println "fmt" args...)` | `%d` int, `%f` float, `%s` string, `%b` bool, `%v` any value, `%%`; the codes are checked against the arguments when compiling. `eprint` and `eprintln` write to stderr |
 | `(format "fmt" args...)` | the same codes as `println`, checked the same way, into a new string |
 | `(len s)` | the length of a string in bytes |
 | `(sh "command")` | run a command with `/bin/sh`, get what it printed, without the newlines at the end |
@@ -195,6 +195,10 @@ convert on purpose. A comment starts with `;`.
 | `(find s part)` | where `part` first starts in `s`, as an `(option int)` |
 | `(split s sep)`, `(join v sep)` | the pieces between the separators as a `(vec string)`, and the pieces put back together |
 | `(char n)` | the one-byte string of a byte, 0 to 255 |
+| `(read-file path)`, `(write-file path text)` | the whole file as an `(option string)`; write a string to a file, `true` when it worked |
+| `(read-line)` | the next line of standard input without its newline, as an `(option string)`; `none` at the end |
+| `(args)`, `(getenv name)` | the arguments after the file name as a `(vec string)`; an environment variable as an `(option string)` |
+| `(exit status)` | end the program with this exit status |
 
 A struct is a value and is copied; a vec is a handle, so copying one (also inside a struct) shares its elements. A
 struct can hold a vec of itself, which makes a tree. A function's last form is its value. An integer literal must fit in 64 bits, and a float needs digits on both sides
@@ -227,8 +231,8 @@ tests/errors/div-zero.gael:1: runtime error: division by zero
 
 ## Status
 
-Version 0.3, tested on Linux x86-64 with gcc 13.3 and clang 18.1. `./test` passes 49 checks per build (12 examples,
-31 compile and runtime error cases, one REPL session, five README examples) with gcc, clang and gcc with both sanitizers. GitHub Actions
+Version 0.3, tested on Linux x86-64 with gcc 13.3 and clang 18.1. `./test` passes 52 checks per build (13 examples,
+33 compile and runtime error cases, one REPL session, five README examples) with gcc, clang and gcc with both sanitizers. GitHub Actions
 runs shellcheck on the scripts and `./test` on every push (`.github/workflows/test.yml`, ubuntu-24.04).
 
 Not in 0.3: maps, field access on an expression (bind it with `let` first), modules
