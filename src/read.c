@@ -184,8 +184,23 @@ static i32 read_unit(void)
 		} else {
 			size_t start = i, len;
 			NodeKind kind;
+			i32 prev = last[depth];
 			while (i < n && !is_delim((unsigned char)s[i])) i++, col++;
 			len = i - start;
+			if (s[start] == '.' && len > 1 && start > 0 && s[start - 1] == ')' && prev >= 0 && g_nodes[prev].kind == N_LIST) {
+				/* (f x).pos.x reads as (. (f x) pos.x): the list just closed becomes that form, in place */
+				i32 copy = new_node(N_LIST, g_nodes[prev].line, g_nodes[prev].col);
+				i32 dot = new_node(N_SYM, l0, c0), path = new_node(N_SYM, l0, c0 + 1);
+				g_nodes[copy].first = g_nodes[prev].first;
+				g_nodes[dot].text = ".";
+				g_nodes[dot].len = 1;
+				g_nodes[path].text = arena_strndup(&g_unit_arena, s + start + 1, len - 1);
+				g_nodes[path].len = (u32)(len - 1);
+				g_nodes[prev].first = dot;
+				g_nodes[dot].next = copy;
+				g_nodes[copy].next = path;
+				continue;
+			}
 			kind = atom_kind(s + start, len);
 			node = new_node(kind, l0, c0);
 			g_nodes[node].text = arena_strndup(&g_unit_arena, s + start, len);

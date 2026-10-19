@@ -21,5 +21,4 @@
 
 (def root (Tree "root" (vec (Tree "a" (vec)) (Tree "b" (vec (Tree "c" (vec)))))))
 (println "%v" root)
-(let ((second (get root.kids 1)))
-  (println "root has %d kids, the second has %d" (len root.kids) (len second.kids)))
+(println "root has %d kids, the second has %d" (len root.kids) (len (get root.kids 1).kids))

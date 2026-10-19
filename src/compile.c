@@ -156,7 +156,7 @@ static u8 g_seen[MAX_VARIANTS];      /* match: the variants an arm already cover
 
 typedef enum {
 	F_START, F_CALL, F_IF, F_WHEN, F_WHILE, F_DO, F_LET, F_SET, F_AND, F_OR, F_NOT, F_ARITH, F_CMP, F_PRINT,
-	F_CONV, F_BUILTIN, F_NEW, F_SOME, F_MATCH, F_VEC, F_VECOP, F_FOR
+	F_CONV, F_BUILTIN, F_NEW, F_SOME, F_MATCH, F_VEC, F_VECOP, F_FOR, F_DOT
 } Form;
 
 typedef struct {
@@ -309,7 +309,7 @@ static const char *const g_reserved[] = {
 	"if", "when", "while", "do", "let", "set", "and", "or", "not", "+", "-", "*", "/", "%", "<", "<=", ">", ">=", "=",
 	"!=", "print", "println", "int", "float", "bool", "string", "unit", "len", "sh", "defn", "def", "true", "false", ":",
 	"struct", "enum", "match", "some", "none", "option", "_", "format", "eprint", "eprintln", "vec", "push", "get", "put",
-	"pop", "for", "use"
+	"pop", "for", "use", "."
 };
 
 static int is_builtin(const char *s);
@@ -841,6 +841,7 @@ static o start_list(Frame *f)
 	f->cur = next_of(head);
 	f->k = count_from(f->cur);
 	if (!strcmp(s, "if")) f->form = F_IF;
+	else if (!strcmp(s, ".")) f->form = F_DOT;
 	else if (!strcmp(s, "when")) f->form = F_WHEN;
 	else if (!strcmp(s, "while")) f->form = F_WHILE;
 	else if (!strcmp(s, "do")) { f->form = F_DO; f->keep = 1; }
@@ -1859,6 +1860,55 @@ static o run_work(i32 base)
 				break;
 			}
 			break;
+
+		case F_DOT: { /* (. expr pos.x): a field of the value of any expression; (f x).pos.x reads as this */
+			i32 path = next_of(f->cur), off = 0, slot;
+			const char *p, *end;
+			Ty ft;
+			if (f->phase == 0) {
+				if (f->k != 2 || !is_sym(path)) {
+					err_node(f->node, "a field of an expression is (expr).name, or (. expr name)");
+					finish(T_ERR);
+					break;
+				}
+				f->phase = 1;
+				push_child(f->cur, T_NONE);
+				break;
+			}
+			ft = t = pop_type();
+			for (p = g_nodes[path].text; ft != T_ERR; p = end + 1) {
+				const Field *fd;
+				char names[256];
+				size_t len;
+				end = strchr(p, '.');
+				len = end ? (size_t)(end - p) : strlen(p);
+				if (!is_struct(ft)) {
+					if (p == g_nodes[path].text) err_node(path, "the value is %s, it has no fields", tn(ft));
+					else err_node(path, "%.*s is %s, it has no fields", (int)(p - 1 - g_nodes[path].text), g_nodes[path].text, tn(ft));
+					ft = T_ERR;
+					break;
+				}
+				fd = find_field(ft, p, len);
+				if (!fd) {
+					if (!g_tys[ft].broken)
+						err_node(path, "%s has no field %.*s; its fields are %s", tn(ft), (int)(len < 64 ? len : 64), p,
+						         names_of(ft, names, sizeof(names)));
+					ft = T_ERR;
+					break;
+				}
+				off += fd->offset;
+				ft = fd->type;
+				if (!end) break;
+			}
+			if (ft != T_ERR) { /* the whole value to scratch slots, then the field back */
+				slot = new_slots(cells(t));
+				emit_store(0, slot, t, line);
+				emit_load(0, slot + off, ft, line);
+				g_slots = slot;
+			}
+			finish(ft);
+			break;
+		}
 
 		default:
 			err_node(f->node, "internal: unknown form");
