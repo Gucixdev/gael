@@ -99,7 +99,7 @@ static int repl(void)
 	int interactive = 0;
 	FILE *tty = fopen("/dev/tty", "r");
 	if (tty) { interactive = 1; fclose(tty); } /* a prompt only where someone types */
-	if (interactive) puts("gael 0.1 - :q quits, a form may span lines");
+	if (interactive) puts("gael 0.2 - :q quits, a form may span lines");
 	for (;;) {
 		if (interactive) {
 			fputs(used ? "  ... " : "gael> ", stdout);

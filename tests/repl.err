@@ -1,3 +1,6 @@
 <repl>:1:6: error: + works on int and float, not bool
   (+ 1 true)
        ^
+<repl>:1:9: error: P is already a type (line 1)
+  (struct P (x : int))
+          ^
