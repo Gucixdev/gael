@@ -41,8 +41,8 @@
 	X(RET_V, 0)    /* r --         return with a one-cell value */ \
 	X(RET_N, 1)    /* r... --      return with a value of a cells */ \
 	X(RET_U, 0)    /* --           return without a value */ \
-	X(PRINT, 1)    /* args --      a: format record (the string and the type of each value) */ \
-	X(PRINTLN, 1)  /* args --      the same, then a newline */ \
+	X(PRINT, 2)    /* args --      a: format record (the string and the type of each value), b: 1 for stderr */ \
+	X(PRINTLN, 2)  /* args --      the same, then a newline */ \
 	X(FORMAT, 1)   /* args -- s    the same, into a new string */ \
 	X(SH, 0)       /* s -- s       run a shell command, its output without the newlines at the end */ \
 	X(SYSTEM, 0)   /* s -- i       run a shell command, its exit status */ \
@@ -55,6 +55,12 @@
 	X(JOIN, 0)     /* v s -- s     the strings of a vec with the separator between them, a new string */ \
 	X(CHAR, 0)     /* i -- s       the one-byte string of 0 to 255 */ \
 	X(TRIM, 0)     /* s -- s       without the spaces, tabs and newlines around it (no copy) */ \
+	X(READ_FILE, 0)  /* s -- o     (option string): the whole file, or none when it cannot be read */ \
+	X(WRITE_FILE, 0) /* s s -- b   write the second string to the file named by the first; false on failure */ \
+	X(READ_LINE, 0)  /* -- o       (option string): one line of standard input without its newline; none at the end */ \
+	X(GETENV, 0)   /* s -- o       (option string): an environment variable */ \
+	X(ARGS, 0)     /* -- v         (vec string): the arguments after the file name */ \
+	X(EXIT, 0)     /* i --         end the program with this exit status */ \
 	X(INC_L, 1)    /* --           a: local slot; adds 1 to the int in it */ \
 	X(VEC_NEW, 2)  /* x... -- v    a: elements on the stack, b: cells of one */ \
 	X(VEC_LEN, 0)  /* v -- i */ \

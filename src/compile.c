@@ -295,7 +295,8 @@ static int head_is(i32 n, const char *s) { return n >= 0 && g_nodes[n].kind == N
 static const char *const g_reserved[] = {
 	"if", "when", "while", "do", "let", "set", "and", "or", "not", "+", "-", "*", "/", "%", "<", "<=", ">", ">=", "=",
 	"!=", "print", "println", "int", "float", "bool", "string", "unit", "len", "sh", "defn", "def", "true", "false", ":",
-	"struct", "enum", "match", "some", "none", "option", "_", "format", "vec", "push", "get", "put", "pop", "for"
+	"struct", "enum", "match", "some", "none", "option", "_", "format", "eprint", "eprintln", "vec", "push", "get", "put",
+	"pop", "for"
 };
 
 static int is_builtin(const char *s);
@@ -343,8 +344,9 @@ static Ty intern_wrap(u8 kind, Ty elem)
 
 static Ty intern_option(Ty elem) { return intern_wrap(K_OPTION, elem); }
 
-/* Builtins with a fixed signature. Argument and result types are letters: i int, f float, b bool, s string,
- * I (option int), F (option float), S (vec string), x a string or a vec (len). params names them for messages. */
+/* Builtins with a fixed signature. Argument and result types are letters: i int, f float, b bool, s string, u unit,
+ * I (option int), F (option float), O (option string), S (vec string), x a string or a vec (len). params names the
+ * arguments for messages. */
 typedef struct {
 	const char *name, *args, *params;
 	char ret;
@@ -363,7 +365,13 @@ static const Builtin g_builtins[] = {
 	{ "split", "ss", "s separator", 'S', OP_SPLIT },
 	{ "join", "Ss", "v separator", 's', OP_JOIN },
 	{ "char", "i", "n", 's', OP_CHAR },
-	{ "trim", "s", "s", 's', OP_TRIM }
+	{ "trim", "s", "s", 's', OP_TRIM },
+	{ "read-file", "s", "path", 'O', OP_READ_FILE },
+	{ "write-file", "ss", "path text", 'b', OP_WRITE_FILE },
+	{ "read-line", "", "", 'O', OP_READ_LINE },
+	{ "getenv", "s", "name", 'O', OP_GETENV },
+	{ "args", "", "", 'S', OP_ARGS },
+	{ "exit", "i", "status", 'u', OP_EXIT }
 };
 
 static Ty code_type(char c)
@@ -376,6 +384,8 @@ static Ty code_type(char c)
 	case 'I': return intern_option(T_INT);
 	case 'F': return intern_option(T_FLOAT);
 	case 'S': return intern_wrap(K_VEC, T_STR);
+	case 'O': return intern_option(T_STR);
+	case 'u': return T_UNIT;
 	default: return T_NONE; /* x: the form checks it */
 	}
 }
@@ -658,6 +668,10 @@ static Ty fmt_type(const char *s, u32 n, i32 want, i32 *count)
 	return T_NONE;
 }
 
+/* print, println and format, and the two that write to stderr */
+static const char *const g_print_names[] = { "print", "println", "format", "eprint", "eprintln" };
+static const Op g_print_ops[] = { OP_PRINT, OP_PRINTLN, OP_FORMAT, OP_PRINT, OP_PRINTLN };
+
 /* the builtins on a vec */
 enum { VO_PUSH, VO_GET, VO_PUT, VO_POP };
 static const char *const g_vecop_names[] = { "push", "get", "put", "pop" };
@@ -823,8 +837,7 @@ static o start_list(Frame *f)
 	else if (!strcmp(s, "or")) f->form = F_OR;
 	else if (!strcmp(s, "not")) f->form = F_NOT;
 	else if (s[1] == 0 && strchr("+-*/%", s[0])) { f->form = F_ARITH; f->op = (u8)s[0]; }
-	else if (!strcmp(s, "print") || !strcmp(s, "println")) { f->form = F_PRINT; f->op = (u8)(s[5] == 'l'); }
-	else if (!strcmp(s, "format")) { f->form = F_PRINT; f->op = 2; }
+
 	else if (!strcmp(s, "int") || !strcmp(s, "float")) { f->form = F_CONV; f->op = (u8)(s[0] == 'f' ? T_FLOAT : T_INT); }
 	else if (!strcmp(s, "some")) f->form = F_SOME;
 	else if (!strcmp(s, "vec")) f->form = F_VEC;
@@ -844,6 +857,9 @@ static o start_list(Frame *f)
 		}
 		for (k = 0; k < GAEL_COUNT(g_builtins); k++) {
 			if (!strcmp(s, g_builtins[k].name)) { f->form = F_BUILTIN; f->op = (u8)k; break; }
+		}
+		for (k = 0; k < GAEL_COUNT(g_print_names); k++) {
+			if (!strcmp(s, g_print_names[k])) { f->form = F_PRINT; f->op = (u8)k; break; }
 		}
 		for (k = 0; k < GAEL_COUNT(g_vecop_names); k++) {
 			if (!strcmp(s, g_vecop_names[k])) { f->form = F_VECOP; f->op = (u8)k; break; }
@@ -1391,8 +1407,7 @@ static o run_work(i32 base)
 			break;
 
 		case F_PRINT: {
-			static const Op ops[] = { OP_PRINT, OP_PRINTLN, OP_FORMAT };
-			const char *what = f->op == 2 ? "format" : f->op ? "println" : "print";
+			const char *what = g_print_names[f->op];
 			i32 fmt = next_of(first_of(f->node));
 			Fmt *fr;
 			if (f->phase == 0) {
@@ -1425,7 +1440,7 @@ static o run_work(i32 base)
 				f->cur = next_of(fmt);
 				f->k = 0;
 				if (f->cur < 0) {
-					emit(ops[f->op], f->a, 0, line);
+					emit(g_print_ops[f->op], f->a, f->op >= 3, line);
 					finish(f->op == 2 ? (Ty)T_STR : (Ty)T_UNIT);
 					break;
 				}
@@ -1446,7 +1461,7 @@ static o run_work(i32 base)
 			f->k++;
 			f->cur = next_of(f->cur);
 			if (f->cur >= 0) { push_child(f->cur, T_NONE); break; }
-			emit(ops[f->op], f->a, 0, line);
+			emit(g_print_ops[f->op], f->a, f->op >= 3, line);
 			finish(f->op == 2 ? (Ty)T_STR : (Ty)T_UNIT);
 			break;
 		}
@@ -1457,9 +1472,15 @@ static o run_work(i32 base)
 			char pname[64];
 			if (f->phase == 0) {
 				if (f->k != nargs) {
-					if (nargs == 1) err_node(f->node, "%s takes one value: (%s %s)", bi->name, bi->name, bi->params);
+					if (nargs == 0) err_node(f->node, "%s takes no values: (%s)", bi->name, bi->name);
+					else if (nargs == 1) err_node(f->node, "%s takes one value: (%s %s)", bi->name, bi->name, bi->params);
 					else err_node(f->node, "%s takes %ld values: (%s %s)", bi->name, (long)nargs, bi->name, bi->params);
 					finish(T_ERR);
+					break;
+				}
+				if (!nargs) {
+					emit(bi->op, 0, 0, line);
+					finish(code_type(bi->ret));
 					break;
 				}
 				f->k = 0;

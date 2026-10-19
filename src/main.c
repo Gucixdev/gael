@@ -1,11 +1,11 @@
 /* gael - a small statically typed language with s-expressions, compiled to bytecode and run on a VM.
  *
- *   gael               the REPL
- *   gael FILE          compile FILE; when there are no errors, run it
- *   gael -c FILE       only compile: report every type error, run nothing
- *   gael -d FILE       compile and print the bytecode
- *   gael -e CODE       compile and run CODE
- *   gael -h            this help
+ *   gael                   the REPL
+ *   gael FILE ARGS...      compile FILE; when there are no errors, run it; (args) gives it ARGS
+ *   gael -c FILE           only compile: report every type error, run nothing
+ *   gael -d FILE           compile and print the bytecode
+ *   gael -e CODE ARGS...   compile and run CODE
+ *   gael -h                this help
  *
  * Exit status: 0 fine, 1 a compile or runtime error, 2 bad usage.
  * One translation unit (this file includes the others), C89, no malloc and no recursion. */
@@ -17,12 +17,12 @@
 #include "vm.c"
 
 static const char g_usage[] =
-	"usage: gael               the REPL\n"
-	"       gael FILE          compile FILE; when there are no errors, run it\n"
-	"       gael -c FILE       only compile: report every type error, run nothing\n"
-	"       gael -d FILE       compile and print the bytecode\n"
-	"       gael -e CODE       compile and run CODE\n"
-	"       gael -h            this help\n";
+	"usage: gael                   the REPL\n"
+	"       gael FILE ARGS...      compile FILE; when there are no errors, run it; (args) gives it ARGS\n"
+	"       gael -c FILE           only compile: report every type error, run nothing\n"
+	"       gael -d FILE           compile and print the bytecode\n"
+	"       gael -e CODE ARGS...   compile and run CODE\n"
+	"       gael -h                this help\n";
 
 enum { RUN, CHECK, DIS };
 
@@ -133,11 +133,13 @@ int main(int argc, char **argv)
 		fputs(g_usage, stdout);
 		return 0;
 	}
-	if (argc == 2 && argv[1][0] != '-') {
+	if (argv[1][0] != '-') {
+		args_init(argc - 2, argv + 2);
 		st = run_file(argv[1], RUN);
 	} else if (argc == 3 && (!strcmp(argv[1], "-c") || !strcmp(argv[1], "-d"))) {
 		st = run_file(argv[2], argv[1][1] == 'c' ? CHECK : DIS);
-	} else if (argc == 3 && !strcmp(argv[1], "-e")) {
+	} else if (argc >= 3 && !strcmp(argv[1], "-e")) {
+		args_init(argc - 3, argv + 3);
 		st = run_text("<-e>", argv[2], strlen(argv[2]), 0, RUN);
 	} else {
 		fputs(g_usage, stderr);

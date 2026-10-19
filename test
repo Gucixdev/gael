@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # test - build gael with every compiler here (C89, pedantic, warnings as errors) and once with AddressSanitizer and
 # UndefinedBehaviorSanitizer, then run each build against:
-#   examples/NAME.gael      stdout must equal examples/NAME.out, exit 0
+#   examples/NAME.gael      stdout must equal examples/NAME.out, exit 0; NAME.in is its stdin, NAME.args its arguments
 #   tests/errors/NAME.gael  every line of NAME.err must appear on stderr, exit 1
 #   tests/repl.in           the REPL's stdout must equal tests/repl.out, every line of tests/repl.err on stderr
 #   README.md               every "$ ./gael ARGS" example prints exactly the lines shown under it
@@ -50,7 +50,11 @@ for bin in "${builds[@]}"; do
 	b=${bin##*/}
 	for f in examples/*.gael; do
 		ok=1
-		"$bin" "$f" > "$out/stdout" 2> "$out/stderr" || ok=0
+		input=/dev/null
+		[ -f "${f%.gael}.in" ] && input=${f%.gael}.in
+		args=()
+		[ -f "${f%.gael}.args" ] && read -r -a args < "${f%.gael}.args"
+		TMPDIR=$out "$bin" "$f" "${args[@]}" < "$input" > "$out/stdout" 2> "$out/stderr" || ok=0
 		cmp -s "$out/stdout" "${f%.gael}.out" || ok=0
 		[ -s "$out/stderr" ] && ok=0
 		check "$b $f" "$ok"

@@ -326,6 +326,40 @@ static int index_error(i32 line, i64 i, i64 len)
 }
 
 #define HEAP_FULL "out of memory for vecs (the heap is full)"
+
+/* the command line after the file name, copied into the text arena once */
+#define MAX_ARGS 4096
+static i64 g_arg_cells[MAX_ARGS];
+static i64 g_nargs;
+
+static o args_init(int argc, char **argv)
+{
+	int i;
+	for (i = 0; i < argc && i < MAX_ARGS; i++) {
+		size_t start = g_text.used;
+		if (!text_put(argv[i], strlen(argv[i]))) die("arguments too long for the text arena");
+		g_arg_cells[g_nargs++] = text_end(start);
+	}
+}
+
+/* read_into FILE: everything left in FILE as a new string; 0 when the text arena filled up */
+static int read_into(FILE *in, i64 *res)
+{
+	size_t start = g_text.used;
+	int ok = text_room();
+	for (;;) {
+		char buf[4096];
+		size_t got = fread(buf, 1, sizeof(buf), in);
+		if (!got) break;
+		if (ok && !text_put(buf, got)) ok = 0;
+	}
+	if (!ok) {
+		g_text.used = start;
+		return 0;
+	}
+	*res = text_end(start);
+	return 1;
+}
 #define TEXT_FULL "out of memory for strings (the text arena is full)"
 
 /* range_error LINE FROM TO LEN: substr's bytes FROM up to TO do not fit a string of LEN, or TO is before FROM */
@@ -454,9 +488,10 @@ static int vm_run(i32 pc)
 		case OP_PRINT:
 		case OP_PRINTLN:
 			sp -= g_fmts[in->a].cells;
-			g_sink = stdout;
+			if (in->b) fflush(stdout); /* stdout's text first when both go to one terminal */
+			g_sink = in->b ? stderr : stdout;
 			print_fmt(&g_fmts[in->a], s + sp);
-			if (in->op == OP_PRINTLN) putchar('\n');
+			if (in->op == OP_PRINTLN) putc('\n', g_sink);
 			break;
 		case OP_FORMAT: {
 			size_t start = g_text.used;
@@ -565,6 +600,82 @@ static int vm_run(i32 pc)
 			s[sp - 1].i = str_cell((size_t)(p - (const char *)g_text.base), n);
 			break;
 		}
+		case OP_READ_FILE: { /* the path's cell becomes the option's two: tag, string */
+			const char *path = c_str(s[sp - 1].i);
+			FILE *file = path ? fopen(path, "rb") : 0;
+			i64 v = 0;
+			int ok = 1;
+			if (!path) return vm_error(in->line, TEXT_FULL);
+			if (file) {
+				ok = read_into(file, &v);
+				fclose(file);
+				if (!ok) return vm_error(in->line, TEXT_FULL);
+			}
+			s[sp - 1].i = file != 0;
+			s[sp++].i = v;
+			break;
+		}
+		case OP_WRITE_FILE: {
+			i64 text = s[sp - 1].i;
+			const char *path = c_str(s[sp - 2].i);
+			FILE *file = path ? fopen(path, "wb") : 0;
+			int ok = file && fwrite(STR_P(text), 1, STR_LEN(text), file) == STR_LEN(text);
+			if (file && fclose(file)) ok = 0;
+			if (!path) return vm_error(in->line, TEXT_FULL);
+			sp--;
+			s[sp - 1].i = ok;
+			break;
+		}
+		case OP_READ_LINE: {
+			size_t start = g_text.used;
+			int c = EOF, any = 0;
+			fflush(stdout); /* a prompt printed before it shows up first */
+			while ((c = getchar()) != EOF) {
+				char ch = (char)c;
+				any = 1;
+				if (ch == '\n') break;
+				if (!text_put(&ch, 1)) {
+					g_text.used = start;
+					return vm_error(in->line, TEXT_FULL);
+				}
+			}
+			if (g_text.used > start && g_text.base[g_text.used - 1] == '\r') g_text.used--;
+			if (!any || !text_room()) {
+				g_text.used = start;
+				s[sp++].i = 0;
+				s[sp++].i = 0;
+				if (any) return vm_error(in->line, TEXT_FULL);
+				break;
+			}
+			s[sp++].i = 1;
+			s[sp++].i = text_end(start);
+			break;
+		}
+		case OP_GETENV: {
+			const char *name = c_str(s[sp - 1].i), *val;
+			size_t start = g_text.used;
+			if (!name) return vm_error(in->line, TEXT_FULL);
+			val = getenv(name);
+			s[sp - 1].i = val != 0;
+			s[sp].i = 0;
+			if (val) {
+				if (!text_put(val, strlen(val))) return vm_error(in->line, TEXT_FULL);
+				s[sp].i = text_end(start);
+			}
+			sp++;
+			break;
+		}
+		case OP_ARGS: {
+			i64 h = vec_new(g_nargs, 1, (const Cell *)0);
+			i64 k;
+			if (h < 0) return vm_error(in->line, HEAP_FULL);
+			for (k = 0; k < g_nargs; k++) g_heap[g_heap[h + VH_DATA].i + k].i = g_arg_cells[k];
+			s[sp++].i = h;
+			break;
+		}
+		case OP_EXIT:
+			fflush(stdout);
+			exit((int)(s[sp - 1].i & 0xff));
 		case OP_INC_L: s[fp + in->a].i = (i64)((u64)s[fp + in->a].i + 1); break;
 		case OP_VEC_NEW: {
 			i64 h;
