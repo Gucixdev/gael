@@ -7,6 +7,7 @@
 #ifndef GAEL_BASE_H_
 #define GAEL_BASE_H_
 
+#define _POSIX_C_SOURCE 200809L /* popen and pclose for sh; the language stays C89 */
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdio.h>

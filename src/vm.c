@@ -1,7 +1,7 @@
 /* vm.c - the bytecode machine: one operand stack of untyped cells and a stack of call frames.
  *
- * The compiler already proved every type, so a cell carries no tag: ADD_I reads two ints, ADD_F two floats. Strings
- * are indexes into the string table. A struct or an option is a run of cells. Integer arithmetic wraps (done in u64,
+ * The compiler already proved every type, so a cell carries no tag: ADD_I reads two ints, ADD_F two floats. A string
+ * is its place in the text arena. A struct or an option is a run of cells. Integer arithmetic wraps (done in u64,
  * no undefined behaviour); dividing by zero and running out of stack are runtime errors with the line they happened
  * on. A frame needs its slots plus the deepest operand stack the compiler counted for it, and the VM checks that all
  * of it fits before it enters the frame, so no instruction inside can write past the stack. */
@@ -29,33 +29,63 @@ static int vm_error(i32 line, const char *msg)
 	return 1;
 }
 
-static o print_float(FILE *out, f64 v)
+/* Printing goes to g_sink, or, when it is 0, onto the end of the text arena: the string being built */
+static FILE *g_sink;
+static int g_sink_full; /* the text arena had no room for the whole string */
+
+static int text_put(const char *p, size_t n)
+{
+	if (g_text.cap - g_text.used < n + 1) return 0; /* + 1: the 0 after the string */
+	memcpy(g_text.base + g_text.used, p, n);
+	g_text.used += n;
+	return 1;
+}
+
+/* text_end START: close the string that began at START, return its value; the caller checked text_room first */
+static i64 text_end(size_t start)
+{
+	g_text.base[g_text.used] = 0; /* text_put and text_room keep room for it */
+	g_text.used++;
+	return str_cell(start, g_text.used - 1 - start);
+}
+
+static int text_room(void) { return g_text.used < g_text.cap; }
+
+static o out(const char *p, size_t n)
+{
+	if (g_sink) fwrite(p, 1, n, g_sink);
+	else if (!g_sink_full && !text_put(p, n)) g_sink_full = 1;
+}
+
+static o out_s(const char *s) { out(s, strlen(s)); }
+
+static o print_float(f64 v)
 {
 	char buf[64];
 	sprintf(buf, "%.15g", v);
-	fputs(buf, out);
-	if (!strpbrk(buf, ".eni")) fputs(".0", out); /* 2.0 stays visibly a float; inf and nan stay as they are */
+	out_s(buf);
+	if (!strpbrk(buf, ".eni")) out_s(".0"); /* 2.0 stays visibly a float; inf and nan stay as they are */
 }
 
-/* print_quoted OUT STR: a string inside a struct or an option, written the way the source would write it */
-static o print_quoted(FILE *out, const Str *s)
+/* print_quoted STR: a string inside a struct or an option, written the way the source would write it */
+static o print_quoted(i64 v)
 {
-	u32 i;
-	putc('"', out);
-	for (i = 0; i < s->len; i++) {
-		char c = s->p[i];
-		if (c == '"' || c == '\\') { putc('\\', out); putc(c, out); }
-		else if (c == '\n') fputs("\\n", out);
-		else if (c == '\t') fputs("\\t", out);
-		else putc(c, out);
+	const char *p = STR_P(v);
+	u32 i, n = STR_LEN(v);
+	out_s("\"");
+	for (i = 0; i < n; i++) {
+		if (p[i] == '"' || p[i] == '\\') { out("\\", 1); out(p + i, 1); }
+		else if (p[i] == '\n') out_s("\\n");
+		else if (p[i] == '\t') out_s("\\t");
+		else out(p + i, 1);
 	}
-	putc('"', out);
+	out_s("\"");
 }
 
 #define PRINT_DEPTH 64
 
-/* print_value OUT TYPE CELLS: one value, as the REPL shows it: (Vec2 :x 1.0 :y 2.0), (some 3), none, north */
-static o print_value(FILE *out, Ty type, const Cell *c)
+/* print_value TYPE CELLS: one value, as the REPL shows it: (Vec2 :x 1.0 :y 2.0), (some 3), none, north */
+static o print_value(Ty type, const Cell *c)
 {
 	struct {
 		Ty t;
@@ -73,29 +103,40 @@ static o print_value(FILE *out, Ty type, const Cell *c)
 		if (ti->kind == K_STRUCT || ti->kind == K_OPTION) {
 			const Field *fd = 0;
 			if (*i < 0) {
-				if (ti->kind == K_OPTION && !v->i) { fputs("none", out); n--; continue; }
-				fprintf(out, ti->kind == K_OPTION ? "(some" : "(%s", ti->name);
+				if (ti->kind == K_OPTION && !v->i) { out_s("none"); n--; continue; }
+				out_s("(");
+				out_s(ti->kind == K_OPTION ? "some" : ti->name);
 				*i = 0;
 			}
 			if (ti->kind == K_STRUCT && *i < ti->n) fd = &g_fields[ti->first + *i];
-			if (ti->kind == K_OPTION && *i < 1) putc(' ', out);
-			else if (!fd) { putc(')', out); n--; continue; }
-			else fprintf(out, " :%s ", fd->name);
+			if (ti->kind == K_OPTION && *i < 1) out_s(" ");
+			else if (!fd) { out_s(")"); n--; continue; }
+			else { out_s(" :"); out_s(fd->name); out_s(" "); }
 			(*i)++;
-			if (n == PRINT_DEPTH) { fputs("...", out); continue; }
+			if (n == PRINT_DEPTH) { out_s("..."); continue; }
 			st[n].t = fd ? fd->type : ti->elem;
 			st[n].i = -1;
 			st[n].c = fd ? v + fd->offset : v + 1;
 			n++;
 			continue;
 		}
-		if (ti->kind == K_ENUM) fputs(g_variants[ti->first + v->i], out);
-		else if (st[n - 1].t == T_INT) fprintf(out, "%ld", (long)v->i);
-		else if (st[n - 1].t == T_FLOAT) print_float(out, v->f);
-		else if (st[n - 1].t == T_BOOL) fputs(v->i ? "true" : "false", out);
-		else if (st[n - 1].t == T_STR && n > 1) print_quoted(out, &g_strs[v->i]);
-		else if (st[n - 1].t == T_STR) fwrite(g_strs[v->i].p, 1, g_strs[v->i].len, out);
-		else fputs("()", out);
+		if (ti->kind == K_ENUM) {
+			out_s(g_variants[ti->first + v->i]);
+		} else if (st[n - 1].t == T_INT) {
+			char buf[32];
+			sprintf(buf, "%ld", (long)v->i);
+			out_s(buf);
+		} else if (st[n - 1].t == T_FLOAT) {
+			print_float(v->f);
+		} else if (st[n - 1].t == T_BOOL) {
+			out_s(v->i ? "true" : "false");
+		} else if (st[n - 1].t == T_STR && n > 1) {
+			print_quoted(v->i);
+		} else if (st[n - 1].t == T_STR) {
+			out(STR_P(v->i), STR_LEN(v->i));
+		} else {
+			out_s("()");
+		}
 		n--;
 	}
 }
@@ -107,18 +148,85 @@ static o print_fmt(const Fmt *fm, const Cell *args)
 	u32 i;
 	i32 k = 0;
 	for (i = 0; i < fmt->len; i++) {
-		char c = fmt->p[i];
-		if (c != '%') { putchar(c); continue; }
-		if (fmt->p[++i] == '%') { putchar('%'); continue; }
-		print_value(stdout, g_fmt_tys[fm->first + k], args);
+		if (fmt->p[i] != '%') { out(fmt->p + i, 1); continue; }
+		if (fmt->p[++i] == '%') { out_s("%"); continue; }
+		print_value(g_fmt_tys[fm->first + k], args);
 		args += cells(g_fmt_tys[fm->first + k]);
 		k++;
 	}
 }
 
-static int str_eq(i64 a, i64 b)
+static int str_eq(i64 a, i64 b) { return STR_LEN(a) == STR_LEN(b) && !memcmp(STR_P(a), STR_P(b), STR_LEN(a)); }
+
+/* trimmed STR START LEN: the string without spaces, tabs and newlines around it */
+static o trimmed(i64 v, const char **p, u32 *n)
 {
-	return g_strs[a].len == g_strs[b].len && !memcmp(g_strs[a].p, g_strs[b].p, g_strs[a].len);
+	*p = STR_P(v);
+	*n = STR_LEN(v);
+	while (*n && strchr(" \t\r\n", (*p)[0])) (*p)++, (*n)--;
+	while (*n && strchr(" \t\r\n", (*p)[*n - 1])) (*n)--;
+}
+
+/* parse_int STR OUT: 1 when the whole string (spaces around it aside) is an int that fits in 64 bits */
+static int parse_int(i64 v, i64 *out_v)
+{
+	const char *p;
+	u32 n, i = 0;
+	u64 acc = 0, limit;
+	int neg;
+	trimmed(v, &p, &n);
+	neg = n && p[0] == '-';
+	if (n && (p[0] == '-' || p[0] == '+')) i = 1;
+	if (i == n) return 0;
+	limit = neg ? (u64)1 << 63 : ((u64)1 << 63) - 1;
+	for (; i < n; i++) {
+		u64 d = (u64)(p[i] - '0');
+		if (p[i] < '0' || p[i] > '9' || acc > (limit - d) / 10) return 0;
+		acc = acc * 10 + d;
+	}
+	*out_v = neg ? (i64)(0 - acc) : (i64)acc;
+	return 1;
+}
+
+/* parse_float STR OUT: 1 when the whole string (spaces around it aside) is a number strtod reads */
+static int parse_float(i64 v, f64 *out_v)
+{
+	char buf[128], *end;
+	const char *p;
+	u32 n;
+	trimmed(v, &p, &n);
+	if (!n || n >= sizeof(buf)) return 0;
+	memcpy(buf, p, n);
+	buf[n] = 0;
+	*out_v = strtod(buf, &end);
+	return *end == 0;
+}
+
+/* run_sh CMD: the command's standard output as a new string, the newlines at its end left out; 0 when the text arena
+ * filled up (the rest of the output is still read, so the command can finish) */
+static int run_sh(i64 cmd, i64 *res)
+{
+	size_t start = g_text.used;
+	int full = !text_room();
+	FILE *pipe;
+	fflush(stdout);
+	pipe = popen(STR_P(cmd), "r");
+	if (pipe) {
+		for (;;) {
+			char buf[4096];
+			size_t got = fread(buf, 1, sizeof(buf), pipe);
+			if (!got) break;
+			if (!full && !text_put(buf, got)) full = 1;
+		}
+		pclose(pipe);
+	}
+	if (full) {
+		g_text.used = start;
+		return 0;
+	}
+	while (g_text.used > start && g_text.base[g_text.used - 1] == '\n') g_text.used--;
+	*res = text_end(start);
+	return 1;
 }
 
 /* vm_run PC: run from PC until HALT; 0 when it finished, 1 after a runtime error */
@@ -136,7 +244,7 @@ static int vm_run(i32 pc)
 			break;
 		case OP_PUSH_I: s[sp++].i = g_ints[in->a]; break;
 		case OP_PUSH_F: s[sp++].f = g_floats[in->a]; break;
-		case OP_PUSH_S: s[sp++].i = in->a; break;
+		case OP_PUSH_S: s[sp++].i = g_strs[in->a].cell; break;
 		case OP_PUSH_K: s[sp++].i = in->a; break;
 		case OP_ZERO: memset(s + sp, 0, (size_t)in->a * sizeof(Cell)); sp += in->a; break;
 		case OP_POP: sp--; break;
@@ -198,7 +306,7 @@ static int vm_run(i32 pc)
 			s[sp - 1].i = (i64)v;
 			break;
 		}
-		case OP_LEN_S: s[sp - 1].i = (i64)g_strs[s[sp - 1].i].len; break;
+		case OP_LEN_S: s[sp - 1].i = (i64)STR_LEN(s[sp - 1].i); break;
 
 		case OP_CALL: {
 			const Fn *fn = &g_fns[in->a];
@@ -239,20 +347,49 @@ static int vm_run(i32 pc)
 		case OP_PRINT:
 		case OP_PRINTLN:
 			sp -= g_fmts[in->a].cells;
+			g_sink = stdout;
 			print_fmt(&g_fmts[in->a], s + sp);
 			if (in->op == OP_PRINTLN) putchar('\n');
 			break;
-		case OP_SH: {
+		case OP_FORMAT: {
+			size_t start = g_text.used;
+			sp -= g_fmts[in->a].cells;
+			g_sink = 0;
+			g_sink_full = !text_room();
+			print_fmt(&g_fmts[in->a], s + sp);
+			if (g_sink_full) return vm_error(in->line, "out of memory for strings (the text arena is full)");
+			s[sp++].i = text_end(start);
+			break;
+		}
+		case OP_SH:
+			if (!run_sh(s[sp - 1].i, &s[sp - 1].i)) return vm_error(in->line, "out of memory for strings (the text arena is full)");
+			break;
+		case OP_SYSTEM: {
 			int st;
 			fflush(stdout);
-			st = system(g_strs[s[sp - 1].i].p);
+			st = system(STR_P(s[sp - 1].i));
 			s[sp - 1].i = st == -1 ? -1 : (st >> 8) & 0xff; /* the exit status as the shell reports it (Linux) */
+			break;
+		}
+		case OP_PARSE_I: {
+			i64 v = 0;
+			int ok = parse_int(s[sp - 1].i, &v);
+			s[sp - 1].i = ok;
+			s[sp++].i = v;
+			break;
+		}
+		case OP_PARSE_F: {
+			f64 v = 0;
+			int ok = parse_float(s[sp - 1].i, &v);
+			s[sp - 1].i = ok;
+			s[sp++].f = ok ? v : 0;
 			break;
 		}
 		case OP_SHOW:
 			sp -= cells((Ty)in->a);
+			g_sink = stdout;
 			fputs("=> ", stdout);
-			print_value(stdout, (Ty)in->a, s + sp);
+			print_value((Ty)in->a, s + sp);
 			printf(" : %s\n", tn((Ty)in->a));
 			break;
 		default:
@@ -276,9 +413,9 @@ static o disassemble(i32 from, i32 to)
 		if (g_op_args[in->op] >= 1) printf(" %ld", (long)in->a);
 		if (g_op_args[in->op] >= 2) printf(" %ld", (long)in->b);
 		if (in->op == OP_PUSH_I) printf("\t(%ld)", (long)g_ints[in->a]);
-		if (in->op == OP_PUSH_F) { fputs("\t(", stdout); print_float(stdout, g_floats[in->a]); putchar(')'); }
+		if (in->op == OP_PUSH_F) { g_sink = stdout; fputs("\t(", stdout); print_float(g_floats[in->a]); putchar(')'); }
 		if (in->op == OP_PUSH_S) printf("\t(\"%.40s\")", g_strs[in->a].p);
-		if (in->op == OP_PRINT || in->op == OP_PRINTLN) printf("\t(\"%.40s\")", g_strs[g_fmts[in->a].str].p);
+		if (in->op == OP_PRINT || in->op == OP_PRINTLN || in->op == OP_FORMAT) printf("\t(\"%.40s\")", g_strs[g_fmts[in->a].str].p);
 		if (in->op == OP_CALL) printf("\t(%.40s)", g_fns[in->a].name);
 		if (in->op == OP_SHOW) printf("\t(%.40s)", tn((Ty)in->a));
 		if (in->line) printf("\t; line %ld", (long)in->line);

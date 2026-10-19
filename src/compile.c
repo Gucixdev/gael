@@ -57,8 +57,9 @@ typedef struct {
 } Ins;
 
 typedef struct {
-	const char *p;
+	const char *p; /* in the text arena, followed by a 0 */
 	u32 len;
+	i64 cell;      /* the string as a VM value */
 } Str;
 
 #define MAX_PARAMS 8
@@ -115,6 +116,15 @@ static i32 g_nfmt_tys;
 static u64 g_perm_mem[(8u << 20) / 8];
 static Arena g_perm = { (u8 *)g_perm_mem, sizeof(g_perm_mem), 0, "permanent" };
 
+/* Every string's bytes, the program's and the ones made at run time, each followed by a 0. A string value is one
+ * cell: its offset in this arena in the high 32 bits and its length in the low 32. Nothing in it is freed. */
+static u64 g_text_mem[(32u << 20) / 8];
+static Arena g_text = { (u8 *)g_text_mem, sizeof(g_text_mem), 0, "text" };
+
+static i64 str_cell(size_t off, size_t len) { return (i64)(((u64)off << 32) | (u64)len); }
+#define STR_LEN(v) ((u32)((u64)(v) & 0xffffffffu))
+#define STR_P(v) ((char *)g_text.base + ((u64)(v) >> 32))
+
 /* what one compilation needs */
 #define MAX_LOCALS 1024
 #define MAX_WORK 4096
@@ -130,7 +140,7 @@ static u8 g_seen[MAX_VARIANTS];      /* match: the variants an arm already cover
 
 typedef enum {
 	F_START, F_CALL, F_IF, F_WHEN, F_WHILE, F_DO, F_LET, F_SET, F_AND, F_OR, F_NOT, F_ARITH, F_CMP, F_PRINT,
-	F_CONV, F_LEN, F_SH, F_NEW, F_SOME, F_MATCH
+	F_CONV, F_STRFN, F_NEW, F_SOME, F_MATCH
 } Form;
 
 typedef struct {
@@ -197,6 +207,8 @@ static i32 effect(Op op, i32 a, i32 b)
 	case OP_EQ_S: case OP_NE_S: return -1;
 	case OP_CALL: return cells(g_fns[a].ret) - g_fns[a].pcells;
 	case OP_PRINT: case OP_PRINTLN: return -g_fmts[a].cells;
+	case OP_FORMAT: return 1 - g_fmts[a].cells;
+	case OP_PARSE_I: case OP_PARSE_F: return 1;
 	case OP_SHOW: return -cells((Ty)a);
 	default: return 0;
 	}
@@ -262,7 +274,7 @@ static int head_is(i32 n, const char *s) { return n >= 0 && g_nodes[n].kind == N
 static const char *const g_reserved[] = {
 	"if", "when", "while", "do", "let", "set", "and", "or", "not", "+", "-", "*", "/", "%", "<", "<=", ">", ">=", "=",
 	"!=", "print", "println", "int", "float", "bool", "string", "unit", "len", "sh", "defn", "def", "true", "false", ":",
-	"struct", "enum", "match", "some", "none", "option", "_"
+	"struct", "enum", "match", "some", "none", "option", "_", "format", "system", "parse-int", "parse-float"
 };
 
 static int is_reserved(const char *s)
@@ -356,9 +368,15 @@ static i32 add_float(f64 v)
 
 static i32 add_str(const char *p, u32 len)
 {
+	char *d = (char *)g_text.base + g_text.used;
 	if (g_nstrs == MAX_CONSTS) die("too many strings");
-	g_strs[g_nstrs].p = arena_strndup(&g_perm, p, len);
+	if (g_text.cap - g_text.used < (size_t)len + 1) die("out of memory in the text arena");
+	memcpy(d, p, len);
+	d[len] = 0;
+	g_strs[g_nstrs].p = d;
 	g_strs[g_nstrs].len = len;
+	g_strs[g_nstrs].cell = str_cell(g_text.used, len);
+	g_text.used += (size_t)len + 1;
 	return g_nstrs++;
 }
 
@@ -534,6 +552,11 @@ static Ty fmt_type(const char *s, u32 n, i32 want, i32 *count)
 	return T_NONE;
 }
 
+/* the builtins that take one string */
+enum { SF_LEN, SF_SH, SF_SYSTEM, SF_PARSE_I, SF_PARSE_F };
+static const char *const g_strfn_names[] = { "len", "sh", "system", "parse-int", "parse-float" };
+static const Op g_strfn_ops[] = { OP_LEN_S, OP_SH, OP_SYSTEM, OP_PARSE_I, OP_PARSE_F };
+
 typedef struct {
 	int global;
 	i32 at;
@@ -694,9 +717,8 @@ static o start_list(Frame *f)
 	else if (!strcmp(s, "not")) f->form = F_NOT;
 	else if (s[1] == 0 && strchr("+-*/%", s[0])) { f->form = F_ARITH; f->op = (u8)s[0]; }
 	else if (!strcmp(s, "print") || !strcmp(s, "println")) { f->form = F_PRINT; f->op = (u8)(s[5] == 'l'); }
+	else if (!strcmp(s, "format")) { f->form = F_PRINT; f->op = 2; }
 	else if (!strcmp(s, "int") || !strcmp(s, "float")) { f->form = F_CONV; f->op = (u8)(s[0] == 'f' ? T_FLOAT : T_INT); }
-	else if (!strcmp(s, "len")) f->form = F_LEN;
-	else if (!strcmp(s, "sh")) f->form = F_SH;
 	else if (!strcmp(s, "some")) f->form = F_SOME;
 	else if (!strcmp(s, "match")) f->form = F_MATCH;
 	else if (!strcmp(s, "defn") || !strcmp(s, "def") || !strcmp(s, "struct") || !strcmp(s, "enum")) {
@@ -710,6 +732,9 @@ static o start_list(Frame *f)
 	} else {
 		for (k = 0; k < GAEL_COUNT(g_cmp_names); k++) {
 			if (!strcmp(s, g_cmp_names[k])) { f->form = F_CMP; f->op = (u8)k; break; }
+		}
+		for (k = 0; k < GAEL_COUNT(g_strfn_names); k++) {
+			if (!strcmp(s, g_strfn_names[k])) { f->form = F_STRFN; f->op = (u8)k; break; }
 		}
 		if (f->form != F_START) return;
 		if (is_struct(t = find_named_type(s))) {
@@ -1254,7 +1279,8 @@ static o run_work(i32 base)
 			break;
 
 		case F_PRINT: {
-			const char *what = f->op ? "println" : "print";
+			static const Op ops[] = { OP_PRINT, OP_PRINTLN, OP_FORMAT };
+			const char *what = f->op == 2 ? "format" : f->op ? "println" : "print";
 			i32 fmt = next_of(first_of(f->node));
 			Fmt *fr;
 			if (f->phase == 0) {
@@ -1287,8 +1313,8 @@ static o run_work(i32 base)
 				f->cur = next_of(fmt);
 				f->k = 0;
 				if (f->cur < 0) {
-					emit(f->op ? OP_PRINTLN : OP_PRINT, f->a, 0, line);
-					finish(T_UNIT);
+					emit(ops[f->op], f->a, 0, line);
+					finish(f->op == 2 ? (Ty)T_STR : (Ty)T_UNIT);
 					break;
 				}
 				f->phase = 1;
@@ -1308,16 +1334,19 @@ static o run_work(i32 base)
 			f->k++;
 			f->cur = next_of(f->cur);
 			if (f->cur >= 0) { push_child(f->cur, T_NONE); break; }
-			emit(f->op ? OP_PRINTLN : OP_PRINT, f->a, 0, line);
-			finish(T_UNIT);
+			emit(ops[f->op], f->a, 0, line);
+			finish(f->op == 2 ? (Ty)T_STR : (Ty)T_UNIT);
 			break;
 		}
 
 		case F_CONV:
-		case F_LEN:
-		case F_SH:
+		case F_STRFN:
 			if (f->phase == 0) {
-				if (f->k != 1) { err_node(f->node, "this takes exactly one value"); finish(T_ERR); break; }
+				if (f->k != 1) {
+					err_node(f->node, "%s takes one value", f->form == F_CONV ? (f->op == T_INT ? "int" : "float") : g_strfn_names[f->op]);
+					finish(T_ERR);
+					break;
+				}
 				f->phase = 1;
 				push_child(f->cur, T_NONE);
 				break;
@@ -1331,10 +1360,14 @@ static o run_work(i32 base)
 				finish(f->op);
 				break;
 			}
-			if (t != T_STR && t != T_ERR)
-				err_node(f->cur, "%s takes a string, not %s", f->form == F_LEN ? "len" : "sh", tn(t));
-			emit(f->form == F_LEN ? OP_LEN_S : OP_SH, 0, 0, line);
-			finish(T_INT);
+			if (t != T_STR && t != T_ERR) err_node(f->cur, "%s takes a string, not %s", g_strfn_names[f->op], tn(t));
+			emit(g_strfn_ops[f->op], 0, 0, line);
+			switch (f->op) {
+			case SF_SH: finish(T_STR); break;
+			case SF_PARSE_I: finish(intern_option(T_INT)); break;
+			case SF_PARSE_F: finish(intern_option(T_FLOAT)); break;
+			default: finish(T_INT); break;
+			}
 			break;
 
 		case F_CALL: {
@@ -1807,7 +1840,7 @@ static o compile_def(i32 n, int repl)
 /* everything a failed unit may have added, so the REPL can forget it */
 static struct {
 	i32 ncode, nints, nfloats, nstrs, nfns, nglobals, nglobal_cells, ntys, nfields, nvariants, nfmts, nfmt_tys;
-	size_t perm;
+	size_t perm, text;
 } g_snap;
 static i32 g_snap_entry[MAX_FNS], g_snap_slots[MAX_FNS], g_snap_depth[MAX_FNS];
 
@@ -1830,6 +1863,7 @@ static i32 compile_unit(i32 top, int repl)
 	g_snap.nfmts = g_nfmts;
 	g_snap.nfmt_tys = g_nfmt_tys;
 	g_snap.perm = g_perm.used;
+	g_snap.text = g_text.used;
 	for (i = 0; i < g_nfns; i++) {
 		g_snap_entry[i] = g_fns[i].entry;
 		g_snap_slots[i] = g_fns[i].nslots;
@@ -1877,6 +1911,7 @@ static i32 compile_unit(i32 top, int repl)
 	g_nfmts = g_snap.nfmts;
 	g_nfmt_tys = g_snap.nfmt_tys;
 	g_perm.used = g_snap.perm;
+	g_text.used = g_snap.text;
 	for (i = 0; i < g_nfns; i++) {
 		g_fns[i].entry = g_snap_entry[i];
 		g_fns[i].nslots = g_snap_slots[i];

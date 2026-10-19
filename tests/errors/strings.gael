@@ -1,0 +1,6 @@
+(println "%s" (format "%d" "x"))
+(println "%s" (sh 5))
+(system)
+(println "%d" (+ (format "a") 1))
+(let ((n : int (parse-int "5"))) n)
+(format 3)

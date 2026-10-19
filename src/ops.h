@@ -12,7 +12,7 @@
 	X(ENTER, 2)    /* -- 0...      a: slots of the top-level frame, zeroed; b: its deepest operand stack */ \
 	X(PUSH_I, 1)   /* -- i         a: index into the int constants */ \
 	X(PUSH_F, 1)   /* -- f         a: index into the float constants */ \
-	X(PUSH_S, 1)   /* -- s         a: string index */ \
+	X(PUSH_S, 1)   /* -- s         a: string constant */ \
 	X(PUSH_K, 1)   /* -- k         a: the value itself (a bool, an enum variant, an option tag) */ \
 	X(ZERO, 1)     /* -- 0...      a: how many zero cells (the inside of none) */ \
 	X(POP, 0)      /* x -- */ \
@@ -43,7 +43,11 @@
 	X(RET_U, 0)    /* --           return without a value */ \
 	X(PRINT, 1)    /* args --      a: format record (the string and the type of each value) */ \
 	X(PRINTLN, 1)  /* args --      the same, then a newline */ \
-	X(SH, 0)       /* s -- i       run a shell command, its exit status */ \
+	X(FORMAT, 1)   /* args -- s    the same, into a new string */ \
+	X(SH, 0)       /* s -- s       run a shell command, its output without the newlines at the end */ \
+	X(SYSTEM, 0)   /* s -- i       run a shell command, its exit status */ \
+	X(PARSE_I, 0)  /* s -- o       (option int): the string as an int, or none */ \
+	X(PARSE_F, 0)  /* s -- o       (option float) */ \
 	X(SHOW, 1)     /* x... --      the REPL's "=> value : type"; a: the type */
 
 #define GAEL_OP_ENUM_(name, n) OP_##name,
