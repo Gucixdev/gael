@@ -4,7 +4,7 @@ gael is a small statically typed language written as s-expressions. The compiler
 runs and reports all the errors of a file in one go, each with its line, column and a caret under the mistake. A
 program without errors is compiled to bytecode and run on a stack VM. gael is meant to become the scripting language
 of a game engine and of an Emacs-like editor written in it (`docs/SPEC.md`, in Polish); this repository is the
-language, version 0.2.
+language, version 0.3.
 
 ## Build and run
 
@@ -139,7 +139,7 @@ its parentheses close:
 
 ```
 $ ./gael
-gael 0.2 - :q quits, a form may span lines
+gael 0.3 - :q quits, a form may span lines
 gael> (def hp 100)
 gael> (- hp 30)
 => 70 : int
@@ -155,13 +155,14 @@ gael> (+ hp 0.5)
 gael> :q
 ```
 
-`gael -d examples/fact.gael` prints the bytecode, one instruction per line with its operands, the constant it uses
+`examples/` has one file per feature with its output next to it (`NAME.out`). `gael -d examples/fact.gael` prints
+the bytecode, one instruction per line with its operands, the constant it uses
 and the source line it came from.
 
-## The language in 0.2
+## The language in 0.3
 
 Types: `int` (64-bit, arithmetic wraps around), `float` (64-bit), `bool`, `string`, `unit` (no value), structs,
-enums and `(option type)`. Nothing converts on its own: `(+ 1 2.0)` is a compile error, `(float x)` and `(int x)`
+enums, `(option type)` and `(vec type)`. Nothing converts on its own: `(+ 1 2.0)` is a compile error, `(float x)` and `(int x)`
 convert on purpose. A comment starts with `;`.
 
 | Form | Meaning |
@@ -179,6 +180,9 @@ convert on purpose. A comment starts with `;`.
 | `(Vec2 1.0 2.0)`, `(Vec2 :y 2.0 :x 1.0)` | a struct value, with the fields in order or named; every field must be given |
 | `v.x`, `b.pos.x` | a field of a variable |
 | `(enum Dir north east south west)`, `Dir.north` | an enum and one of its values |
+| `(vec 1 2 3)`, `(vec)` | a vec; an empty one takes its element type from where it goes, like `none` |
+| `(push v x)`, `(get v i)`, `(put v i x)`, `(pop v)`, `(len v)` | add at the end, read, replace, take the last one off (an option), count; `get` and `put` check the index at run time |
+| `(for (x v) body...)`, `(for (i 0 n) body...)` | go over a vec (`x` is a copy of each element) or over 0, 1, ..., n - 1 |
 | `(some 5)`, `none` | the two kinds of `(option int)` value; `none` takes its type from where it goes: a declared binding, a parameter, a field, a return type, or the else branch of an `if` whose then branch has one |
 | `(match x (pattern body...)...)` | patterns are `_`, int and string literals, `true` and `false`, enum values (`north` or `Dir.north`), `(some name)` and `none`; every value must be covered, and an arm that can never run is an error |
 | `(print "fmt" args...)`, `(println "fmt" args...)` | `%d` int, `%f` float, `%s` string, `%b` bool, `%v` any value, `%%`; the codes are checked against the arguments when compiling |
@@ -188,7 +192,8 @@ convert on purpose. A comment starts with `;`.
 | `(system "command")` | run a command, its output goes where gael's goes; get its exit status |
 | `(parse-int s)`, `(parse-float s)` | `(some n)` when the whole string, spaces around it aside, is a number; otherwise `none` |
 
-A function's last form is its value. An integer literal must fit in 64 bits, and a float needs digits on both sides
+A struct is a value and is copied; a vec is a handle, so copying one (also inside a struct) shares its elements. A
+struct can hold a vec of itself, which makes a tree. A function's last form is its value. An integer literal must fit in 64 bits, and a float needs digits on both sides
 of its point (`4.2`, `4.2e3`; `1e3` and `.5` are errors). A runtime error stops the program and names the line it
 happened on:
 
@@ -217,15 +222,16 @@ tests/errors/div-zero.gael:1: runtime error: division by zero
 
 ## Status
 
-Version 0.2, tested on Linux x86-64 with gcc 13.3 and clang 18.1. `./test` passes 38 checks per build (ten examples,
-27 compile and runtime error cases, one REPL session) with gcc, clang and gcc with both sanitizers. GitHub Actions
+Version 0.3, tested on Linux x86-64 with gcc 13.3 and clang 18.1. `./test` passes 42 checks per build (11 examples,
+30 compile and runtime error cases, one REPL session) with gcc, clang and gcc with both sanitizers. GitHub Actions
 runs shellcheck on the scripts and `./test` on every push (`.github/workflows/test.yml`, ubuntu-24.04).
 
-Not in 0.2: arrays, maps and other collections, cutting and searching strings, modules and gems (packages, see the
-spec), calling C, and the editor. The fixed limits are 8 parameters per function, 4096 functions, 4096 globals, 4096
+Not in 0.3: maps, cutting and searching strings, field access on an expression (bind it with `let` first), modules
+and gems (packages, see the spec), calling C, and the editor. The fixed limits are 8 parameters per function, 4096 functions, 4096 globals, 4096
 types and 2^18 instructions; per unit (a file, or one REPL form) 2^18 syntax nodes and an 8 MiB arena for the source
 and its names; at run time a stack of 65536 cells and at most 4096 nested calls. Every string, the program's and the
-ones `format` and `sh` make, lives in one 32 MiB arena that is never freed; filling it is a runtime error.
+ones `format` and `sh` make, lives in one 32 MiB arena, and every vec on a heap of 4M cells (32 MiB); neither is
+freed, and filling one is a runtime error.
 
 ## License
 

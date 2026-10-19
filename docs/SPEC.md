@@ -193,7 +193,12 @@ Potem: makra i moduły (0.2), manifest i resolver gemów (0.3), bufor i okno (0.
   z czasu wykonania w jednej arenie tekstu: `format`, `sh` zwracające wyjście komendy, `system` z kodem wyjścia,
   `parse-int` i `parse-float` zwracające `(option ...)`.
 - **CI:** GitHub Actions uruchamia shellcheck i `./test` przy każdym pushu.
-- **Następne:** tablice, operacje na stringach, potem makra i moduły, manifest gemów, bufor i okno.
+- **0.3:** `(vec T)` - uchwyt do płaskiego bloku komórek na stercie (rośnie przez podwajanie, elementy-struktury leżą
+  ciągiem), `push`/`get`/`put`/`pop`/`len`, `get` i `put` sprawdzają indeks; `for` po wektorze i po zakresie;
+  struktura może zawierać `(vec Self)`, więc drzewa (scena, AST) mają skończony rozmiar.
+- **Następne:** operacje na stringach (wycinanie, szukanie, dzielenie), mapy, pola wyniku wyrażenia, potem makra i
+  moduły, manifest gemów, bufor i okno. Pamięć: dziś areny tekstu i sterta nie są zwalniane - przed edytorem trzeba
+  zdecydować (areny z zakresem sprawdzanym w kompilacji, refcount, albo jedno i drugie).
   Numery wersji przesuwają się o jeden względem planu wyżej.
 
 ## Ryzyka, uczciwie
