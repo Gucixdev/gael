@@ -11,6 +11,7 @@ typedef struct {
 	i32 first, next; /* children and siblings by index, -1 for none */
 	i32 line, col;
 	i64 ival;
+	u8 big;   /* an int literal above 2^63 - 1: its bits are in ival, and only a u64 holds it */
 	f64 fval;
 	const char *text; /* symbols, keywords, strings: NUL-terminated, in the unit arena */
 	u32 len;
@@ -209,13 +210,14 @@ static i32 read_unit(void)
 				u64 v = 0, limit;
 				int neg = s[start] == '-';
 				size_t j = (s[start] == '-' || s[start] == '+') ? 1 : 0;
-				limit = neg ? (u64)1 << 63 : ((u64)1 << 63) - 1;
+				limit = neg ? (u64)1 << 63 : ~(u64)0;
 				for (; j < len; j++) {
 					u64 dgt = (u64)(s[start + j] - '0');
 					if (v > (limit - dgt) / 10) { error_at(l0, c0, "integer does not fit in 64 bits"); v = 0; break; }
 					v = v * 10 + dgt;
 				}
 				g_nodes[node].ival = neg ? (i64)(0 - v) : (i64)v;
+				g_nodes[node].big = !neg && v > ((u64)1 << 63) - 1;
 			} else if (kind == N_FLOAT) {
 				g_nodes[node].fval = strtod(g_nodes[node].text, 0);
 			} else if (kind == N_SYM && like_number(s + start, len)) {

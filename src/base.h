@@ -10,6 +10,7 @@
 
 #define _XOPEN_SOURCE 700 /* popen, pclose and realpath; the language stays C89 */
 #define _DEFAULT_SOURCE   /* MAP_ANONYMOUS and MAP_NORESERVE */
+#include <math.h> /* HUGE_VAL */
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdio.h>

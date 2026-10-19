@@ -14,7 +14,7 @@
  * frame's operand stack gets, so the VM can check that a whole frame fits before entering it. */
 
 typedef u16 Ty;
-enum { T_ERR, T_UNIT, T_INT, T_FLOAT, T_BOOL, T_STR, T_NONE, T_ANY, T_USER };
+enum { T_ERR, T_UNIT, T_INT, T_FLOAT, T_BOOL, T_STR, T_NONE, T_ANY, T_I8, T_I16, T_I32, T_U8, T_U16, T_U32, T_U64, T_F32, T_USER };
 typedef enum { K_PRIM, K_STRUCT, K_ENUM, K_OPTION, K_VEC, K_MAP, K_POOL, K_HANDLE } TyKind;
 
 typedef struct {
@@ -47,7 +47,15 @@ static TyInfo g_tys[MAX_TYS] = {
 	{ "bool", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0 },
 	{ "string", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1 },
 	{ "<none>", K_PRIM, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
-	{ "any value", K_PRIM, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }
+	{ "any value", K_PRIM, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+	{ "i8", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0 },
+	{ "i16", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0 },
+	{ "i32", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0 },
+	{ "u8", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0 },
+	{ "u16", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0 },
+	{ "u32", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0 },
+	{ "u64", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0 },
+	{ "f32", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0 }
 };
 static i32 g_ntys = T_USER;
 static Field g_fields[MAX_FIELDS];
@@ -228,10 +236,16 @@ static int is_handle(Ty t) { return t < g_ntys && g_tys[t].kind == K_HANDLE; }
 static Ty elem_of(Ty t) { return t < g_ntys && g_tys[t].kind >= K_OPTION ? g_tys[t].elem : (Ty)T_ERR; }
 static Ty key_of(Ty t) { return is_map(t) ? g_tys[t].key : (Ty)T_ERR; }
 static int has_refs(Ty t) { return t < g_ntys && g_tys[t].nleaf > 0; }
-static int numeric(Ty t) { return t == T_INT || t == T_FLOAT; }
+/* the sized numbers: int is i64 and float is f64; an int narrower than 64 bits sits in its cell sign- or
+ * zero-extended, an f32 as the f64 it rounds to */
+static int is_int(Ty t) { return t == T_INT || (t >= T_I8 && t <= T_U64); }
+static int is_float(Ty t) { return t == T_FLOAT || t == T_F32; }
+static int numeric(Ty t) { return is_int(t) || is_float(t); }
+static int is_unsigned(Ty t) { return t >= T_U8 && t <= T_U64; }
+static i32 int_bits(Ty t) { return t == T_I8 || t == T_U8 ? 8 : t == T_I16 || t == T_U16 ? 16 : t == T_I32 || t == T_U32 ? 32 : 64; }
 static int comparable(Ty t) { return numeric(t) || t == T_BOOL || t == T_STR || is_enum(t) || is_handle(t); }
-static int key_type(Ty t) { return t == T_INT || t == T_BOOL || t == T_STR || is_enum(t) || is_handle(t); }
-static int matchable(Ty t) { return t == T_INT || t == T_BOOL || t == T_STR || is_enum(t) || is_option(t); }
+static int key_type(Ty t) { return is_int(t) || t == T_BOOL || t == T_STR || is_enum(t) || is_handle(t); }
+static int matchable(Ty t) { return is_int(t) || t == T_BOOL || t == T_STR || is_enum(t) || is_option(t); }
 
 static o depth_add(i32 d)
 {
@@ -257,7 +271,7 @@ static i32 effect(Op op, i32 a, i32 b)
 	case OP_ADD_F: case OP_SUB_F: case OP_MUL_F: case OP_DIV_F:
 	case OP_LT_I: case OP_LE_I: case OP_GT_I: case OP_GE_I: case OP_EQ_I: case OP_NE_I:
 	case OP_LT_F: case OP_LE_F: case OP_GT_F: case OP_GE_F: case OP_EQ_F: case OP_NE_F:
-	case OP_EQ_S: case OP_NE_S: return -1;
+	case OP_EQ_S: case OP_NE_S: case OP_DIV_U: case OP_MOD_U: case OP_LT_U: case OP_LE_U: case OP_GT_U: case OP_GE_U: return -1;
 	case OP_CALL: return cells(g_fns[a].ret) - g_fns[a].pcells;
 	case OP_PRINT: case OP_PRINTLN: return -g_fmts[a].cells;
 	case OP_FORMAT: return 1 - g_fmts[a].cells;
@@ -402,7 +416,7 @@ static const char *const g_reserved[] = {
 	"!=", "print", "println", "int", "float", "bool", "string", "unit", "len", "sh", "defn", "def", "true", "false", ":",
 	"struct", "enum", "match", "some", "none", "option", "_", "format", "eprint", "eprintln", "vec", "push", "get", "put",
 	"pop", "for", "use", ".", "map", "insert", "lookup", "has", "remove", "keys", "values", "&&", "||", "|>", "|", "<<<",
-	"pool", "spawn", "handle", "arena", "keep"
+	"pool", "spawn", "handle", "arena", "keep", "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64"
 };
 
 static int is_builtin(const char *s);
@@ -420,6 +434,8 @@ static int is_reserved(const char *s)
 static Ty find_named_type(const char *s)
 {
 	i32 i;
+	if (!strcmp(s, "i64")) return T_INT;
+	if (!strcmp(s, "f64")) return T_FLOAT;
 	for (i = T_UNIT; i < g_ntys; i++) {
 		if (i == T_NONE || i == T_ANY || g_tys[i].kind >= K_OPTION) continue;
 		if (!strcmp(g_tys[i].name, s)) return (Ty)i;
@@ -608,7 +624,8 @@ static const char *param_name(const Builtin *bi, i32 k, char *buf)
 static const char *a_type(Ty t)
 {
 	static char buf[200];
-	sprintf(buf, "%s %.180s", t == T_INT ? "an" : "a", tn(t));
+	const char *name = tn(t);
+	sprintf(buf, "%s %.180s", strchr("aeio", name[0]) || (name[0] == 'f' && name[1] >= '0' && name[1] <= '9') ? "an" : "a", name);
 	return buf;
 }
 
@@ -853,14 +870,102 @@ static i32 line_of(Frame *f) { return f->node >= 0 ? g_nodes[f->node].line : (f-
 
 static Op arith_op(u8 op, Ty t)
 {
-	int fl = t == T_FLOAT;
+	int fl = is_float(t);
 	switch (op) {
 	case '+': return fl ? OP_ADD_F : OP_ADD_I;
 	case '-': return fl ? OP_SUB_F : OP_SUB_I;
 	case '*': return fl ? OP_MUL_F : OP_MUL_I;
-	case '/': return fl ? OP_DIV_F : OP_DIV_I;
-	default: return OP_MOD_I;
+	case '/': return fl ? OP_DIV_F : t == T_U64 ? OP_DIV_U : OP_DIV_I;
+	default: return t == T_U64 ? OP_MOD_U : OP_MOD_I;
 	}
+}
+
+/* emit_fit TYPE LINE: the value on top, made by 64-bit int or f64 arithmetic, back to the size of TYPE: an int
+ * narrower than 64 bits wraps around, an f32 rounds */
+static o emit_fit(Ty t, i32 line)
+{
+	if (is_int(t) && int_bits(t) < 64) emit(OP_WRAP, t, 0, line);
+	else if (t == T_F32) emit(OP_F32, 0, 0, line);
+}
+
+/* emit_convert FROM TO LINE: (TO x) for an x of type FROM: ints wrap around to the new size, a float to an int stops
+ * at run time when it does not fit */
+static o emit_convert(Ty from, Ty to, i32 line)
+{
+	if (from == to) return;
+	if (is_int(from) && is_int(to)) {
+		emit_fit(to, line); /* to 64 bits: the same bits, int and u64 alike */
+	} else if (is_int(from)) {
+		emit(from == T_U64 ? OP_U2F : OP_I2F, 0, 0, line);
+		emit_fit(to, line);
+	} else if (is_int(to)) {
+		emit(OP_F2I, to, 0, line);
+	} else {
+		emit_fit(to, line);
+	}
+}
+
+/* int_range TYPE: "-128 to 127", for a message */
+static const char *int_range(Ty t)
+{
+	static char buf[64];
+	i32 bits = int_bits(t);
+	if (t == T_U64) return "0 to 18446744073709551615";
+	if (t == T_INT) return "-9223372036854775808 to 9223372036854775807";
+	if (is_unsigned(t)) sprintf(buf, "0 to %lu", (unsigned long)(((u64)1 << bits) - 1));
+	else sprintf(buf, "%ld to %ld", -(long)((u64)1 << (bits - 1)), (long)(((u64)1 << (bits - 1)) - 1));
+	return buf;
+}
+
+/* int_fits TYPE NODE: the int literal NODE fits in TYPE */
+static int int_fits(Ty t, const Node *nd)
+{
+	i32 bits = int_bits(t);
+	if (nd->big) return t == T_U64;
+	if (t == T_INT) return 1;
+	if (t == T_U64) return nd->ival >= 0;
+	if (is_unsigned(t)) return nd->ival >= 0 && (u64)nd->ival < (u64)1 << bits;
+	return nd->ival >= -(i64)((u64)1 << (bits - 1)) && nd->ival < (i64)((u64)1 << (bits - 1));
+}
+
+/* quiet_type NODE: the type a number operand will have, when it can be told without compiling it - a variable or a
+ * field of one, a conversion, a call - or T_NONE. A literal next to it takes that type */
+static Ty quiet_type(i32 n)
+{
+	char base[256];
+	const char *s, *dot, *p;
+	Ty t = T_NONE;
+	i32 i, head;
+	if (n < 0) return T_NONE;
+	if (g_nodes[n].kind == N_LIST && is_sym(head = g_nodes[n].first)) {
+		t = find_named_type(g_nodes[head].text);
+		if (numeric(t)) return t;
+		if ((i = find_fn(g_nodes[head].text)) >= 0 && numeric(g_fns[i].ret)) return g_fns[i].ret;
+		return T_NONE;
+	}
+	if (g_nodes[n].kind != N_SYM) return T_NONE;
+	s = g_nodes[n].text;
+	dot = strchr(s, '.');
+	if ((size_t)(dot ? dot - s : (long)strlen(s)) >= sizeof(base)) return T_NONE;
+	sprintf(base, "%.*s", (int)(dot ? dot - s : (long)strlen(s)), s);
+	if ((i = find_local(base)) >= 0) t = g_locals[i].type;
+	else if ((i = find_global(base)) >= 0) t = g_globals[i].type;
+	for (p = dot; p && is_struct(t); p = strchr(p + 1, '.')) {
+		const char *end = strchr(p + 1, '.');
+		const Field *fd = find_field(t, p + 1, end ? (size_t)(end - p - 1) : strlen(p + 1));
+		t = fd ? fd->type : (Ty)T_NONE;
+	}
+	return numeric(t) ? t : (Ty)T_NONE;
+}
+
+/* number_hint FIRST: the type of the first operand from FIRST on whose type quiet_type can tell, or T_NONE */
+static Ty number_hint(i32 n)
+{
+	Ty t;
+	for (; n >= 0; n = g_nodes[n].next) {
+		if ((t = quiet_type(n)) != T_NONE) return t;
+	}
+	return T_NONE;
 }
 
 static const char *const g_cmp_names[] = { "<", "<=", ">", ">=", "=", "!=" };
@@ -869,8 +974,10 @@ static Op cmp_op(u8 which, Ty t)
 {
 	static const Op ints[] = { OP_LT_I, OP_LE_I, OP_GT_I, OP_GE_I, OP_EQ_I, OP_NE_I };
 	static const Op floats[] = { OP_LT_F, OP_LE_F, OP_GT_F, OP_GE_F, OP_EQ_F, OP_NE_F };
+	static const Op u64s[] = { OP_LT_U, OP_LE_U, OP_GT_U, OP_GE_U, OP_EQ_I, OP_NE_I };
 	if (t == T_STR) return which == 4 ? OP_EQ_S : OP_NE_S;
-	return t == T_FLOAT ? floats[which] : ints[which]; /* bools and enum variants compare as ints */
+	if (t == T_U64) return u64s[which]; /* narrower unsigned ints sit zero-extended, so they compare as ints */
+	return is_float(t) ? floats[which] : ints[which]; /* bools and enum variants compare as ints */
 }
 
 /* fmt_type TEXT LEN K: the type the K-th % code of a format wants (T_ANY for %v); T_NONE when it has fewer codes.
@@ -980,8 +1087,31 @@ static o compile_atom(i32 n, Ty want)
 	Ty t;
 	int r;
 	switch (nd->kind) {
-	case N_INT: emit(OP_PUSH_I, add_int(nd->ival), 0, nd->line); push_type(T_INT); return;
-	case N_FLOAT: emit(OP_PUSH_F, add_float(nd->fval), 0, nd->line); push_type(T_FLOAT); return;
+	case N_INT: /* an int literal takes the int type expected here, when it fits */
+		t = is_int(want) ? want : (Ty)T_INT;
+		if (!int_fits(t, nd)) {
+			if (nd->big && t != T_U64) err_node(n, NAME_FMT " does not fit in %s; it fits a u64", s, tn(t));
+			else err_node(n, NAME_FMT " does not fit in %s (%s)", s, tn(t), int_range(t));
+			push_type(T_ERR);
+			return;
+		}
+		emit(OP_PUSH_I, add_int(nd->ival), 0, nd->line);
+		push_type(t);
+		return;
+	case N_FLOAT: /* likewise for f32, rounded to it */
+		if (want == T_F32) {
+			if (nd->fval > 3.4028234663852886e38 || nd->fval < -3.4028234663852886e38) {
+				err_node(n, NAME_FMT " does not fit in f32 (its largest is about 3.4e38)", s);
+				push_type(T_ERR);
+				return;
+			}
+			emit(OP_PUSH_F, add_float((f64)(f32)nd->fval), 0, nd->line);
+			push_type(T_F32);
+			return;
+		}
+		emit(OP_PUSH_F, add_float(nd->fval), 0, nd->line);
+		push_type(T_FLOAT);
+		return;
 	case N_STR: emit(OP_PUSH_S, add_str(nd->text, nd->len), 0, nd->line); push_type(T_STR); return;
 	case N_KEY: err_node(n, "a keyword like " NAME_FMT " names a field: (Vec2 :x 1.0 :y 2.0)", s); push_type(T_ERR); return;
 	default: break;
@@ -1128,7 +1258,7 @@ static o start_list(Frame *f)
 	else if (!strcmp(s, "not")) f->form = F_NOT;
 	else if (s[1] == 0 && strchr("+-*/%", s[0])) { f->form = F_ARITH; f->op = (u8)s[0]; }
 
-	else if (!strcmp(s, "int") || !strcmp(s, "float")) { f->form = F_CONV; f->op = (u8)(s[0] == 'f' ? T_FLOAT : T_INT); }
+	else if (numeric(t = find_named_type(s))) { f->form = F_CONV; f->a = t; } /* (int x), (u8 x), (f32 x)... */
 	else if (!strcmp(s, "some")) f->form = F_SOME;
 	else if (!strcmp(s, "vec")) f->form = F_VEC;
 	else if (!strcmp(s, "map")) f->form = F_MAP;
@@ -1266,10 +1396,16 @@ static int check_arms(i32 node, i32 first, Ty t)
 		if (t == T_BOOL) {
 			if (!sym_is(p, "true") && !sym_is(p, "false")) { err_node(p, "match on bool: a pattern is true, false or _"); bad = 1; continue; }
 			bit = sym_is(p, "true") ? 1 : 2;
-		} else if (t == T_INT || t == T_STR) {
-			u8 kind = t == T_INT ? N_INT : N_STR;
+		} else if (is_int(t) || t == T_STR) {
+			u8 kind = is_int(t) ? N_INT : N_STR;
 			if (g_nodes[p].kind != kind) {
-				err_node(p, t == T_INT ? "match on int: a pattern is an int like 0 or 42, or _" : "match on string: a pattern is a string like \"yes\", or _");
+				if (is_int(t)) err_node(p, "match on %s: a pattern is an int like 0 or 42, or _", ti->name);
+				else err_node(p, "match on string: a pattern is a string like \"yes\", or _");
+				bad = 1;
+				continue;
+			}
+			if (kind == N_INT && !int_fits(t, &g_nodes[p])) {
+				err_node(p, "match on %s: %s does not fit in it (%s)", ti->name, g_nodes[p].text, int_range(t));
 				bad = 1;
 				continue;
 			}
@@ -1398,7 +1534,7 @@ static o start_arm(Frame *f)
 		} else if (t == T_BOOL) {
 			f->b = emit(sym_is(p, "true") ? OP_JF : OP_JT, -1, 0, line);
 		} else {
-			if (t == T_INT) emit(OP_PUSH_I, add_int(g_nodes[p].ival), 0, line);
+			if (is_int(t)) emit(OP_PUSH_I, add_int(g_nodes[p].ival), 0, line);
 			else if (t == T_STR) emit(OP_PUSH_S, add_str(g_nodes[p].text, g_nodes[p].len), 0, line);
 			else emit(OP_PUSH_K, pattern_variant(t, p), 0, line);
 			emit(t == T_STR ? OP_EQ_S : OP_EQ_I, t == T_STR, 0, line); /* the matched string is borrowed */
@@ -1704,42 +1840,45 @@ static o run_work(i32 base)
 					break;
 				}
 				f->phase = 1;
-				push_child(f->cur, T_NONE);
+				f->res = numeric(f->want) ? f->want : number_hint(f->cur); /* what a literal operand becomes */
+				push_child(f->cur, f->res);
 				break;
 			}
 			t = pop_type();
 			if (t != T_ERR && !numeric(t)) {
-				err_node(f->cur, "%c works on int and float, not %s", f->op, tn(t));
+				err_node(f->cur, "%c works on numbers, not %s", f->op, tn(t));
 				t = T_ERR;
-			} else if (t == T_FLOAT && f->op == '%') {
-				err_node(f->cur, "%% works on int only; this is a float");
+			} else if (is_float(t) && f->op == '%') {
+				if (f->phase == 1 || f->rt != T_ERR) err_node(f->cur, "%% works on ints only; this is %s", a_type(t));
 				t = T_ERR;
 			}
 			if (f->phase == 1) {
 				f->rt = t;
 				if (f->k == 1) {
-					if (t != T_ERR) emit(t == T_FLOAT ? OP_NEG_F : OP_NEG_I, 0, 0, line);
+					if (t != T_ERR) emit(is_float(t) ? OP_NEG_F : OP_NEG_I, 0, 0, line);
+					if (t != T_ERR) emit_fit(t, line);
 					finish(t);
 					break;
 				}
 			} else if (f->rt == T_ERR || t == T_ERR) {
 				f->rt = T_ERR;
 			} else if (t != f->rt) {
-				err_node(f->cur, "%c: %s and %s do not mix; convert one with (float x) or (int x)", f->op, tn(f->rt), tn(t));
+				err_node(f->cur, "%c: %s and %s do not mix; convert one, like (%s x) or (%s x)", f->op, tn(f->rt), tn(t), tn(f->rt), tn(t));
 				f->rt = T_ERR;
 			} else {
 				emit(arith_op(f->op, t), 0, 0, line);
+				emit_fit(t, line);
 			}
 			f->phase = 2;
 			f->cur = next_of(f->cur);
-			if (f->cur >= 0) push_child(f->cur, T_NONE); else finish(f->rt);
+			if (f->cur >= 0) push_child(f->cur, f->rt != T_ERR ? f->rt : f->res); else finish(f->rt);
 			break;
 
 		case F_CMP:
 			if (f->phase == 0) {
 				if (f->k != 2) { err_node(f->node, "%s compares two values", g_cmp_names[f->op]); finish(T_ERR); break; }
 				f->phase = 1;
-				push_child(f->cur, T_NONE);
+				push_child(f->cur, quiet_type(next_of(f->cur))); /* (< 0 x) with x a u8: the 0 is a u8 */
 				break;
 			}
 			if (f->phase == 1) {
@@ -1759,7 +1898,7 @@ static o run_work(i32 base)
 				else if (f->op == 2 && t == T_STR) /* (> text path): bash's redirection, true when it was written */
 					emit(OP_WRITE_FILE, 0, 1, line);
 				else if (f->op < 4 && !numeric(t))
-					err_node(f->cur, "%s orders int and float, not %s", g_cmp_names[f->op], tn(t));
+					err_node(f->cur, "%s orders numbers, not %s", g_cmp_names[f->op], tn(t));
 				else if (t == T_UNIT)
 					err_node(f->cur, "%s: unit has no value to compare", g_cmp_names[f->op]);
 				else if (!comparable(t))
@@ -1817,8 +1956,8 @@ static o run_work(i32 base)
 			t2 = fmt_type(g_nodes[fmt].text, g_nodes[fmt].len, f->k, 0);
 			if (t2 == T_ANY) {
 				if (t == T_UNIT) err_node(f->cur, "%s: %%v needs a value; this is unit", what);
-			} else if (t != T_ERR && t != t2) {
-				err_node(f->cur, "%s: %% code %ld wants %s, this value is %s", what, (long)(f->k + 1), tn(t2), tn(t));
+			} else if (t != T_ERR && t != t2 && !(t2 == T_INT && is_int(t)) && !(t2 == T_FLOAT && is_float(t))) {
+				err_node(f->cur, "%s: %% code %ld wants %s, this value is %s", what, (long)(f->k + 1), t2 == T_INT ? "an int" : t2 == T_FLOAT ? "a float" : tn(t2), tn(t));
 			}
 			g_fmt_tys[fr->first + f->k] = t;
 			fr->cells += cells(t);
@@ -1874,10 +2013,10 @@ static o run_work(i32 base)
 			break;
 		}
 
-		case F_CONV:
+		case F_CONV: /* (TYPE x): x as another number type */
 			if (f->phase == 0) {
 				if (f->k != 1) {
-					err_node(f->node, "%s takes one value: (%s x)", f->op == T_INT ? "int" : "float", f->op == T_INT ? "int" : "float");
+					err_node(f->node, "%s takes one value: (%s x)", tn((Ty)f->a), tn((Ty)f->a));
 					finish(T_ERR);
 					break;
 				}
@@ -1886,14 +2025,9 @@ static o run_work(i32 base)
 				break;
 			}
 			t = pop_type();
-			if (f->form == F_CONV) {
-				if (t == T_INT && f->op == T_FLOAT) emit(OP_I2F, 0, 0, line);
-				else if (t == T_FLOAT && f->op == T_INT) emit(OP_F2I, 0, 0, line);
-				else if (t != T_ERR && !numeric(t))
-					err_node(f->cur, "%s converts a number, not %s", f->op == T_INT ? "int" : "float", tn(t));
-				finish(f->op);
-				break;
-			}
+			if (t != T_ERR && !numeric(t)) err_node(f->cur, "%s converts a number, not %s", tn((Ty)f->a), tn(t));
+			else if (t != T_ERR) emit_convert(t, (Ty)f->a, line);
+			finish((Ty)f->a);
 			break;
 
 		case F_CALL: {

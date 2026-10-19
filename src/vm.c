@@ -511,12 +511,34 @@ static o out(const char *p, size_t n)
 
 static o out_s(const char *s) { out(s, strlen(s)); }
 
+/* to_f32 V: V rounded to the nearest f32, kept as an f64; past the largest f32, infinity */
+static f64 to_f32(f64 v)
+{
+	if (v > 3.4028234663852886e38) return HUGE_VAL;
+	if (v < -3.4028234663852886e38) return -HUGE_VAL;
+	return v == v ? (f64)(f32)v : v;
+}
+
 static o print_float(f64 v)
 {
 	char buf[64];
 	sprintf(buf, "%.15g", v);
 	out_s(buf);
 	if (!strpbrk(buf, ".eni")) out_s(".0"); /* 2.0 stays visibly a float; inf and nan stay as they are */
+}
+
+/* print_f32 V: an f32 with the fewest digits that read back as the same f32: 0.1, not 0.100000001490116 */
+static o print_f32(f64 v)
+{
+	char buf[64];
+	int p;
+	for (p = 6; p < 9; p++) {
+		sprintf(buf, "%.*g", p, v);
+		if (to_f32(strtod(buf, 0)) == v) break;
+	}
+	sprintf(buf, "%.*g", p, v);
+	out_s(buf);
+	if (!strpbrk(buf, ".eni")) out_s(".0");
 }
 
 /* print_quoted STR: a string inside a struct or an option, written the way the source would write it */
@@ -629,10 +651,13 @@ static o print_value(Ty type, const Cell *c)
 			if (ti->kind == K_POOL) sprintf(buf, "(pool %ld/%ld)", (long)g_heap[v->i + PH_COUNT].i, (long)g_heap[v->i + PH_CAP].i);
 			else sprintf(buf, "(handle %lu %lu)", (unsigned long)((u64)v->i & 0xffffffffu), (unsigned long)((u64)v->i >> 32));
 			out_s(buf);
-		} else if (st[n - 1].t == T_INT) {
+		} else if (is_int(st[n - 1].t)) {
 			char buf[32];
-			sprintf(buf, "%ld", (long)v->i);
+			if (st[n - 1].t == T_U64) sprintf(buf, "%lu", (unsigned long)(u64)v->i);
+			else sprintf(buf, "%ld", (long)v->i);
 			out_s(buf);
+		} else if (st[n - 1].t == T_F32) {
+			print_f32(v->f);
 		} else if (st[n - 1].t == T_FLOAT) {
 			print_float(v->f);
 		} else if (st[n - 1].t == T_BOOL) {
@@ -1195,6 +1220,19 @@ static int vm_run(i32 pc)
 			s[sp - 1].i = in->op == OP_DIV_I ? s[sp - 1].i / s[sp].i : s[sp - 1].i % s[sp].i;
 			break;
 		case OP_NEG_I: s[sp - 1].i = (i64)(0 - (u64)s[sp - 1].i); break;
+		case OP_DIV_U:
+		case OP_MOD_U:
+			sp--;
+			if (s[sp].i == 0) return vm_error(in->line, "division by zero");
+			s[sp - 1].i = (i64)(in->op == OP_DIV_U ? (u64)s[sp - 1].i / (u64)s[sp].i : (u64)s[sp - 1].i % (u64)s[sp].i);
+			break;
+		case OP_WRAP: { /* keep the low bits; a signed type gets its sign back */
+			u64 v = (u64)s[sp - 1].i, mask = ((u64)1 << int_bits((Ty)in->a)) - 1, sign = (mask >> 1) + 1;
+			v &= mask;
+			s[sp - 1].i = is_unsigned((Ty)in->a) || !(v & sign) ? (i64)v : -(i64)(mask - v) - 1;
+			break;
+		}
+		case OP_F32: s[sp - 1].f = to_f32(s[sp - 1].f); break;
 		case OP_ADD_F: sp--; s[sp - 1].f += s[sp].f; break;
 		case OP_SUB_F: sp--; s[sp - 1].f -= s[sp].f; break;
 		case OP_MUL_F: sp--; s[sp - 1].f *= s[sp].f; break;
@@ -1211,6 +1249,10 @@ static int vm_run(i32 pc)
 		case OP_LE_F: sp--; s[sp - 1].i = s[sp - 1].f <= s[sp].f; break;
 		case OP_GT_F: sp--; s[sp - 1].i = s[sp - 1].f > s[sp].f; break;
 		case OP_GE_F: sp--; s[sp - 1].i = s[sp - 1].f >= s[sp].f; break;
+		case OP_LT_U: sp--; s[sp - 1].i = (u64)s[sp - 1].i < (u64)s[sp].i; break;
+		case OP_LE_U: sp--; s[sp - 1].i = (u64)s[sp - 1].i <= (u64)s[sp].i; break;
+		case OP_GT_U: sp--; s[sp - 1].i = (u64)s[sp - 1].i > (u64)s[sp].i; break;
+		case OP_GE_U: sp--; s[sp - 1].i = (u64)s[sp - 1].i >= (u64)s[sp].i; break;
 		case OP_EQ_F: sp--; s[sp - 1].i = s[sp - 1].f == s[sp].f; break;
 		case OP_NE_F: sp--; s[sp - 1].i = s[sp - 1].f != s[sp].f; break;
 		case OP_EQ_S:
@@ -1230,11 +1272,19 @@ static int vm_run(i32 pc)
 		case OP_JT: if (s[--sp].i) pc = in->a; break;
 
 		case OP_I2F: s[sp - 1].f = (f64)s[sp - 1].i; break;
-		case OP_F2I: {
-			f64 v = s[sp - 1].f;
-			if (!(v > -9223372036854775808.0 && v < 9223372036854775808.0)) /* also false for nan */
-				return vm_error(in->line, "int of a float that does not fit in 64 bits");
-			s[sp - 1].i = (i64)v;
+		case OP_U2F: s[sp - 1].f = (f64)(u64)s[sp - 1].i; break;
+		case OP_F2I: { /* a: the int type */
+			f64 v = s[sp - 1].f, lo, hi; /* it fits when lo < v < hi; both are false for nan */
+			Ty t = (Ty)in->a;
+			i32 bits = int_bits(t);
+			if (is_unsigned(t)) lo = -1.0, hi = bits == 64 ? 18446744073709551616.0 : (f64)((u64)1 << bits);
+			else lo = bits == 64 ? -9223372036854777856.0 : -(f64)((u64)1 << (bits - 1)) - 1.0, hi = (f64)((u64)1 << (bits - 1));
+			if (!(v > lo && v < hi)) {
+				char msg[160];
+				sprintf(msg, "%s of a float that does not fit in it (%s)", tn(t), int_range(t));
+				return vm_error(in->line, msg);
+			}
+			s[sp - 1].i = t == T_U64 && v >= 9223372036854775808.0 ? (i64)(u64)v : (i64)v;
 			break;
 		}
 		case OP_LEN_S: {
@@ -1831,7 +1881,7 @@ static o disassemble(i32 from, i32 to)
 		if (in->op == OP_PRINT || in->op == OP_PRINTLN || in->op == OP_FORMAT) printf("\t(\"%.40s\")", g_strs[g_fmts[in->a].str].p);
 		if (in->op == OP_CALL) printf("\t(%.40s)", g_fns[in->a].name);
 		if (in->op == OP_SHOW || in->op == OP_RETAIN || in->op == OP_DROP || in->op == OP_MAP_KEYS || in->op == OP_MAP_VALUES ||
-		    in->op == OP_KEEP)
+		    in->op == OP_KEEP || in->op == OP_WRAP || in->op == OP_F2I)
 			printf("\t(%.40s)", tn((Ty)in->a));
 		if (in->op == OP_RELEASE_L || in->op == OP_RELEASE_G || in->op == OP_VEC_NEW || in->op == OP_MAP_NEW || in->op == OP_POOL_NEW)
 			printf("\t(%.40s)", tn((Ty)in->b));

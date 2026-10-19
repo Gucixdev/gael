@@ -34,16 +34,21 @@
 	X(RELEASE_L, 2) /* --          a: first slot, b: the type; the value kept there dies */ \
 	X(RELEASE_G, 2) /* --          a: first global cell, b: the type */ \
 	X(ADD_I, 0) X(SUB_I, 0) X(MUL_I, 0) X(DIV_I, 0) X(MOD_I, 0) X(NEG_I, 0) \
+	X(DIV_U, 0) X(MOD_U, 0) /* u64 */ \
+	X(WRAP, 1)     /* i -- i       a: an int type narrower than 64 bits; the value wraps around into it */ \
+	X(F32, 0)      /* f -- f       round to f32 (too big for it: infinity) */ \
 	X(ADD_F, 0) X(SUB_F, 0) X(MUL_F, 0) X(DIV_F, 0) X(NEG_F, 0) \
 	X(LT_I, 0) X(LE_I, 0) X(GT_I, 0) X(GE_I, 0) X(EQ_I, 0) X(NE_I, 0) \
 	X(LT_F, 0) X(LE_F, 0) X(GT_F, 0) X(GE_F, 0) X(EQ_F, 0) X(NE_F, 0) \
+	X(LT_U, 0) X(LE_U, 0) X(GT_U, 0) X(GE_U, 0) /* u64 */ \
 	X(EQ_S, 1) X(NE_S, 1) /* a: bit 0 the first string is borrowed, bit 1 the second */ \
 	X(NOT, 0)      /* b -- b */ \
 	X(JMP, 1)      /* --           a: target */ \
 	X(JF, 1)       /* b --         jump to a when false */ \
 	X(JT, 1)       /* b --         jump to a when true */ \
 	X(I2F, 0)      /* i -- f */ \
-	X(F2I, 0)      /* f -- i       truncates toward zero */ \
+	X(U2F, 0)      /* u64 -- f */ \
+	X(F2I, 1)      /* f -- i       truncates toward zero; a: the int type, a value outside it is a runtime error */ \
 	X(LEN_S, 1)    /* s -- i       length in bytes; a: borrowed */ \
 	X(CALL, 1)     /* args -- r    a: function index */ \
 	X(RET_V, 0)    /* r --         return with a one-cell value */ \

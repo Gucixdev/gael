@@ -278,9 +278,17 @@ Potem: makra i moduły (0.2), manifest i resolver gemów (0.3), bufor i okno (0.
   dwa razy raz, cykl się kończy). `vec` z zewnętrznej areny, który rośnie w wewnętrznej, dostaje nowy blok na
   stercie. Pomiar (gcc -O2, 5 przebiegów, 100k klatek z `split`, mapą i `join`): ~184 ms w arenie, ~216 ms bez
   niej. Tryb wydania (arena bez liczenia, reset bez sprawdzania) jeszcze nie: najpierw pomiar, ile da ponad to.
-- **Następne, po kolei:** typy o rozmiarze
-  (`i8`..`u64`, `f32`, `f64`), jedna przestrzeń nazw z funkcjami jako wartościami i wywołaniami ogonowymi, makra
-  higieniczne, traits, manifest gemów, bufor i okno. Numery wersji przesuwają się względem planu wyżej.
+- **Typy o rozmiarze (2026-10-20):** `i8`, `i16`, `i32`, `i64` (= `int`), `u8`, `u16`, `u32`, `u64`, `f32`, `f64`
+  (= `float`), „można określać, ale nie trzeba”: bez adnotacji jest `int` i `float`. Arytmetyka zostaje w swoim
+  rozmiarze i się zawija (`WRAP` po operacji na intach węższych niż 64 bity, `F32` zaokrągla), `u64` ma własne
+  dzielenie i porównania. Literał przyjmuje rozmiar oczekiwany w miejscu (zadeklarowany typ, parametr, pole, drugi
+  operand) i musi się w nim zmieścić - `(def b : u8 300)` to błąd kompilacji; literał powyżej 2^63 - 1 pasuje tylko do
+  `u64`. Konwersje tylko jawne: `(u8 x)`, `(f32 x)`, `(int x)`...; między intami zawinięcie, float do inta poza
+  zakresem to błąd czasu wykonania. `%d` i `%f` biorą każdy rozmiar; `f32` drukuje się najkrótszym zapisem, który
+  wraca do tej samej wartości (`0.1`). Typy SIMD (`vec4` itd.) przyjdą osobno.
+- **Następne, po kolei:** jedna przestrzeń nazw z funkcjami jako wartościami i wywołaniami ogonowymi, makra
+  higieniczne, traits, tryb wydania aren (po pomiarze), manifest gemów, bufor i okno. Numery wersji przesuwają się
+  względem planu wyżej.
 
 ## Notatki → stan
 
@@ -293,7 +301,7 @@ Każdy punkt z notatek o godot-rs i gaelu, z tym, co się z nim stało. ✓ zrob
 - ✓ bytecode VM, REPL, skrypty; ○ kompilacja (AOT, JIT) jako gemy.
 - ✓ `printf`/`println` (`print`, `println`, `format`, `%v`), `option`, krótkie spięcie `and`/`or`, `&&`, `||`, `|>`.
 - ✓ listy/array/dict/map/table: `vec` i `map`; ✓ hashmap.
-- → typy o określonym rozmiarze, „można określać, ale nie trzeba” (`int` = `i64`, `float` = `f64`).
+- ✓ typy o określonym rozmiarze, „można określać, ale nie trzeba” (`int` = `i64`, `float` = `f64`).
 - ✓ automatyczne SoA zamiast AoS na poziomie języka: `(vec struktura)` trzyma każde pole w osobnej kolumnie.
 - ✓ operatory basha: `|>`, `|`, `<<<`, `>`, `>>`, `$`, `$$`, `$ZMIENNA`, `&&` i `||` jak w bashu (komenda = prawda,
   gdy kończy się kodem 0); ✓ klej jak w bashu: `sh`, `system`, `args`, `getenv`, pliki.

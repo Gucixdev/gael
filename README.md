@@ -72,7 +72,7 @@ This file has three mistakes. gael reports all three and runs nothing:
 
 ```
 $ ./gael tests/errors/three-errors.gael
-tests/errors/three-errors.gael:2:8: error: + works on int and float, not bool
+tests/errors/three-errors.gael:2:8: error: + works on numbers, not bool
     (+ a true))
          ^
 tests/errors/three-errors.gael:3:15: error: println: % code 1 wants string, this value is int
@@ -159,7 +159,7 @@ gael> (defn scale ((v : Vec2) (k : float)) : Vec2
 gael> (scale (Vec2 :y 2.0 :x 1.0) 3.0)
 => (Vec2 :x 3.0 :y 6.0) : Vec2
 gael> (+ hp 0.5)
-<repl>:1:7: error: +: int and float do not mix; convert one with (float x) or (int x)
+<repl>:1:7: error: +: int and float do not mix; convert one, like (int x) or (float x)
   (+ hp 0.5)
         ^
 gael> :q
@@ -172,8 +172,13 @@ and the source line it came from.
 ## The language in 0.3
 
 Types: `int` (64-bit, arithmetic wraps around), `float` (64-bit), `bool`, `string`, `unit` (no value), structs,
-enums, `(option type)`, `(vec type)`, `(map key value)`, `(pool type)` and `(handle type)`. Nothing converts on its own:
-`(+ 1 2.0)` is a compile error, `(float x)` and `(int x)` convert on purpose. A comment starts with `;`.
+enums, `(option type)`, `(vec type)`, `(map key value)`, `(pool type)` and `(handle type)`, and numbers with a size:
+`i8`, `i16`, `i32`, `i64` (the same as `int`), `u8`, `u16`, `u32`, `u64`, `f32`, `f64` (the same as `float`). Arithmetic
+stays in its size and wraps around; a number literal takes the size expected where it stands (a declared type, a
+parameter, a field, the other operand) and must fit in it, so `(def b : u8 300)` is a compile error. Nothing converts
+on its own: `(+ 1 2.0)` is a compile error, and `(float x)`, `(int x)`, `(u8 x)`, `(f32 x)` and the like convert on
+purpose: between ints the value wraps around, a float to an int that cannot hold it is a runtime error. A comment
+starts with `;`.
 
 | Form | Meaning |
 |---|---|
@@ -256,7 +261,7 @@ tests/errors/div-zero.gael:1: runtime error: division by zero
 ## How it is built
 
 - C89 in one translation unit (`src/main.c` includes the rest), with the fixed-size types `i8`..`i64`, `u8`..`u64`,
-  `f32`, `f64` and `o` for void (`src/base.h`).
+  `f32`, `f64` and `o` for void (`src/base.h`), the same names as gael's own sized numbers.
 - No `malloc`: every table is a static array, and the VM's heap and text arena are each one reservation of address
   space (mmap with `MAP_NORESERVE`), which the system fills with pages only where something is written. Running out
   of a table is a fatal error that names it.
@@ -284,8 +289,8 @@ tests/errors/div-zero.gael:1: runtime error: division by zero
 
 ## Status
 
-Version 0.3, tested on Linux x86-64 with gcc 13.3 and clang 18.1. `./test` passes 79 checks per build (23 examples,
-49 compile and runtime error cases, two REPL sessions, five README examples) with gcc, clang and gcc with both
+Version 0.3, tested on Linux x86-64 with gcc 13.3 and clang 18.1. `./test` passes 82 checks per build (24 examples,
+51 compile and runtime error cases, two REPL sessions, five README examples) with gcc, clang and gcc with both
 sanitizers, every run with `GAEL_CHECK=1`. GitHub Actions runs shellcheck on the scripts and `./test` on every push
 (`.github/workflows/test.yml`, ubuntu-24.04).
 
