@@ -1,4 +1,4 @@
-; a vec grows as it is pushed to; its elements, structs too, sit next to each other on the heap
+; a vec grows as it is pushed to; a vec of structs keeps each field of its elements in its own column (SoA)
 (struct Item (name : string) (count : int))
 (struct Tree (label : string) (kids : (vec Tree)))   ; a struct can hold a vec of itself
 

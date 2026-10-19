@@ -28,6 +28,22 @@ static Cell g_heap[HEAP_CELLS];
 static i64 g_nheap;
 enum { VH_LEN, VH_CAP, VH_DATA, VH_CELLS };
 
+/* A vec keeps its elements as columns (SoA): cell C of element I sits at data + C * cap + I, so one field of every
+ * element is one run of memory. With one-cell elements that is a plain array */
+static Cell *vec_cell(const Cell *hd, i64 i, i64 c) { return g_heap + hd[VH_DATA].i + c * hd[VH_CAP].i + i; }
+
+static o vec_load(const Cell *hd, i64 i, i64 size, Cell *to)
+{
+	i64 c;
+	for (c = 0; c < size; c++) to[c] = *vec_cell(hd, i, c);
+}
+
+static o vec_store(const Cell *hd, i64 i, i64 size, const Cell *from)
+{
+	i64 c;
+	for (c = 0; c < size; c++) *vec_cell(hd, i, c) = from[c];
+}
+
 /* A map: this header; its entries in the order they went in, each an alive flag, the key and the value's cells; and
  * an index of SLOTS cells holding an entry's number + 1 (0: empty), probed linearly from the key's hash. A removed
  * entry stays in place, dead, until the map grows and packs the live ones together */
@@ -120,6 +136,8 @@ static o print_quoted(i64 v)
 }
 
 #define PRINT_DEPTH 64
+#define PRINT_SCRATCH (1 << 16)
+static Cell g_print_scratch[PRINT_SCRATCH]; /* a vec's element, gathered from its columns to be printed */
 
 /* print_value TYPE CELLS: one value, as the REPL shows it: (Vec2 :x 1.0 :y 2.0), (some 3), none, north, (vec 1 2) */
 static o print_value(Ty type, const Cell *c)
@@ -128,11 +146,13 @@ static o print_value(Ty type, const Cell *c)
 		Ty t;
 		i32 i;
 		const Cell *c;
+		i32 mark; /* the scratch in use before this value was gathered */
 	} st[PRINT_DEPTH];
-	i32 n = 1;
+	i32 n = 1, top = 0;
 	st[0].t = type;
 	st[0].i = -1;
 	st[0].c = c;
+	st[0].mark = 0;
 	while (n > 0) {
 		const TyInfo *ti = &g_tys[st[n - 1].t];
 		const Cell *v = st[n - 1].c;
@@ -143,12 +163,15 @@ static o print_value(Ty type, const Cell *c)
 				out_s("(vec");
 				*i = 0;
 			}
-			if (*i >= hd[VH_LEN].i) { out_s(")"); n--; continue; }
+			if (*i >= hd[VH_LEN].i) { out_s(")"); top = st[--n].mark; continue; }
 			out_s(" ");
-			if (n == PRINT_DEPTH) { out_s("..."); (*i)++; continue; }
+			if (n == PRINT_DEPTH || top + cells(ti->elem) > PRINT_SCRATCH) { out_s("..."); (*i)++; continue; }
 			st[n].t = ti->elem;
 			st[n].i = -1;
-			st[n].c = g_heap + hd[VH_DATA].i + (i64)*i * cells(ti->elem);
+			st[n].mark = top;
+			vec_load(hd, *i, cells(ti->elem), g_print_scratch + top);
+			st[n].c = g_print_scratch + top;
+			top += cells(ti->elem);
 			(*i)++;
 			n++;
 			continue;
@@ -162,7 +185,7 @@ static o print_value(Ty type, const Cell *c)
 			}
 			e = *i / 3;
 			while (*i % 3 == 0 && e < hd[MH_USED].i && !g_heap[hd[MH_ENT].i + e * esize].i) *i = (i32)(++e * 3);
-			if (e >= hd[MH_USED].i) { out_s(")"); n--; continue; }
+			if (e >= hd[MH_USED].i) { out_s(")"); top = st[--n].mark; continue; }
 			ent = g_heap + hd[MH_ENT].i + e * esize;
 			if (*i % 3 == 2) { /* the value was printed */
 				out_s(")");
@@ -174,6 +197,7 @@ static o print_value(Ty type, const Cell *c)
 			if (n == PRINT_DEPTH) { out_s("..."); continue; }
 			st[n].t = *i % 3 == 1 ? ti->key : ti->elem;
 			st[n].i = -1;
+			st[n].mark = top;
 			st[n].c = *i % 3 == 1 ? ent + 1 : ent + 2;
 			n++;
 			continue;
@@ -181,19 +205,20 @@ static o print_value(Ty type, const Cell *c)
 		if (ti->kind == K_STRUCT || ti->kind == K_OPTION) {
 			const Field *fd = 0;
 			if (*i < 0) {
-				if (ti->kind == K_OPTION && !v->i) { out_s("none"); n--; continue; }
+				if (ti->kind == K_OPTION && !v->i) { out_s("none"); top = st[--n].mark; continue; }
 				out_s("(");
 				out_s(ti->kind == K_OPTION ? "some" : ti->name);
 				*i = 0;
 			}
 			if (ti->kind == K_STRUCT && *i < ti->n) fd = &g_fields[ti->first + *i];
 			if (ti->kind == K_OPTION && *i < 1) out_s(" ");
-			else if (!fd) { out_s(")"); n--; continue; }
+			else if (!fd) { out_s(")"); top = st[--n].mark; continue; }
 			else { out_s(" :"); out_s(fd->name); out_s(" "); }
 			(*i)++;
 			if (n == PRINT_DEPTH) { out_s("..."); continue; }
 			st[n].t = fd ? fd->type : ti->elem;
 			st[n].i = -1;
+			st[n].mark = top;
 			st[n].c = fd ? v + fd->offset : v + 1;
 			n++;
 			continue;
@@ -215,7 +240,7 @@ static o print_value(Ty type, const Cell *c)
 		} else {
 			out_s("()");
 		}
-		n--;
+		top = st[--n].mark;
 	}
 }
 
@@ -356,13 +381,13 @@ static i64 heap_alloc(i64 n)
  * is full */
 static i64 vec_new(i64 n, i64 size, const Cell *from)
 {
-	i64 cap = n < 4 ? 4 : n, h = heap_alloc(VH_CELLS + cap * size);
+	i64 cap = n < 4 ? 4 : n, h = heap_alloc(VH_CELLS + cap * size), i;
 	if (h < 0) return -1;
 	g_heap[h + VH_LEN].i = n;
 	g_heap[h + VH_CAP].i = cap;
 	g_heap[h + VH_DATA].i = h + VH_CELLS;
-	if (from) memcpy(g_heap + h + VH_CELLS, from, (size_t)(n * size) * sizeof(Cell));
-	else memset(g_heap + h + VH_CELLS, 0, (size_t)(n * size) * sizeof(Cell));
+	memset(g_heap + h + VH_CELLS, 0, (size_t)(cap * size) * sizeof(Cell));
+	for (i = 0; from && i < n; i++) vec_store(g_heap + h, i, size, from + i * size); /* the stack has them one after another */
 	return h;
 }
 
@@ -370,14 +395,15 @@ static i64 vec_new(i64 n, i64 size, const Cell *from)
 static int vec_push(i64 v, i64 size, const Cell *from)
 {
 	Cell *hd = g_heap + v;
-	if (hd[VH_LEN].i == hd[VH_CAP].i) {
-		i64 cap = hd[VH_CAP].i * 2, data = heap_alloc(cap * size);
+	if (hd[VH_LEN].i == hd[VH_CAP].i) { /* each column moves to its place in a block twice the size */
+		i64 cap = hd[VH_CAP].i * 2, data = heap_alloc(cap * size), c;
 		if (data < 0) return 0;
-		memcpy(g_heap + data, g_heap + hd[VH_DATA].i, (size_t)(hd[VH_LEN].i * size) * sizeof(Cell));
+		for (c = 0; c < size; c++)
+			memcpy(g_heap + data + c * cap, vec_cell(hd, 0, c), (size_t)hd[VH_LEN].i * sizeof(Cell));
 		hd[VH_DATA].i = data;
 		hd[VH_CAP].i = cap;
 	}
-	memcpy(g_heap + hd[VH_DATA].i + hd[VH_LEN].i * size, from, (size_t)size * sizeof(Cell));
+	vec_store(hd, hd[VH_LEN].i, size, from);
 	hd[VH_LEN].i++;
 	return 1;
 }
@@ -881,7 +907,7 @@ static int vm_run(i32 pc)
 			i64 i = s[sp - 1].i;
 			if (i < 0 || i >= hd[VH_LEN].i) return index_error(in->line, i, hd[VH_LEN].i);
 			sp -= 2;
-			memcpy(s + sp, g_heap + hd[VH_DATA].i + i * in->a, (size_t)in->a * sizeof(Cell));
+			vec_load(hd, i, in->a, s + sp);
 			sp += in->a;
 			break;
 		}
@@ -892,7 +918,7 @@ static int vm_run(i32 pc)
 			hd = g_heap + s[sp].i;
 			i = s[sp + 1].i;
 			if (i < 0 || i >= hd[VH_LEN].i) return index_error(in->line, i, hd[VH_LEN].i);
-			memcpy(g_heap + hd[VH_DATA].i + i * in->a, s + sp + 2, (size_t)in->a * sizeof(Cell));
+			vec_store(hd, i, in->a, s + sp + 2);
 			break;
 		}
 		case OP_VEC_POP: {
@@ -903,7 +929,7 @@ static int vm_run(i32 pc)
 			} else {
 				hd[VH_LEN].i--;
 				s[sp - 1].i = 1;
-				memcpy(s + sp, g_heap + hd[VH_DATA].i + hd[VH_LEN].i * in->a, (size_t)in->a * sizeof(Cell));
+				vec_load(hd, hd[VH_LEN].i, in->a, s + sp);
 			}
 			sp += in->a;
 			break;
@@ -952,12 +978,10 @@ static int vm_run(i32 pc)
 		case OP_MAP_VALUES: {
 			i64 m = s[sp - 1].i, esize = 2 + g_heap[m + MH_VSIZE].i, size = in->op == OP_MAP_KEYS ? 1 : g_heap[m + MH_VSIZE].i;
 			i64 e, k = 0, v = vec_new(g_heap[m + MH_COUNT].i, size, (const Cell *)0);
-			Cell *data;
 			if (v < 0) return vm_error(in->line, HEAP_FULL);
-			data = g_heap + g_heap[v + VH_DATA].i;
 			for (e = 0; e < g_heap[m + MH_USED].i; e++) {
 				const Cell *ent = g_heap + g_heap[m + MH_ENT].i + e * esize;
-				if (ent[0].i) memcpy(data + k++ * size, in->op == OP_MAP_KEYS ? ent + 1 : ent + 2, (size_t)size * sizeof(Cell));
+				if (ent[0].i) vec_store(g_heap + v, k++, size, in->op == OP_MAP_KEYS ? ent + 1 : ent + 2);
 			}
 			s[sp - 1].i = v;
 			break;
