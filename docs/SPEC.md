@@ -192,7 +192,8 @@ Potem: makra i moduły (0.2), manifest i resolver gemów (0.3), bufor i okno (0.
   sprawdza przed wejściem, że cała ramka się mieści (wcześniej stały zapas 256 komórek dało się przekroczyć). Stringi
   z czasu wykonania w jednej arenie tekstu: `format`, `sh` zwracające wyjście komendy, `system` z kodem wyjścia,
   `parse-int` i `parse-float` zwracające `(option ...)`.
-- **Następne:** CI na GitHubie, tablice, operacje na stringach, potem makra i moduły, manifest gemów, bufor i okno.
+- **CI:** GitHub Actions uruchamia shellcheck i `./test` przy każdym pushu.
+- **Następne:** tablice, operacje na stringach, potem makra i moduły, manifest gemów, bufor i okno.
   Numery wersji przesuwają się o jeden względem planu wyżej.
 
 ## Ryzyka, uczciwie

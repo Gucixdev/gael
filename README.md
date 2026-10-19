@@ -218,7 +218,8 @@ tests/errors/div-zero.gael:1: runtime error: division by zero
 ## Status
 
 Version 0.2, tested on Linux x86-64 with gcc 13.3 and clang 18.1. `./test` passes 38 checks per build (ten examples,
-27 compile and runtime error cases, one REPL session) with gcc, clang and gcc with both sanitizers.
+27 compile and runtime error cases, one REPL session) with gcc, clang and gcc with both sanitizers. GitHub Actions
+runs shellcheck on the scripts and `./test` on every push (`.github/workflows/test.yml`, ubuntu-24.04).
 
 Not in 0.2: arrays, maps and other collections, cutting and searching strings, modules and gems (packages, see the
 spec), calling C, and the editor. The fixed limits are 8 parameters per function, 4096 functions, 4096 globals, 4096
