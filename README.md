@@ -162,7 +162,7 @@ and the source line it came from.
 ## The language in 0.3
 
 Types: `int` (64-bit, arithmetic wraps around), `float` (64-bit), `bool`, `string`, `unit` (no value), structs,
-enums, `(option type)` and `(vec type)`. Nothing converts on its own: `(+ 1 2.0)` is a compile error, `(float x)` and `(int x)`
+enums, `(option type)`, `(vec type)` and `(map key value)`. Nothing converts on its own: `(+ 1 2.0)` is a compile error, `(float x)` and `(int x)`
 convert on purpose. A comment starts with `;`.
 
 | Form | Meaning |
@@ -183,7 +183,10 @@ convert on purpose. A comment starts with `;`.
 | `(enum Dir north east south west)`, `Dir.north` | an enum and one of its values |
 | `(vec 1 2 3)`, `(vec)` | a vec; an empty one takes its element type from where it goes, like `none` |
 | `(push v x)`, `(get v i)`, `(put v i x)`, `(pop v)`, `(len v)` | add at the end, read, replace, take the last one off (an option), count; `get` and `put` check the index at run time |
-| `(for (x v) body...)`, `(for (i 0 n) body...)` | go over a vec (`x` is a copy of each element) or over 0, 1, ..., n - 1 |
+| `(map ("a" 1) ("b" 2))`, `(map)` | a map; the key is an int, a bool, a string or an enum value; the entries stay in the order they went in |
+| `(insert m k v)`, `(lookup m k)`, `(has m k)`, `(remove m k)` | add or replace, find (an option), check, take out (an option of the old value) |
+| `(keys m)`, `(values m)`, `(len m)` | the keys and the values as vecs, in order; the number of entries |
+| `(for (x v) body...)`, `(for (k m) body...)`, `(for (i 0 n) body...)` | go over a vec (`x` is a copy of each element), over a map's keys, or over 0, 1, ..., n - 1 |
 | `(some 5)`, `none` | the two kinds of `(option int)` value; `none` takes its type from where it goes: a declared binding, a parameter, a field, a return type, or the else branch of an `if` whose then branch has one |
 | `(match x (pattern body...)...)` | patterns are `_`, int and string literals, `true` and `false`, enum values (`north` or `Dir.north`), `(some name)` and `none`; every value must be covered, and an arm that can never run is an error |
 | `(print "fmt" args...)`, `(println "fmt" args...)` | `%d` int, `%f` float, `%s` string, `%b` bool, `%v` any value, `%%`; the codes are checked against the arguments when compiling. `eprint` and `eprintln` write to stderr |
@@ -203,7 +206,8 @@ convert on purpose. A comment starts with `;`.
 
 All the files of a program share one set of names. They are compiled in the order their `use`s need, and nothing
 runs until every one of them compiled without an error; then their top levels run in the same order (in the REPL a
-used file runs when it is loaded). A struct is a value and is copied; a vec is a handle, so copying one (also inside a struct) shares its elements. A
+used file runs when it is loaded). A struct is a value and is copied; a vec or a map is a handle, so copying one (also inside a struct) shares its
+contents. A
 struct can hold a vec of itself, which makes a tree. A function's last form is its value. An integer literal must fit in 64 bits, and a float needs digits on both sides
 of its point (`4.2`, `4.2e3`; `1e3` and `.5` are errors). A runtime error stops the program and names the line it
 happened on:
@@ -234,16 +238,16 @@ tests/errors/div-zero.gael:1: runtime error: division by zero
 
 ## Status
 
-Version 0.3, tested on Linux x86-64 with gcc 13.3 and clang 18.1. `./test` passes 59 checks per build (14 examples,
-39 compile and runtime error cases, one REPL session, five README examples) with gcc, clang and gcc with both sanitizers. GitHub Actions
+Version 0.3, tested on Linux x86-64 with gcc 13.3 and clang 18.1. `./test` passes 61 checks per build (15 examples,
+40 compile and runtime error cases, one REPL session, five README examples) with gcc, clang and gcc with both sanitizers. GitHub Actions
 runs shellcheck on the scripts and `./test` on every push (`.github/workflows/test.yml`, ubuntu-24.04).
 
-Not in 0.3: maps, gems
+Not in 0.3: gems
 (packages with versions, see the spec), calling C, and the editor. The fixed limits are 8 parameters per function, 4096 functions, 4096 globals, 4096
 types and 2^18 instructions; per unit (a file, or one REPL form) 2^18 syntax nodes and an 8 MiB arena for the source
 and its names; at run time a stack of 65536 cells and at most 4096 nested calls. Every string, the program's and the
-ones `format` and `sh` make, lives in one 32 MiB arena, and every vec on a heap of 4M cells (32 MiB); neither is
-freed, and filling one is a runtime error.
+ones `format` and `sh` make, lives in one 32 MiB arena, and every vec and map on a heap of 4M cells (32 MiB); neither is
+freed yet, and filling one is a runtime error.
 
 ## License
 

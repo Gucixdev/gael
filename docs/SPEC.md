@@ -204,9 +204,71 @@ Potem: makra i moduły (0.2), manifest i resolver gemów (0.3), bufor i okno (0.
   miejscu `use`, najpierw kompilacja wszystkich plików, uruchomienie dopiero bez błędów. Wspólna przestrzeń nazw;
   przestrzenie nazw gemów przyjdą z manifestem.
 - **Pola wyrażeń:** `(get v 0).pos.x` - czytnik zamienia `.pole` tuż po `)` na `(. wyrażenie pole)`.
-- **Następne:** mapy, makra, manifest i resolver gemów (na `use`), bufor i okno. Pamięć: dziś areny tekstu i sterta nie są zwalniane - przed edytorem trzeba
-  zdecydować (areny z zakresem sprawdzanym w kompilacji, refcount, albo jedno i drugie).
-  Numery wersji przesuwają się o jeden względem planu wyżej.
+- **Mapy:** `(map K V)` z kluczem int/bool/string/enum, kolejność wstawiania zachowana, otwarte adresowanie na
+  stercie; `insert`, `lookup` i `remove` (opcje), `has`, `keys`, `values`, `len`, `for` po kluczach.
+- **Pamięć - decyzja 2026-10-19: refcount.** Licznik mają stringi z czasu wykonania, `vec` i `map`; kompilator zna
+  typy, więc sam wstawia retain/release. Sterta dostaje pule bloków z listami wolnych zamiast samego przyrostu.
+  Koszty: `substr`, `split` i `trim` zaczną kopiować bajty; cykl (węzeł we własnej liście dzieci) wycieknie.
+- **Następne, po kolei:** operatory basha (`|>`, `|`, `<<<`, `>`, `>>`, `$`, `$$`, `$ZMIENNA`, `&&`, `||`),
+  automatyczne SoA dla `(vec struktura)`, refcount, typy o rozmiarze (`i8`..`u64`, `f32`, `f64`), potem makra,
+  traits, manifest gemów, bufor i okno. Numery wersji przesuwają się względem planu wyżej.
+
+## Notatki → stan
+
+Każdy punkt z notatek o godot-rs i gaelu, z tym, co się z nim stało. ✓ zrobione, → w kolejce, ○ później (często gem).
+
+**Język**
+- ✓ s-wyrażenia Lispa; typy w większości statyczne, zapisywane jak w GDScripcie (`(x : int)`), inferencja w `let`/`def`.
+- ✓ błędy na etapie kompilacji jako priorytet: wszystkie naraz z linią i kolumną, wyczerpujący `match`, martwe
+  ramiona, kody `%` sprawdzane, literały poza zakresem, jeden błąd = jeden komunikat.
+- ✓ bytecode VM, REPL, skrypty; ○ kompilacja (AOT, JIT) jako gemy.
+- ✓ `printf`/`println` (`print`, `println`, `format`, `%v`), `option`, krótkie spięcie `and`/`or`; → `&&`, `||`, `|>`.
+- ✓ listy/array/dict/map/table: `vec` i `map`; ✓ hashmap.
+- → typy o określonym rozmiarze, „można określać, ale nie trzeba” (`int` = `i64`, `float` = `f64`).
+- → automatyczne SoA zamiast AoS na poziomie języka.
+- → operatory basha: pipe, `$$`, `>`, `>>`, `|>`; ✓ klej jak w bashu: `sh`, `system`, `args`, `getenv`, pliki.
+- ✓ część edycji tekstu z Perla: `substr`, `find`, `split`, `join`, `trim`, `byte`, `char`; ○ operatory Perla (`=~`,
+  wyrażenia regularne).
+- → pamięć: refcount (decyzja); ○ arena per klatka, pool na encje, persistent arena pod snapshoty.
+- ○ makra (dostęp do ECS przez makra), traits, abstrakcje bez boilerplate i bez pułapek C++.
+- ✓ x-macro dla opkodów (`src/ops.h`).
+- ○ async/await, korutyny, fibery, joby (fine-grained, master/slave) - gemy.
+- ○ typy deltatime, tick, tag, uuid; ○ typy SIMD i cache-friendly; ○ kluczowa matematyka z czasem do rdzenia w C.
+- ○ lazy export (jak `@export`).
+- ✓ moduły (`use`); ○ gemy rozszerzają typy i pętle, rdzeń daje podstawy.
+- ○ inspiracje TempleOS (shell = REPL, typy holyc już są w C).
+- zasady: im mniej logiki w C, tym więcej w gaelu; single-header libs; rdzeń w C może się rozwijać z własną
+  wersją (wersja rdzenia osobno od wersji języka).
+
+**Gemy**
+- ○ wszystko jest gemem, wbudowane tylko kernel i editor; requires / depends / exclude; wersjonowanie; wybór gemów
+  przy nowym projekcie (2d, 3d, sdf, aabb, noise); gemy dają nody; build gry wycina nieużywane gemy.
+- ○ gemy w dowolnym języku (C, Rust, C++ - wejście C ABI; procesowe przez stdin/socket).
+- ○ prosty menedżer pakietów: gemy na Twoim GitHubie, Ty decydujesz o merge'ach, gałąź `experimental`.
+- ○ ustawienia per projekt i globalne (gemy, pluginy, assety); profile zmieniane w trakcie działania.
+- ○ katalog: soulslike, voxel, input buffer, parallax, dialogi w Markdownie, event flags, priority i event queue,
+  fsm, hfsm, A*, voronoi, perlin, LOD, HLOD, raycast, raytrace, world-env, timeact editor, edytor poziomów jak w
+  Quake'u, kryptografia, obfuskacja, ftl+, kalkulator, email, rss, circuitboard, druk 3D, dystrybucja gier, gry
+  terminalowe.
+
+**Edytor**
+- ✓ kolejność: najpierw język, potem edytor emacslike w samym gaelu, częściami.
+- ○ bufor uniwersalny: tekst, 3D, dźwięk, wideo, nody; bufor tekstu podrasowany, bufor 3D jako gem.
+- ○ magit, evil, org, mail, todo, dired, shell, tryb gamedev, hooki; ○ AI/LLM od początku (Claude Code, Cursor, Ollama).
+- ○ natywne GUI dla początkujących (układ Godota/GDStudio) i plugin Emacsa dla zaawansowanych.
+- ○ inputy zapisane jak w Emacsie, z pressed/released jak w Godocie; pióra, tablety, pady, dotyk.
+- ○ UI: Cassowary z procentami, animacje sprężyną z tłumieniem, logika UI osobno od krytycznej.
+
+**Silnik**
+- ○ wgpu, rapier, ECS na tagach, GAS z Unreala, DOTS z Unity, record / replay / rollback / snapshot.
+- ○ MATS (materiały: tłuczone szkło, podpalany olej, matcap, vertex animation, Phong, Blinn-Phong, POM/SPOM).
+- ○ tekstury i modele z kodu jak w kkrieger: graf jak w Blenderze / Material Makerze, kompilowany do kodu.
+- ○ asset management (wersjonowanie lokalne i globalne, wzorowane na Lore); integracje z Blenderem, GIMP-em,
+  Kritą, Inkscape'em, OpenSCAD-em, Audacity, REAPER-em, FL Studio, TrenchBroomem; ekosystemy Python, Mojo, Rust,
+  Go, Rails.
+- ○ build gry kompilowany; serwer i web jako część tego samego (fullstack).
+- ✓ najpierw Linux natywnie; ○ Vulkan/OpenGL/Metal/WASM/Android/Windows przez wgpu później.
+- ○ wydania: stable co określony czas z większą liczbą funkcji, testing na bieżąco.
 
 ## Ryzyka, uczciwie
 
