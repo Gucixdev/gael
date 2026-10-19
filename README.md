@@ -182,8 +182,11 @@ convert on purpose. A comment starts with `;`.
 | `(some 5)`, `none` | the two kinds of `(option int)` value; `none` takes its type from where it goes: a declared binding, a parameter, a field, a return type, or the else branch of an `if` whose then branch has one |
 | `(match x (pattern body...)...)` | patterns are `_`, int and string literals, `true` and `false`, enum values (`north` or `Dir.north`), `(some name)` and `none`; every value must be covered, and an arm that can never run is an error |
 | `(print "fmt" args...)`, `(println "fmt" args...)` | `%d` int, `%f` float, `%s` string, `%b` bool, `%v` any value, `%%`; the codes are checked against the arguments when compiling |
+| `(format "fmt" args...)` | the same codes as `println`, checked the same way, into a new string |
 | `(len s)` | the length of a string in bytes |
-| `(sh "command")` | run a shell command, get its exit status |
+| `(sh "command")` | run a command with `/bin/sh`, get what it printed, without the newlines at the end |
+| `(system "command")` | run a command, its output goes where gael's goes; get its exit status |
+| `(parse-int s)`, `(parse-float s)` | `(some n)` when the whole string, spaces around it aside, is a number; otherwise `none` |
 
 A function's last form is its value. An integer literal must fit in 64 bits, and a float needs digits on both sides
 of its point (`4.2`, `4.2e3`; `1e3` and `.5` are errors). A runtime error stops the program and names the line it
@@ -214,14 +217,14 @@ tests/errors/div-zero.gael:1: runtime error: division by zero
 
 ## Status
 
-Version 0.2, tested on Linux x86-64 with gcc 13.3 and clang 18.1. `./test` passes 35 checks per build (nine examples,
-25 compile and runtime error cases, one REPL session) with gcc, clang and gcc with both sanitizers.
+Version 0.2, tested on Linux x86-64 with gcc 13.3 and clang 18.1. `./test` passes 38 checks per build (ten examples,
+27 compile and runtime error cases, one REPL session) with gcc, clang and gcc with both sanitizers.
 
-Not in 0.2: arrays, maps and other collections, building strings at run time (and `sh` returning a command's
-output), modules and gems (packages, see the spec), calling C, and the editor. The fixed limits are 8 parameters per
-function, 4096 functions, 4096 globals, 4096 types and 2^18 instructions; per unit (a file, or one REPL form) 2^18
-syntax nodes and an 8 MiB arena for the source and the text of its names and strings; at run time a stack of 65536
-cells and at most 4096 nested calls.
+Not in 0.2: arrays, maps and other collections, cutting and searching strings, modules and gems (packages, see the
+spec), calling C, and the editor. The fixed limits are 8 parameters per function, 4096 functions, 4096 globals, 4096
+types and 2^18 instructions; per unit (a file, or one REPL form) 2^18 syntax nodes and an 8 MiB arena for the source
+and its names; at run time a stack of 65536 cells and at most 4096 nested calls. Every string, the program's and the
+ones `format` and `sh` make, lives in one 32 MiB arena that is never freed; filling it is a runtime error.
 
 ## License
 

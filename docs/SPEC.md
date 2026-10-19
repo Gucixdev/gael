@@ -189,10 +189,11 @@ Potem: makra i moduły (0.2), manifest i resolver gemów (0.3), bufor i okno (0.
 - **0.2:** `struct` (wartości bez alokacji, pola przez kropkę: `b.pos.x`, konstruktor pozycyjny albo z nazwami pól),
   `enum`, `(option T)` z `some`/`none` (typ `none` wynika z miejsca użycia), `match` z kontrolą wyczerpania i
   martwych ramion, `%v` dla każdej wartości. Kompilator liczy największą głębokość stosu operandów każdej funkcji, a VM
-  sprawdza przed wejściem, że cała ramka się mieści (wcześniej stały zapas 256 komórek dało się przekroczyć).
-- **Następne:** stringi w czasie wykonania (`format`, `sh` zwracające wyjście, `system` z kodem wyjścia), CI na
-  GitHubie, tablice, potem makra i moduły, manifest gemów, bufor i okno. Numery wersji przesuwają się o jeden względem
-  planu wyżej.
+  sprawdza przed wejściem, że cała ramka się mieści (wcześniej stały zapas 256 komórek dało się przekroczyć). Stringi
+  z czasu wykonania w jednej arenie tekstu: `format`, `sh` zwracające wyjście komendy, `system` z kodem wyjścia,
+  `parse-int` i `parse-float` zwracające `(option ...)`.
+- **Następne:** CI na GitHubie, tablice, operacje na stringach, potem makra i moduły, manifest gemów, bufor i okno.
+  Numery wersji przesuwają się o jeden względem planu wyżej.
 
 ## Ryzyka, uczciwie
 
