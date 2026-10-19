@@ -55,23 +55,32 @@ większości, wysoka wydajność, błędy na etapie kompilacji, mało boilerplat
 
 ### Składnia
 
-S-wyrażenia, typy zapisywane jak w GDScripcie. Szkic, nie decyzja:
+S-wyrażenia, typy zapisywane jak w GDScripcie. To, co już działa, opisuje README; poniżej szkic części z gemów:
 
 ```lisp
-(defn heal ((e : Entity) (amount : int)) : int
-  (let ((hp : int (get e :hp)))
-    (set e :hp (min 100 (+ hp amount)))))
+(defn heal ((e : ECSEntity) (amount : int)) : int   ; typy gemu ecs mają prefiks ECS
+  (let ((hp : int (ecs-get e :hp)))
+    (ecs-set e :hp (min 100 (+ hp amount)))))
 
-(export speed : float 4.5)                 ; jak @export w GDScripcie, leniwie
+(export speed : float 4.5)                          ; jak @export w GDScripcie, leniwie
 
-(query (pos : Position) (vel : Velocity)   ; dostęp do ECS przez makro
-  (set pos (+ pos (* vel dt))))
+(ecs-query (pos : Position) (vel : Velocity)        ; zapytanie do ECS przez makro gemu ecs;
+  (set pos (+ pos (* vel dt))))                     ; Position i Velocity to struktury gry
+(db-query "select name from saves")                 ; inny rodzaj zapytania, inny prefiks
 
-(|> (read-file "level.txt") lines (filter non-empty?) count)   ; pipe
-(if (and (alive? e) (has-tag? e :burning)) (damage e 1))     ; && || ze skracaniem
-(sh "git status --short")                  ; klej jak w bashu
-(println "hp: %d" hp)                      ; printf / println
+(|> (sh "cat level.txt") (split "\n") len)          ; pipe - działa już dziś
+(if (&& (alive? e) (ecs-has-tag? e :burning)) (damage e 1))
+(&& "make" "make install")                          ; && jak w bashu: druga komenda po sukcesie pierwszej
+(println "hp: %d" hp)
 ```
+
+### Nazwy
+
+- Typy i formy gemu mają prefiks swojego systemu: gem ecs daje `ECSEntity`, `ECSWorld`, `ECSComponent`,
+  `(ecs-query ...)`, `(ecs-get e :hp)`; gem bazy danych - `DBQuery`, `(db-query ...)`. Po nazwie widać, skąd coś
+  pochodzi, i dwa gemy nie kłócą się o `query`.
+- Rdzeń jest jeden, więc jego nazwy są krótkie: `vec`, `map`, `push`, `get`, `split`.
+- Struktury gry nazywa gra (`Position`, `Velocity`); prefiks dotyczy tego, co daje gem.
 
 ### Jądro języka (kernel) a gemy
 
@@ -209,8 +218,10 @@ Potem: makra i moduły (0.2), manifest i resolver gemów (0.3), bufor i okno (0.
 - **Pamięć - decyzja 2026-10-19: refcount.** Licznik mają stringi z czasu wykonania, `vec` i `map`; kompilator zna
   typy, więc sam wstawia retain/release. Sterta dostaje pule bloków z listami wolnych zamiast samego przyrostu.
   Koszty: `substr`, `split` i `trim` zaczną kopiować bajty; cykl (węzeł we własnej liście dzieci) wycieknie.
-- **Następne, po kolei:** operatory basha (`|>`, `|`, `<<<`, `>`, `>>`, `$`, `$$`, `$ZMIENNA`, `&&`, `||`),
-  automatyczne SoA dla `(vec struktura)`, refcount, typy o rozmiarze (`i8`..`u64`, `f32`, `f64`), potem makra,
+- **Operatory basha:** `(|> x (f a) g)` (wartość jako pierwszy argument kroku), `(| "ls" "wc -l")`,
+  `(<<< tekst "sort")`, `(> tekst plik)` i `(>> tekst plik)` (na liczbach `>` dalej porównuje), `($ "date")`, `$$`,
+  `$HOME`, `&&` i `||` z komendami jak w bashu i z boolami jak `and`/`or`.
+- **Następne, po kolei:** automatyczne SoA dla `(vec struktura)`, refcount, typy o rozmiarze (`i8`..`u64`, `f32`, `f64`), potem makra,
   traits, manifest gemów, bufor i okno. Numery wersji przesuwają się względem planu wyżej.
 
 ## Notatki → stan
@@ -222,15 +233,17 @@ Każdy punkt z notatek o godot-rs i gaelu, z tym, co się z nim stało. ✓ zrob
 - ✓ błędy na etapie kompilacji jako priorytet: wszystkie naraz z linią i kolumną, wyczerpujący `match`, martwe
   ramiona, kody `%` sprawdzane, literały poza zakresem, jeden błąd = jeden komunikat.
 - ✓ bytecode VM, REPL, skrypty; ○ kompilacja (AOT, JIT) jako gemy.
-- ✓ `printf`/`println` (`print`, `println`, `format`, `%v`), `option`, krótkie spięcie `and`/`or`; → `&&`, `||`, `|>`.
+- ✓ `printf`/`println` (`print`, `println`, `format`, `%v`), `option`, krótkie spięcie `and`/`or`, `&&`, `||`, `|>`.
 - ✓ listy/array/dict/map/table: `vec` i `map`; ✓ hashmap.
 - → typy o określonym rozmiarze, „można określać, ale nie trzeba” (`int` = `i64`, `float` = `f64`).
 - → automatyczne SoA zamiast AoS na poziomie języka.
-- → operatory basha: pipe, `$$`, `>`, `>>`, `|>`; ✓ klej jak w bashu: `sh`, `system`, `args`, `getenv`, pliki.
+- ✓ operatory basha: `|>`, `|`, `<<<`, `>`, `>>`, `$`, `$$`, `$ZMIENNA`, `&&` i `||` jak w bashu (komenda = prawda,
+  gdy kończy się kodem 0); ✓ klej jak w bashu: `sh`, `system`, `args`, `getenv`, pliki.
 - ✓ część edycji tekstu z Perla: `substr`, `find`, `split`, `join`, `trim`, `byte`, `char`; ○ operatory Perla (`=~`,
   wyrażenia regularne).
 - → pamięć: refcount (decyzja); ○ arena per klatka, pool na encje, persistent arena pod snapshoty.
-- ○ makra (dostęp do ECS przez makra), traits, abstrakcje bez boilerplate i bez pułapek C++.
+- ○ makra (dostęp do ECS przez makra gemu ecs: `ecs-query`), traits, abstrakcje bez boilerplate i bez pułapek C++.
+- ✓ zasada nazw: typy i formy gemu z prefiksem systemu (`ECSEntity`, `(ecs-query ...)`, `DBQuery`).
 - ✓ x-macro dla opkodów (`src/ops.h`).
 - ○ async/await, korutyny, fibery, joby (fine-grained, master/slave) - gemy.
 - ○ typy deltatime, tick, tag, uuid; ○ typy SIMD i cache-friendly; ○ kluczowa matematyka z czasem do rdzenia w C.
