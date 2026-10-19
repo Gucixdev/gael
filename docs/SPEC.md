@@ -195,9 +195,10 @@ Potem: makra i moduły (0.2), manifest i resolver gemów (0.3), bufor i okno (0.
 - **CI:** GitHub Actions uruchamia shellcheck i `./test` przy każdym pushu.
 - **0.3:** `(vec T)` - uchwyt do płaskiego bloku komórek na stercie (rośnie przez podwajanie, elementy-struktury leżą
   ciągiem), `push`/`get`/`put`/`pop`/`len`, `get` i `put` sprawdzają indeks; `for` po wektorze i po zakresie;
-  struktura może zawierać `(vec Self)`, więc drzewa (scena, AST) mają skończony rozmiar.
-- **Następne:** operacje na stringach (wycinanie, szukanie, dzielenie), mapy, pola wyniku wyrażenia, potem makra i
-  moduły, manifest gemów, bufor i okno. Pamięć: dziś areny tekstu i sterta nie są zwalniane - przed edytorem trzeba
+  struktura może zawierać `(vec Self)`, więc drzewa (scena, AST) mają skończony rozmiar. Stringi są widokami (przesunięcie
+  i długość w arenie tekstu): `substr`, `split`, `trim` bez kopiowania, do tego `byte`, `find`, `join`, `char`.
+  Wbudowane funkcje o stałej sygnaturze są w jednej tabeli w kompilatorze. `./test` uruchamia też przykłady z README.
+- **Następne:** mapy, pola wyniku wyrażenia, potem makra i moduły, manifest gemów, bufor i okno. Pamięć: dziś areny tekstu i sterta nie są zwalniane - przed edytorem trzeba
   zdecydować (areny z zakresem sprawdzanym w kompilacji, refcount, albo jedno i drugie).
   Numery wersji przesuwają się o jeden względem planu wyżej.
 

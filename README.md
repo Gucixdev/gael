@@ -191,6 +191,10 @@ convert on purpose. A comment starts with `;`.
 | `(sh "command")` | run a command with `/bin/sh`, get what it printed, without the newlines at the end |
 | `(system "command")` | run a command, its output goes where gael's goes; get its exit status |
 | `(parse-int s)`, `(parse-float s)` | `(some n)` when the whole string, spaces around it aside, is a number; otherwise `none` |
+| `(substr s from to)`, `(byte s i)`, `(trim s)` | the bytes from `from` up to `to`, one byte as an int, the string without spaces, tabs and newlines around it; the indexes are checked at run time |
+| `(find s part)` | where `part` first starts in `s`, as an `(option int)` |
+| `(split s sep)`, `(join v sep)` | the pieces between the separators as a `(vec string)`, and the pieces put back together |
+| `(char n)` | the one-byte string of a byte, 0 to 255 |
 
 A struct is a value and is copied; a vec is a handle, so copying one (also inside a struct) shares its elements. A
 struct can hold a vec of itself, which makes a tree. A function's last form is its value. An integer literal must fit in 64 bits, and a float needs digits on both sides
@@ -215,18 +219,19 @@ tests/errors/div-zero.gael:1: runtime error: division by zero
 - Every instruction is listed once in `src/ops.h` (an x-macro); the opcode enum, the disassembler's names and the
   operand counts come from that list.
 - The VM's cells carry no type tag: the compiler has already proved the types, so `ADD_I` reads two ints. A value
-  takes as many cells as its type says: one for a number, a bool, a string or an enum value, the sum of its fields
-  for a struct, and one more than the value inside for an option.
+  takes as many cells as its type says: one for a number, a bool, a string, an enum value or a vec, the sum of its
+  fields for a struct, and one more than the value inside for an option. A string's cell holds its offset and length
+  in the text arena, so `substr`, `split` and `trim` return pieces of the same text without copying it.
 - The compiler counts how deep each function's operand stack can get, and the VM checks that the whole frame fits
   before it enters it, so no instruction can write past the stack.
 
 ## Status
 
-Version 0.3, tested on Linux x86-64 with gcc 13.3 and clang 18.1. `./test` passes 42 checks per build (11 examples,
-30 compile and runtime error cases, one REPL session) with gcc, clang and gcc with both sanitizers. GitHub Actions
+Version 0.3, tested on Linux x86-64 with gcc 13.3 and clang 18.1. `./test` passes 49 checks per build (12 examples,
+31 compile and runtime error cases, one REPL session, five README examples) with gcc, clang and gcc with both sanitizers. GitHub Actions
 runs shellcheck on the scripts and `./test` on every push (`.github/workflows/test.yml`, ubuntu-24.04).
 
-Not in 0.3: maps, cutting and searching strings, field access on an expression (bind it with `let` first), modules
+Not in 0.3: maps, field access on an expression (bind it with `let` first), modules
 and gems (packages, see the spec), calling C, and the editor. The fixed limits are 8 parameters per function, 4096 functions, 4096 globals, 4096
 types and 2^18 instructions; per unit (a file, or one REPL form) 2^18 syntax nodes and an 8 MiB arena for the source
 and its names; at run time a stack of 65536 cells and at most 4096 nested calls. Every string, the program's and the
