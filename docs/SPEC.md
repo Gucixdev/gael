@@ -253,7 +253,15 @@ Potem: makra i moduły (0.2), manifest i resolver gemów (0.3), bufor i okno (0.
   `GAEL_HEAP=64M` ustawia inny rozmiar, a system, który odmówi, dostaje połowę. Wcześniej obie były statycznymi
   tablicami po 32 MiB: `vec` z 5 mln intów kończył się błędem, teraz działa (`examples/bigvec.gael`). Testy pamięci
   ustawiają sobie mniejszą stertę w `NAZWA.env`.
-- **Następne, po kolei:** `pool`, `arena` z trybem wydania, typy o rozmiarze
+- **Pool (2026-10-20):** `(pool T)` - stała liczba slotów (`(pool 1000)`, typ z miejsca użycia), elementy jako
+  kolumny jak w `vec`, wolne sloty na liście. `(spawn p x)` daje `(handle T)`: slot i generację, jaką slot miał, gdy
+  element wszedł. `get` i `put` ze starym uchwytem to błąd czasu wykonania, `lookup` daje `none`, `has` mówi, czy
+  element jest, `remove` wyjmuje go (opcja) i zwalnia slot (nowa generacja), `len` liczy, `(for (h p) ...)` idzie po
+  uchwytach w kolejności slotów. Uchwyt to zwykła wartość: `=`, pole struktury, klucz mapy. Kompilator pilnuje typu
+  uchwytu: `(get wrogowie uchwyt-cząsteczki)` to błąd kompilacji. Generacja ma 32 bity (ten sam slot użyty 2^31 razy
+  wraca do starej generacji). Na razie `get` kopiuje cały element; czytanie i zapis jednego pola w miejscu to
+  następna optymalizacja, wspólna z `vec`.
+- **Następne, po kolei:** `arena` z trybem wydania, typy o rozmiarze
   (`i8`..`u64`, `f32`, `f64`), jedna przestrzeń nazw z funkcjami jako wartościami i wywołaniami ogonowymi, makra
   higieniczne, traits, manifest gemów, bufor i okno. Numery wersji przesuwają się względem planu wyżej.
 
@@ -274,8 +282,9 @@ Każdy punkt z notatek o godot-rs i gaelu, z tym, co się z nim stało. ✓ zrob
   gdy kończy się kodem 0); ✓ klej jak w bashu: `sh`, `system`, `args`, `getenv`, pliki.
 - ✓ część edycji tekstu z Perla: `substr`, `find`, `split`, `join`, `trim`, `byte`, `char`; ○ operatory Perla (`=~`,
   wyrażenia regularne).
-- ✓ refcount (stringi z czasu wykonania, `vec`, `map`; liczenie wstawia kompilator); → arena per klatka, poziom i
-  żądanie, pool na encje z uchwytami z generacją, tryb wydania bez liczenia; ○ persistent arena pod snapshoty.
+- ✓ refcount (stringi z czasu wykonania, `vec`, `map`, `pool`; liczenie wstawia kompilator); ✓ pool na encje z
+  uchwytami z generacją; → arena per klatka, poziom i żądanie, tryb wydania bez liczenia; ○ persistent arena pod
+  snapshoty.
 - → Scheme jako wzór: jedna przestrzeń nazw, funkcje jako wartości, makra higieniczne, wywołania ogonowe.
 - ○ makra (dostęp do ECS przez makra gemu ecs: `ecs-query`), traits, abstrakcje bez boilerplate i bez pułapek C++.
 - ✓ zasada nazw: typy i formy gemu z prefiksem systemu (`ECSEntity`, `(ecs-query ...)`, `DBQuery`).

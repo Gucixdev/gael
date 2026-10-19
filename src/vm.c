@@ -181,7 +181,7 @@ static o vm_init(int check)
 /* every object starts with its count and its kind; the kind cell holds the type above the low 8 bits (the vec or
  * map type) or, for a string, its length */
 enum { OB_RC, OB_KIND };
-enum { KIND_STR = 1, KIND_VEC, KIND_MAP };
+enum { KIND_STR = 1, KIND_VEC, KIND_MAP, KIND_POOL };
 
 static Ty obj_type(i64 h) { return (Ty)((u64)g_heap[h + OB_KIND].i >> 8); }
 
@@ -194,7 +194,7 @@ static i64 str_cells(u64 len) { return 2 + (i64)((len + 8) / 8); }
 
 static i64 g_pending;    /* objects whose count reached 0, chained through their count cells */
 static int g_draining;   /* the chain is being freed: a release inside only adds to it */
-static i64 g_objects[4]; /* the strings, vecs and maps alive, by kind */
+static i64 g_objects[8]; /* the strings, vecs, maps and pools alive, by kind */
 
 #define USED_FREED "internal error: an object was used after it was freed"
 
@@ -258,11 +258,29 @@ enum { MH_COUNT = 2, MH_USED, MH_CAP, MH_ENT, MH_SLOTS, MH_IDX, MH_CELLS };
 static i64 map_vsize(i64 m) { return cells(g_tys[obj_type(m)].elem); }
 static int map_strkeys(i64 m) { return g_tys[obj_type(m)].key == T_STR; }
 
+/* A pool: [count][kind][cap][elements][free][data][gens]; a fixed number of slots, the elements as columns like a
+ * vec's (cell C of slot I at data + C * cap + I). gens holds each slot's generation, odd while the slot holds an
+ * element, then the free list: the next free slot after slot I at gens + cap + I, -1 at the end. A handle is the slot
+ * in its low 32 bits and the generation it had in the high 32; the element is still there when they match */
+enum { PH_CAP = 2, PH_COUNT, PH_FREE, PH_DATA, PH_GENS, PH_CELLS };
+
+static Cell *slot_cell(const Cell *hd, i64 i, i64 c) { return g_heap + hd[PH_DATA].i + c * hd[PH_CAP].i + i; }
+
+/* pool_slot POOL HANDLE: the slot whose element HANDLE names, or -1 when the handle is stale */
+static i64 pool_slot(const Cell *hd, i64 h)
+{
+	u64 i = (u64)h & 0xffffffffu, gen = (u64)h >> 32;
+	if (i >= (u64)hd[PH_CAP].i || !(gen & 1) || (u64)g_heap[hd[PH_GENS].i + (i64)i].i != gen) return -1;
+	return (i64)i;
+}
+
+static i64 handle_of(const Cell *hd, i64 i) { return (i64)((u64)g_heap[hd[PH_GENS].i + i].i << 32 | (u64)i); }
+
 /* obj_free H: give back an object whose count reached 0; what it held loses an owner */
 static o obj_free(i64 h)
 {
 	Cell *hd = g_heap + h;
-	g_objects[hd[OB_KIND].i & 3]--;
+	g_objects[hd[OB_KIND].i & 7]--;
 	switch (hd[OB_KIND].i & 0xff) {
 	case KIND_STR:
 		heap_free(h, str_cells((u64)hd[OB_KIND].i >> 8));
@@ -273,6 +291,18 @@ static o obj_free(i64 h)
 		for (i = 0; g_tys[et].nleaf && i < hd[VH_LEN].i; i++) refs(vec_cell(hd, i, 0), hd[VH_CAP].i, et, 0);
 		heap_free(hd[VH_DATA].i, hd[VH_CAP].i * size);
 		heap_free(h, VH_CELLS);
+		break;
+	}
+	case KIND_POOL: {
+		Ty et = g_tys[obj_type(h)].elem;
+		i64 i, cap = hd[PH_CAP].i;
+		const Cell *gens = g_heap + hd[PH_GENS].i;
+		for (i = 0; g_tys[et].nleaf && i < cap; i++) {
+			if (gens[i].i & 1) refs(slot_cell(hd, i, 0), cap, et, 0);
+		}
+		heap_free(hd[PH_DATA].i, cap * cells(et));
+		heap_free(hd[PH_GENS].i, 2 * cap);
+		heap_free(h, PH_CELLS);
 		break;
 	}
 	case KIND_MAP: {
@@ -314,7 +344,8 @@ static int vm_error(i32 line, const char *msg)
 }
 
 #define HEAP_FULL "out of memory (the heap is full)"
-#define NOT_MADE "this vec or map was never made: a global read before its def ran"
+#define NOT_MADE "this vec, map or pool was never made: a global read before its def ran"
+#define STALE "a stale handle: its element was removed from the pool"
 #define MADE(h) if ((h) <= 0) return vm_error(in->line, NOT_MADE)
 #define TEXT_FULL "out of memory for strings (the text arena is full)"
 
@@ -519,6 +550,11 @@ static o print_value(Ty type, const Cell *c)
 		}
 		if (ti->kind == K_ENUM) {
 			out_s(g_variants[ti->first + v->i]);
+		} else if (ti->kind == K_POOL || ti->kind == K_HANDLE) {
+			char buf[64];
+			if (ti->kind == K_POOL) sprintf(buf, "(pool %ld/%ld)", (long)g_heap[v->i + PH_COUNT].i, (long)g_heap[v->i + PH_CAP].i);
+			else sprintf(buf, "(handle %lu %lu)", (unsigned long)((u64)v->i & 0xffffffffu), (unsigned long)((u64)v->i >> 32));
+			out_s(buf);
 		} else if (st[n - 1].t == T_INT) {
 			char buf[32];
 			sprintf(buf, "%ld", (long)v->i);
@@ -852,6 +888,26 @@ static int map_insert(i64 m, i64 key, const Cell *val)
 	g_heap[hd[MH_IDX].i + slot].i = e + 1;
 	hd[MH_COUNT].i++;
 	return 1;
+}
+
+/* pool_new TYPE CAP: a pool of this type with CAP free slots; -1 when the heap is full */
+static i64 pool_new(Ty pt, i64 cap)
+{
+	i64 size = cells(g_tys[pt].elem), h = heap_alloc(PH_CELLS), data = heap_alloc(cap * size), gens = heap_alloc(2 * cap), i;
+	if (h < 0 || data < 0 || gens < 0) return -1;
+	g_heap[h + OB_RC].i = 1;
+	g_heap[h + OB_KIND].i = KIND_POOL | (i64)((u64)pt << 8);
+	g_objects[KIND_POOL]++;
+	g_heap[h + PH_CAP].i = cap;
+	g_heap[h + PH_COUNT].i = 0;
+	g_heap[h + PH_FREE].i = 0;
+	g_heap[h + PH_DATA].i = data;
+	g_heap[h + PH_GENS].i = gens;
+	for (i = 0; i < cap; i++) {
+		g_heap[gens + i].i = 0;
+		g_heap[gens + cap + i].i = i + 1 < cap ? i + 1 : -1;
+	}
+	return h;
 }
 
 /* index_error LINE I LEN: the runtime error for an index outside a vec */
@@ -1396,6 +1452,115 @@ static int vm_run(i32 pc)
 			s[sp - 1].i = v;
 			break;
 		}
+		case OP_POOL_NEW: { /* b: the pool type */
+			i64 cap = s[sp - 1].i, h;
+			if (cap < 1 || cap > 0x7fffffff) {
+				char msg[96];
+				sprintf(msg, "a pool holds 1 to 2147483647 elements, not %ld", (long)cap);
+				return vm_error(in->line, msg);
+			}
+			if ((h = pool_new((Ty)in->b, cap)) < 0) return vm_error(in->line, HEAP_FULL);
+			s[sp - 1].i = h;
+			break;
+		}
+		case OP_POOL_SPAWN: { /* the element moves into the first free slot */
+			Cell *hd, *gens;
+			i64 p, i, c, cap, h;
+			sp -= in->a + 1;
+			p = s[sp].i;
+			MADE(p);
+			hd = g_heap + p;
+			cap = hd[PH_CAP].i;
+			if ((i = hd[PH_FREE].i) < 0) {
+				char msg[96];
+				sprintf(msg, "the pool is full (%ld elements)", (long)cap);
+				return vm_error(in->line, msg);
+			}
+			gens = g_heap + hd[PH_GENS].i;
+			hd[PH_FREE].i = gens[cap + i].i;
+			gens[i].i = (gens[i].i + 1) & 0xffffffff; /* odd: it holds an element */
+			hd[PH_COUNT].i++;
+			for (c = 0; c < in->a; c++) *slot_cell(hd, i, c) = s[sp + 1 + c];
+			h = handle_of(hd, i);
+			if (!in->b) obj_release(p);
+			s[sp++].i = h;
+			break;
+		}
+		case OP_POOL_GET: { /* a copy of the element: the pool keeps its own */
+			i64 p = s[sp - 2].i, i, c;
+			const Cell *hd = g_heap + p;
+			MADE(p);
+			if ((i = pool_slot(hd, s[sp - 1].i)) < 0) return vm_error(in->line, STALE);
+			sp -= 2;
+			for (c = 0; c < in->a; c++) s[sp + c] = *slot_cell(hd, i, c);
+			refs(s + sp, 1, g_tys[obj_type(p)].elem, 1);
+			sp += in->a;
+			if (!in->b) obj_release(p);
+			break;
+		}
+		case OP_POOL_PUT: {
+			const Cell *hd;
+			i64 p, i, c;
+			sp -= in->a + 2;
+			p = s[sp].i;
+			MADE(p);
+			hd = g_heap + p;
+			if ((i = pool_slot(hd, s[sp + 1].i)) < 0) return vm_error(in->line, STALE);
+			refs(slot_cell(hd, i, 0), hd[PH_CAP].i, g_tys[obj_type(p)].elem, 0); /* the element it replaces */
+			for (c = 0; c < in->a; c++) *slot_cell(hd, i, c) = s[sp + 2 + c];
+			if (!in->b) obj_release(p);
+			break;
+		}
+		case OP_POOL_LOOKUP:
+		case OP_POOL_REMOVE: { /* the pool and the handle become the option: tag, element */
+			i64 p = s[sp - 2].i, i, c;
+			Cell *hd = g_heap + p;
+			MADE(p);
+			i = pool_slot(hd, s[sp - 1].i);
+			sp -= 2;
+			s[sp].i = i >= 0;
+			for (c = 0; c < in->a; c++) s[sp + 1 + c].i = i >= 0 ? slot_cell(hd, i, c)->i : 0;
+			if (i >= 0 && in->op == OP_POOL_LOOKUP) {
+				refs(s + sp + 1, 1, g_tys[obj_type(p)].elem, 1); /* a copy: the pool keeps its own */
+			} else if (i >= 0) { /* the element moves out, the slot goes back on the free list */
+				Cell *gens = g_heap + hd[PH_GENS].i;
+				gens[i].i = (gens[i].i + 1) & 0xffffffff; /* even: free */
+				gens[hd[PH_CAP].i + i].i = hd[PH_FREE].i;
+				hd[PH_FREE].i = i;
+				hd[PH_COUNT].i--;
+			}
+			sp += 1 + in->a;
+			if (!(in->b & 1)) obj_release(p);
+			break;
+		}
+		case OP_POOL_HAS: {
+			i64 p = s[sp - 2].i, found;
+			MADE(p);
+			found = pool_slot(g_heap + p, s[sp - 1].i) >= 0;
+			if (!(in->a & 1)) obj_release(p);
+			sp--;
+			s[sp - 1].i = found;
+			break;
+		}
+		case OP_POOL_LEN: {
+			i64 p = s[sp - 1].i;
+			MADE(p);
+			s[sp - 1].i = g_heap[p + PH_COUNT].i;
+			if (!in->a) obj_release(p);
+			break;
+		}
+		case OP_POOL_NEXT: { /* for (h p): the next slot that holds an element */
+			i64 p = s[sp - 2].i, i = s[sp - 1].i, cap;
+			const Cell *hd = g_heap + p, *gens;
+			MADE(p);
+			cap = hd[PH_CAP].i;
+			gens = g_heap + hd[PH_GENS].i;
+			while (i < cap && !(gens[i].i & 1)) i++;
+			s[sp - 2].i = i < cap ? i : -1;
+			s[sp - 1].i = i < cap ? handle_of(hd, i) : 0;
+			if (!in->a) obj_release(p);
+			break;
+		}
 		case OP_SHOW:
 			sp -= cells((Ty)in->a);
 			g_sink = stdout;
@@ -1440,7 +1605,7 @@ static o disassemble(i32 from, i32 to)
 		if (in->op == OP_CALL) printf("\t(%.40s)", g_fns[in->a].name);
 		if (in->op == OP_SHOW || in->op == OP_RETAIN || in->op == OP_DROP || in->op == OP_MAP_KEYS || in->op == OP_MAP_VALUES)
 			printf("\t(%.40s)", tn((Ty)in->a));
-		if (in->op == OP_RELEASE_L || in->op == OP_RELEASE_G || in->op == OP_VEC_NEW || in->op == OP_MAP_NEW)
+		if (in->op == OP_RELEASE_L || in->op == OP_RELEASE_G || in->op == OP_VEC_NEW || in->op == OP_MAP_NEW || in->op == OP_POOL_NEW)
 			printf("\t(%.40s)", tn((Ty)in->b));
 		if (in->line) printf("\t; line %ld", (long)in->line);
 		putchar('\n');

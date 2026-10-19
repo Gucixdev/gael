@@ -232,15 +232,15 @@ static long balance(const char *s)
 }
 
 /* leaks: with GAEL_CHECK=1, after a program ran to its end its globals are freed too, and then nothing may be left on
- * the heap. What is left was kept alive by a cycle (a vec or map that holds itself) or lost by a counting bug */
+ * the heap. What is left was kept alive by a cycle (a vec, map or pool that holds itself) or lost by a counting bug */
 static int leaks(void)
 {
-	static const char *const kinds[] = { "?", "string", "vec", "map" };
+	static const char *const kinds[] = { "?", "string", "vec", "map", "pool" };
 	int k, any = 0;
 	if (!g_check || !leak_check()) return 0;
 	fflush(stdout);
 	fputs("gael: GAEL_CHECK: never freed:", stderr);
-	for (k = 1; k < 4; k++) {
+	for (k = 1; k < 5; k++) {
 		if (!g_objects[k]) continue;
 		fprintf(stderr, "%s %ld %s%s", any ? "," : "", (long)g_objects[k], kinds[k], g_objects[k] == 1 ? "" : "s");
 		any = 1;

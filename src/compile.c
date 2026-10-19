@@ -15,12 +15,12 @@
 
 typedef u16 Ty;
 enum { T_ERR, T_UNIT, T_INT, T_FLOAT, T_BOOL, T_STR, T_NONE, T_ANY, T_USER };
-typedef enum { K_PRIM, K_STRUCT, K_ENUM, K_OPTION, K_VEC, K_MAP } TyKind;
+typedef enum { K_PRIM, K_STRUCT, K_ENUM, K_OPTION, K_VEC, K_MAP, K_POOL, K_HANDLE } TyKind;
 
 typedef struct {
 	const char *name;
 	u8 kind;
-	Ty elem;      /* option and vec: the type inside; map: the value type */
+	Ty elem;      /* option, vec, pool and handle: the type inside; map: the value type */
 	Ty key;       /* map: the key type */
 	i32 cells;    /* VM cells of one value */
 	i32 first, n; /* struct: its fields g_fields[first...]; enum: its variants g_variants[first...] */
@@ -171,7 +171,7 @@ static u8 g_seen[MAX_VARIANTS];      /* match: the variants an arm already cover
 
 typedef enum {
 	F_START, F_CALL, F_IF, F_WHEN, F_WHILE, F_DO, F_LET, F_SET, F_AND, F_OR, F_NOT, F_ARITH, F_CMP, F_PRINT,
-	F_CONV, F_BUILTIN, F_NEW, F_SOME, F_MATCH, F_VEC, F_VECOP, F_FOR, F_DOT, F_MAP, F_MAPOP, F_SHPIPE
+	F_CONV, F_BUILTIN, F_NEW, F_SOME, F_MATCH, F_VEC, F_VECOP, F_FOR, F_DOT, F_MAP, F_MAPOP, F_SHPIPE, F_POOL
 } Form;
 
 typedef struct {
@@ -222,12 +222,14 @@ static int is_enum(Ty t) { return t < g_ntys && g_tys[t].kind == K_ENUM; }
 static int is_option(Ty t) { return t < g_ntys && g_tys[t].kind == K_OPTION; }
 static int is_vec(Ty t) { return t < g_ntys && g_tys[t].kind == K_VEC; }
 static int is_map(Ty t) { return t < g_ntys && g_tys[t].kind == K_MAP; }
-static Ty elem_of(Ty t) { return is_vec(t) || is_option(t) || is_map(t) ? g_tys[t].elem : (Ty)T_ERR; }
+static int is_pool(Ty t) { return t < g_ntys && g_tys[t].kind == K_POOL; }
+static int is_handle(Ty t) { return t < g_ntys && g_tys[t].kind == K_HANDLE; }
+static Ty elem_of(Ty t) { return t < g_ntys && g_tys[t].kind >= K_OPTION ? g_tys[t].elem : (Ty)T_ERR; }
 static Ty key_of(Ty t) { return is_map(t) ? g_tys[t].key : (Ty)T_ERR; }
 static int has_refs(Ty t) { return t < g_ntys && g_tys[t].nleaf > 0; }
 static int numeric(Ty t) { return t == T_INT || t == T_FLOAT; }
-static int comparable(Ty t) { return numeric(t) || t == T_BOOL || t == T_STR || is_enum(t); }
-static int key_type(Ty t) { return t == T_INT || t == T_BOOL || t == T_STR || is_enum(t); }
+static int comparable(Ty t) { return numeric(t) || t == T_BOOL || t == T_STR || is_enum(t) || is_handle(t); }
+static int key_type(Ty t) { return t == T_INT || t == T_BOOL || t == T_STR || is_enum(t) || is_handle(t); }
 static int matchable(Ty t) { return t == T_INT || t == T_BOOL || t == T_STR || is_enum(t) || is_option(t); }
 
 static o depth_add(i32 d)
@@ -267,7 +269,12 @@ static i32 effect(Op op, i32 a, i32 b)
 	case OP_MAP_NEW: return 1 - a * (1 + cells(elem_of((Ty)b)));
 	case OP_MAP_INSERT: return -(2 + a);
 	case OP_MAP_LOOKUP: case OP_MAP_REMOVE: return a - 1;
-	case OP_MAP_HAS: return -1;
+	case OP_MAP_HAS: case OP_POOL_HAS: return -1;
+	case OP_POOL_SPAWN: return -a;
+	case OP_POOL_GET: return a - 2;
+	case OP_POOL_PUT: return -(2 + a);
+	case OP_POOL_LOOKUP: case OP_POOL_REMOVE: return a - 1;
+	case OP_POOL_NEW: case OP_POOL_LEN: case OP_POOL_NEXT: return 0;
 	case OP_SHPIPE: return 1 - a;
 	case OP_SHOW: return -cells((Ty)a);
 	default: return builtin_effect(op);
@@ -392,7 +399,8 @@ static const char *const g_reserved[] = {
 	"if", "when", "while", "do", "let", "set", "and", "or", "not", "+", "-", "*", "/", "%", "<", "<=", ">", ">=", "=",
 	"!=", "print", "println", "int", "float", "bool", "string", "unit", "len", "sh", "defn", "def", "true", "false", ":",
 	"struct", "enum", "match", "some", "none", "option", "_", "format", "eprint", "eprintln", "vec", "push", "get", "put",
-	"pop", "for", "use", ".", "map", "insert", "lookup", "has", "remove", "keys", "values", "&&", "||", "|>", "|", "<<<"
+	"pop", "for", "use", ".", "map", "insert", "lookup", "has", "remove", "keys", "values", "&&", "||", "|>", "|", "<<<",
+	"pool", "spawn", "handle"
 };
 
 static int is_builtin(const char *s);
@@ -411,7 +419,7 @@ static Ty find_named_type(const char *s)
 {
 	i32 i;
 	for (i = T_UNIT; i < g_ntys; i++) {
-		if (i == T_NONE || i == T_ANY || g_tys[i].kind == K_OPTION || g_tys[i].kind == K_VEC || g_tys[i].kind == K_MAP) continue;
+		if (i == T_NONE || i == T_ANY || g_tys[i].kind >= K_OPTION) continue;
 		if (!strcmp(g_tys[i].name, s)) return (Ty)i;
 	}
 	return T_NONE;
@@ -437,7 +445,7 @@ static o set_leaves(Ty t)
 {
 	TyInfo *ti = &g_tys[t];
 	i32 first = g_nleaves, i, k;
-	if (ti->kind == K_VEC || ti->kind == K_MAP) {
+	if (ti->kind == K_VEC || ti->kind == K_MAP || ti->kind == K_POOL) {
 		ti->leaf_first = 0;
 		ti->nleaf = 1;
 		return;
@@ -455,8 +463,9 @@ static o set_leaves(Ty t)
 	ti->nleaf = g_nleaves - first;
 }
 
-/* intern_wrap KIND TYPE: the type (option TYPE) or (vec TYPE), made once. An option holds its value in place (a tag
- * cell first); a vec is one cell, a handle to its elements on the heap */
+/* intern_wrap KIND TYPE: the type (option TYPE), (vec TYPE), (pool TYPE) or (handle TYPE), made once. An option holds
+ * its value in place (a tag cell first); a vec and a pool are one cell, a handle to their elements on the heap; a
+ * handle is one cell, a slot of a pool and the generation it had when the element went in */
 static Ty intern_wrap(u8 kind, Ty elem)
 {
 	char name[160];
@@ -466,13 +475,13 @@ static Ty intern_wrap(u8 kind, Ty elem)
 		if (g_tys[i].kind == kind && g_tys[i].elem == elem) return (Ty)i;
 	}
 	if (g_ntys == MAX_TYS) die("too many types");
-	sprintf(name, "(%s %.140s)", kind == K_VEC ? "vec" : "option", tn(elem));
+	sprintf(name, "(%s %.140s)", kind == K_VEC ? "vec" : kind == K_POOL ? "pool" : kind == K_HANDLE ? "handle" : "option", tn(elem));
 	t = &g_tys[g_ntys];
 	memset(t, 0, sizeof(*t));
 	t->name = arena_strndup(&g_perm, name, strlen(name));
 	t->kind = kind;
 	t->elem = elem;
-	t->cells = kind == K_VEC ? 1 : 1 + cells(elem);
+	t->cells = kind == K_OPTION ? 1 + cells(elem) : 1;
 	set_leaves((Ty)g_ntys);
 	return (Ty)g_ntys++;
 }
@@ -619,7 +628,7 @@ static Ty parse_type(i32 root)
 		if (n < 0) return T_ERR;
 		if (g_nodes[n].kind != N_LIST) {
 			if (!is_sym(n)) {
-				err_node(n, "expected a type here: int, float, bool, string, unit, a struct, an enum, (option type), (vec type) or (map key value)");
+				err_node(n, "expected a type here: int, float, bool, string, unit, a struct, an enum, (option type), (vec type), (map key value), (pool type) or (handle type)");
 				return T_ERR;
 			}
 			t = find_named_type(g_nodes[n].text);
@@ -633,10 +642,11 @@ static Ty parse_type(i32 root)
 		}
 		a1 = next_of(first_of(n));
 		a2 = next_of(a1);
-		if (head_is(n, "option") || head_is(n, "vec")) {
-			int vec = head_is(n, "vec");
+		if (head_is(n, "option") || head_is(n, "vec") || head_is(n, "pool") || head_is(n, "handle")) {
+			const char *what = g_nodes[first_of(n)].text;
+			u8 kind = head_is(n, "vec") ? K_VEC : head_is(n, "pool") ? K_POOL : head_is(n, "handle") ? K_HANDLE : K_OPTION;
 			if (a1 < 0 || a2 >= 0) {
-				err_node(n, vec ? "a vec type is (vec type), like (vec int)" : "an option type is (option type), like (option int)");
+				err_node(n, "%s %s type is (%s type), like (%s int)", kind == K_OPTION ? "an" : "a", what, what, what);
 				return T_ERR;
 			}
 			if (st[ns - 1].phase == 0) {
@@ -647,10 +657,10 @@ static Ty parse_type(i32 root)
 			}
 			t = res[--nr];
 			if (t == T_UNIT) {
-				err_node(a1, vec ? "(vec unit) holds nothing; count with an int" : "(option unit) holds nothing; use bool");
+				err_node(a1, kind == K_OPTION ? "(option unit) holds nothing; use bool" : "(%s unit) holds nothing; count with an int", what);
 				return T_ERR;
 			}
-			res[nr++] = intern_wrap((u8)(vec ? K_VEC : K_OPTION), t);
+			res[nr++] = intern_wrap(kind, t);
 			ns--;
 			continue;
 		}
@@ -681,7 +691,7 @@ static Ty parse_type(i32 root)
 			ns--;
 			continue;
 		}
-		err_node(n, "expected a type here: int, float, bool, string, unit, a struct, an enum, (option type), (vec type) or (map key value)");
+		err_node(n, "expected a type here: int, float, bool, string, unit, a struct, an enum, (option type), (vec type), (map key value), (pool type) or (handle type)");
 		return T_ERR;
 	}
 	return res[0];
@@ -891,18 +901,18 @@ static Ty fmt_type(const char *s, u32 n, i32 want, i32 *count)
 static const char *const g_print_names[] = { "print", "println", "format", "eprint", "eprintln" };
 static const Op g_print_ops[] = { OP_PRINT, OP_PRINTLN, OP_FORMAT, OP_PRINT, OP_PRINTLN };
 
-/* the builtins on a vec */
-/* the builtins on a map */
+/* the builtins on a map, and on a pool (lookup, has, remove) */
 enum { MO_INSERT, MO_LOOKUP, MO_HAS, MO_REMOVE, MO_KEYS, MO_VALUES };
 static const char *const g_mapop_names[] = { "insert", "lookup", "has", "remove", "keys", "values" };
 static const char *const g_mapop_usage[] = { "(insert m key value)", "(lookup m key)", "(has m key)", "(remove m key)", "(keys m)", "(values m)" };
 static const i32 g_mapop_args[] = { 3, 2, 2, 2, 1, 1 };
 static const Op g_mapop_ops[] = { OP_MAP_INSERT, OP_MAP_LOOKUP, OP_MAP_HAS, OP_MAP_REMOVE, OP_MAP_KEYS, OP_MAP_VALUES };
 
-enum { VO_PUSH, VO_GET, VO_PUT, VO_POP };
-static const char *const g_vecop_names[] = { "push", "get", "put", "pop" };
-static const char *const g_vecop_usage[] = { "(push v x)", "(get v i)", "(put v i x)", "(pop v)" };
-static const i32 g_vecop_args[] = { 2, 2, 3, 1 };
+/* the builtins on a vec, and on a pool (get, put, spawn) */
+enum { VO_PUSH, VO_GET, VO_PUT, VO_POP, VO_SPAWN };
+static const char *const g_vecop_names[] = { "push", "get", "put", "pop", "spawn" };
+static const char *const g_vecop_usage[] = { "(push v x)", "(get v i)", "(put v i x)", "(pop v)", "(spawn p x)" };
+static const i32 g_vecop_args[] = { 2, 2, 3, 1, 2 };
 
 typedef struct {
 	int global;
@@ -1120,6 +1130,7 @@ static o start_list(Frame *f)
 	else if (!strcmp(s, "some")) f->form = F_SOME;
 	else if (!strcmp(s, "vec")) f->form = F_VEC;
 	else if (!strcmp(s, "map")) f->form = F_MAP;
+	else if (!strcmp(s, "pool")) f->form = F_POOL;
 	else if (!strcmp(s, "for")) f->form = F_FOR;
 	else if (!strcmp(s, "match")) f->form = F_MATCH;
 	else if (!strcmp(s, "defn") || !strcmp(s, "def") || !strcmp(s, "struct") || !strcmp(s, "enum") || !strcmp(s, "use")) {
@@ -1791,7 +1802,8 @@ static o run_work(i32 base)
 			if (bi->args[f->k] == 'x') {
 				if (is_vec(t)) f->c = 1; /* len of a vec */
 				else if (is_map(t)) f->c = 2;
-				else if (t != T_STR && t != T_ERR) err_node(f->cur, "len takes a string, a vec or a map, not %s", tn(t));
+				else if (is_pool(t)) f->c = 3;
+				else if (t != T_STR && t != T_ERR) err_node(f->cur, "len takes a string, a vec, a map or a pool, not %s", tn(t));
 			} else if (t != T_ERR && t != t2) {
 				if (nargs == 1) err_node(f->cur, "%s takes %s, not %s", bi->name, a_type(t2), tn(t));
 				else err_node(f->cur, "%s: %s is %s, it must be %s", bi->name, param_name(bi, f->k, pname), tn(t), tn(t2));
@@ -1799,8 +1811,8 @@ static o run_work(i32 base)
 			f->k++;
 			f->cur = next_of(f->cur);
 			if (f->cur >= 0) { push_child(f->cur, code_type(bi->args[f->k])); break; }
-			emit(f->c == 1 ? OP_VEC_LEN : f->c == 2 ? OP_MAP_LEN : bi->op, bi->op == OP_LEN_S || bi->op == OP_BYTE ? f->b : bi->a,
-			     f->c ? 0 : bi->b, line);
+			emit(f->c == 1 ? OP_VEC_LEN : f->c == 2 ? OP_MAP_LEN : f->c == 3 ? OP_POOL_LEN : bi->op,
+			     bi->op == OP_LEN_S || bi->op == OP_BYTE ? f->b : bi->a, f->c ? 0 : bi->b, line);
 			finish(code_type(bi->ret));
 			break;
 		}
@@ -2017,9 +2029,10 @@ static o run_work(i32 base)
 			finish(t);
 			break;
 
-		case F_VECOP: { /* (push v x) (get v i) (put v i x) (pop v) */
+		case F_VECOP: { /* (push v x) (get v i) (put v i x) (pop v); (get p h) (put p h x) (spawn p x) on a pool */
 			const char *what = g_vecop_names[f->op];
 			Ty elem = elem_of(f->rt);
+			int pool = is_pool(f->rt);
 			if (f->phase == 0) {
 				if (f->k != g_vecop_args[f->op]) {
 					err_node(f->node, "%s takes %ld value%s: %s", what, (long)g_vecop_args[f->op], g_vecop_args[f->op] == 1 ? "" : "s",
@@ -2032,10 +2045,18 @@ static o run_work(i32 base)
 				break;
 			}
 			t = pop_type();
-			if (f->phase == 1) { /* the vec */
+			if (f->phase == 1) { /* the vec or the pool */
 				f->b = borrow_last(f->cur, next_of(f->cur));
-				if (t != T_ERR && !is_vec(t)) {
-					err_node(f->cur, "%s: the first value must be a vec, this is %s", what, tn(t));
+				pool = is_pool(t);
+				if (t != T_ERR && pool && (f->op == VO_PUSH || f->op == VO_POP)) {
+					err_node(f->cur, f->op == VO_PUSH ? "push works on a vec; a pool takes (spawn p x)"
+					                                   : "pop works on a vec; take an element out of a pool with (remove p h)");
+					t = T_ERR;
+				} else if (t != T_ERR && !pool && f->op == VO_SPAWN) {
+					err_node(f->cur, "spawn: the first value must be a pool, this is %s", tn(t));
+					t = T_ERR;
+				} else if (t != T_ERR && !pool && !is_vec(t)) {
+					err_node(f->cur, "%s: the first value must be a vec%s, this is %s", what, f->op == VO_GET || f->op == VO_PUT ? " or a pool" : "", tn(t));
 					t = T_ERR;
 				}
 				f->rt = t;
@@ -2047,13 +2068,18 @@ static o run_work(i32 base)
 				}
 				f->phase = 2;
 				f->cur = next_of(f->cur);
-				push_child(f->cur, f->op == VO_PUSH ? (t == T_ERR ? (Ty)T_NONE : elem) : (Ty)T_NONE);
+				if (f->op == VO_PUSH || f->op == VO_SPAWN) push_child(f->cur, t == T_ERR ? (Ty)T_NONE : elem);
+				else push_child(f->cur, pool ? intern_wrap(K_HANDLE, elem) : (Ty)T_NONE);
 				break;
 			}
-			if (f->phase == 2 && f->op != VO_PUSH) { /* the index */
-				if (t != T_INT && t != T_ERR) err_node(f->cur, "%s: the index is %s, it must be int", what, tn(t));
+			if (f->phase == 2 && f->op != VO_PUSH && f->op != VO_SPAWN) { /* the index, or a pool's handle */
+				Ty want = pool ? intern_wrap(K_HANDLE, elem) : (Ty)T_INT;
+				if (t != want && t != T_ERR && f->rt != T_ERR) {
+					if (pool) err_node(f->cur, "%s: a %s takes a %s, this is %s", what, tn(f->rt), tn(want), tn(t));
+					else err_node(f->cur, "%s: the index is %s, it must be int", what, tn(t));
+				}
 				if (f->op == VO_GET) {
-					emit(OP_VEC_GET, cells(elem), f->b, line);
+					emit(pool ? OP_POOL_GET : OP_VEC_GET, cells(elem), f->b, line);
 					finish(elem);
 					break;
 				}
@@ -2062,10 +2088,15 @@ static o run_work(i32 base)
 				push_child(f->cur, f->rt == T_ERR ? (Ty)T_NONE : elem);
 				break;
 			}
-			/* the element of a push or a put */
+			/* the element of a push, a put or a spawn */
 			if (t != T_ERR && f->rt != T_ERR && t != elem)
-				err_node(f->cur, "%s: the vec holds %s, this value is %s", what, tn(elem), tn(t));
-			emit(f->op == VO_PUSH ? OP_VEC_PUSH : OP_VEC_PUT, cells(elem), f->b, line);
+				err_node(f->cur, "%s: the %s holds %s, this value is %s", what, pool ? "pool" : "vec", tn(elem), tn(t));
+			if (f->op == VO_SPAWN) {
+				emit(OP_POOL_SPAWN, cells(elem), f->b, line);
+				finish(f->rt == T_ERR ? (Ty)T_ERR : intern_wrap(K_HANDLE, elem));
+				break;
+			}
+			emit(pool ? OP_POOL_PUT : f->op == VO_PUSH ? OP_VEC_PUSH : OP_VEC_PUT, cells(elem), f->b, line);
 			finish(T_UNIT);
 			break;
 		}
@@ -2099,12 +2130,34 @@ static o run_work(i32 base)
 					push_child(next_of(next_of(name)), T_INT);
 					break;
 				}
+				if (is_pool(t)) { /* over the handles of a pool's elements, in slot order */
+					f->rt = intern_wrap(K_HANDLE, elem_of(t));
+					f->res = t;
+					f->a = new_slots(3); /* the pool, the slot, the handle */
+					emit(OP_STORE_L, f->a, 0, line);
+					emit(OP_PUSH_I, add_int(0), 0, line);
+					emit(OP_STORE_L, f->a + 1, 0, line);
+					f->c = g_ncode;
+					emit(OP_LOAD_L, f->a, 0, line); /* the hidden slot holds the pool; this read borrows it */
+					emit(OP_LOAD_L, f->a + 1, 0, line);
+					emit(OP_POOL_NEXT, 1, 0, line);
+					emit(OP_STORE_L, f->a + 2, 0, line);
+					emit(OP_STORE_L, f->a + 1, 0, line);
+					emit(OP_LOAD_L, f->a + 1, 0, line);
+					emit(OP_PUSH_I, add_int(0), 0, line);
+					emit(OP_GE_I, 0, 0, line);
+					f->b = emit(OP_JF, -1, 0, line);
+					add_local(g_nodes[name].text, f->rt, f->a + 2);
+					f->phase = 3;
+					push_body(next_of(b), 0, T_UNIT);
+					break;
+				}
 				if (is_map(t)) { /* over a map's keys, in the order they went in */
 					t = intern_wrap(K_VEC, key_of(t));
 					emit(OP_MAP_KEYS, t, 0, line);
 				}
 				if (t != T_ERR && !is_vec(t)) {
-					err_node(next_of(name), "for: (x v) goes over a vec or the keys of a map, this is %s; a range is (i from to)", tn(t));
+					err_node(next_of(name), "for: (x v) goes over a vec, the keys of a map or the handles of a pool, this is %s; a range is (i from to)", tn(t));
 					t = T_ERR;
 				}
 				f->rt = elem_of(t);
@@ -2241,9 +2294,11 @@ static o run_work(i32 base)
 			finish(t);
 			break;
 
-		case F_MAPOP: { /* (insert m k v) (lookup m k) (has m k) (remove m k) (keys m) (values m) */
+		case F_MAPOP: { /* (insert m k v) (lookup m k) (has m k) (remove m k) (keys m) (values m); on a pool lookup,
+		                 * has and remove take a handle */
 			const char *what = g_mapop_names[f->op];
-			Ty key = key_of(f->rt), val = elem_of(f->rt);
+			int pool = is_pool(f->rt);
+			Ty val = elem_of(f->rt), key = pool ? intern_wrap(K_HANDLE, val) : key_of(f->rt);
 			if (f->phase == 0) {
 				if (f->k != g_mapop_args[f->op]) {
 					err_node(f->node, "%s takes %ld value%s: %s", what, (long)g_mapop_args[f->op], g_mapop_args[f->op] == 1 ? "" : "s",
@@ -2256,15 +2311,21 @@ static o run_work(i32 base)
 				break;
 			}
 			t = pop_type();
-			if (f->phase == 1) { /* the map */
+			if (f->phase == 1) { /* the map or the pool */
 				f->b = borrow_last(f->cur, next_of(f->cur));
-				if (t != T_ERR && !is_map(t)) {
-					err_node(f->cur, "%s: the first value must be a map, this is %s", what, tn(t));
+				pool = is_pool(t);
+				if (t != T_ERR && pool && (f->op == MO_INSERT || f->op == MO_KEYS || f->op == MO_VALUES)) {
+					err_node(f->cur, f->op == MO_INSERT ? "insert works on a map; a pool takes (spawn p x)"
+					                                     : "%s works on a map; go over a pool's handles with (for (h p) ...)", what);
+					t = T_ERR;
+				} else if (t != T_ERR && !pool && !is_map(t)) {
+					err_node(f->cur, "%s: the first value must be a map%s, this is %s", what,
+					         f->op == MO_LOOKUP || f->op == MO_HAS || f->op == MO_REMOVE ? " or a pool" : "", tn(t));
 					t = T_ERR;
 				}
 				f->rt = t;
-				key = key_of(t);
 				val = elem_of(t);
+				key = pool ? intern_wrap(K_HANDLE, val) : key_of(t);
 				if (f->op == MO_KEYS || f->op == MO_VALUES) {
 					t = t == T_ERR ? (Ty)T_ERR : intern_wrap(K_VEC, f->op == MO_KEYS ? key : val);
 					emit(g_mapop_ops[f->op], t, f->b, line);
@@ -2276,11 +2337,15 @@ static o run_work(i32 base)
 				push_child(f->cur, t == T_ERR ? (Ty)T_NONE : key);
 				break;
 			}
-			if (f->phase == 2) { /* the key */
-				if (t != T_ERR && f->rt != T_ERR && t != key) err_node(f->cur, "%s: the keys are %s, this one is %s", what, tn(key), tn(t));
+			if (f->phase == 2) { /* the key, or a pool's handle */
+				if (t != T_ERR && f->rt != T_ERR && t != key) {
+					if (pool) err_node(f->cur, "%s: a %s takes a %s, this is %s", what, tn(f->rt), tn(key), tn(t));
+					else err_node(f->cur, "%s: the keys are %s, this one is %s", what, tn(key), tn(t));
+				}
 				if (f->op != MO_INSERT) { /* the key is only looked up: it can be borrowed too */
 					if (borrow_last(f->cur, -1)) f->b |= 2;
-					if (f->op == MO_HAS) emit(OP_MAP_HAS, f->b, 0, line);
+					if (f->op == MO_HAS) emit(pool ? OP_POOL_HAS : OP_MAP_HAS, f->b, 0, line);
+					else if (pool) emit(f->op == MO_LOOKUP ? OP_POOL_LOOKUP : OP_POOL_REMOVE, cells(val), f->b, line);
 					else emit(g_mapop_ops[f->op], cells(val), f->b, line);
 					finish(f->rt == T_ERR ? (Ty)T_ERR : f->op == MO_HAS ? (Ty)T_BOOL : intern_option(val));
 					break;
@@ -2295,6 +2360,25 @@ static o run_work(i32 base)
 			finish(T_UNIT);
 			break;
 		}
+
+		case F_POOL: /* (pool n): a pool of n slots; the expected type says what it holds */
+			if (f->phase == 0) {
+				if (f->k != 1) {
+					err_node(f->node, "pool takes the number of slots: (pool 1000)");
+					finish(T_ERR);
+					break;
+				}
+				if (!is_pool(f->want) && f->want != T_ERR)
+					err_node(f->node, "a pool needs to know what it holds; give it a type, like (def ps : (pool Particle) (pool 1000))");
+				f->phase = 1;
+				push_child(f->cur, T_INT);
+				break;
+			}
+			t = pop_type();
+			if (t != T_INT && t != T_ERR) err_node(f->cur, "pool: the number of slots is %s, it must be int", tn(t));
+			emit(OP_POOL_NEW, 0, is_pool(f->want) ? f->want : (Ty)T_ERR, line);
+			finish(is_pool(f->want) ? f->want : (Ty)T_ERR);
+			break;
 
 		case F_DOT: { /* (. expr pos.x): a field of the value of any expression; (f x).pos.x reads as this */
 			i32 path = next_of(f->cur), off = 0, slot;
@@ -2448,8 +2532,8 @@ static o declare_struct(i32 n, int repl)
 			bad++;
 			continue;
 		}
-		while (head_is(base, "option") || head_is(base, "vec")) {
-			if (head_is(base, "vec")) in_vec = 1;
+		while (head_is(base, "option") || head_is(base, "vec") || head_is(base, "pool") || head_is(base, "handle")) {
+			if (!head_is(base, "option")) in_vec = 1; /* behind a handle the size stays one cell */
 			base = next_of(first_of(base));
 		}
 		if (sym_is(base, g_nodes[name].text) && !in_vec) {

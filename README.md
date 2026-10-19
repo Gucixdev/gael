@@ -166,8 +166,8 @@ and the source line it came from.
 ## The language in 0.3
 
 Types: `int` (64-bit, arithmetic wraps around), `float` (64-bit), `bool`, `string`, `unit` (no value), structs,
-enums, `(option type)`, `(vec type)` and `(map key value)`. Nothing converts on its own: `(+ 1 2.0)` is a compile error, `(float x)` and `(int x)`
-convert on purpose. A comment starts with `;`.
+enums, `(option type)`, `(vec type)`, `(map key value)`, `(pool type)` and `(handle type)`. Nothing converts on its own:
+`(+ 1 2.0)` is a compile error, `(float x)` and `(int x)` convert on purpose. A comment starts with `;`.
 
 | Form | Meaning |
 |---|---|
@@ -181,17 +181,20 @@ convert on purpose. A comment starts with `;`.
 | `(&& a b...)`, `(\|\| a b...)` | the same, but an argument may also be a command, true when it exits with 0, as in bash: `(&& "make" "make install")` |
 | `(+ a b...)`, `-`, `*`, `/` | int with int or float with float; `(- x)` negates |
 | `(% a b)` | the remainder of two ints |
-| `<`, `<=`, `>`, `>=`, `=`, `!=` | compare two ints or two floats; `=` and `!=` also take bools, strings and enum values |
+| `<`, `<=`, `>`, `>=`, `=`, `!=` | compare two ints or two floats; `=` and `!=` also take bools, strings, enum values and handles |
 | `(struct Vec2 (x : float) (y : float))` | a struct; a field can have any type declared above it, other structs and options included |
 | `(Vec2 1.0 2.0)`, `(Vec2 :y 2.0 :x 1.0)` | a struct value, with the fields in order or named; every field must be given |
 | `v.x`, `b.pos.x`, `(get bodies 0).pos.x` | a field of a variable, or of any expression's value: `(expr).name` right after the parenthesis reads as `(. expr name)` |
 | `(enum Dir north east south west)`, `Dir.north` | an enum and one of its values |
 | `(vec 1 2 3)`, `(vec)` | a vec; an empty one takes its element type from where it goes, like `none` |
 | `(push v x)`, `(get v i)`, `(put v i x)`, `(pop v)`, `(len v)` | add at the end, read, replace, take the last one off (an option), count; `get` and `put` check the index at run time |
-| `(map ("a" 1) ("b" 2))`, `(map)` | a map; the key is an int, a bool, a string or an enum value; the entries stay in the order they went in |
+| `(map ("a" 1) ("b" 2))`, `(map)` | a map; the key is an int, a bool, a string, an enum value or a handle; the entries stay in the order they went in |
 | `(insert m k v)`, `(lookup m k)`, `(has m k)`, `(remove m k)` | add or replace, find (an option), check, take out (an option of the old value) |
 | `(keys m)`, `(values m)`, `(len m)` | the keys and the values as vecs, in order; the number of entries |
-| `(for (x v) body...)`, `(for (k m) body...)`, `(for (i 0 n) body...)` | go over a vec (`x` is a copy of each element), over a map's keys, or over 0, 1, ..., n - 1 |
+| `(pool 1000)` | a pool of 1000 slots that never grows; its element type comes from where it goes, like `(def ps : (pool Particle) (pool 1000))` |
+| `(spawn p x)`, `(get p h)`, `(put p h x)`, `(len p)` | put `x` into a free slot and get its `(handle type)`; read and replace an element; count them. `get` and `put` with a handle whose element was removed are runtime errors, and so is a spawn into a full pool |
+| `(lookup p h)`, `(has p h)`, `(remove p h)` | the element as an option (`none` once it was removed), whether it is still there, take it out (an option) so its slot is free again |
+| `(for (x v) body...)`, `(for (k m) body...)`, `(for (h p) body...)`, `(for (i 0 n) body...)` | go over a vec (`x` is a copy of each element), over a map's keys, over the handles of a pool's elements, or over 0, 1, ..., n - 1 |
 | `(some 5)`, `none` | the two kinds of `(option int)` value; `none` takes its type from where it goes: a declared binding, a parameter, a field, a return type, or the else branch of an `if` whose then branch has one |
 | `(match x (pattern body...)...)` | patterns are `_`, int and string literals, `true` and `false`, enum values (`north` or `Dir.north`), `(some name)` and `none`; every value must be covered, and an arm that can never run is an error |
 | `(print "fmt" args...)`, `(println "fmt" args...)` | `%d` int, `%f` float, `%s` string, `%b` bool, `%v` any value, `%%`; the codes are checked against the arguments when compiling. `eprint` and `eprintln` write to stderr |
@@ -215,14 +218,16 @@ convert on purpose. A comment starts with `;`.
 
 All the files of a program share one set of names. They are compiled in the order their `use`s need, and nothing
 runs until every one of them compiled without an error; then their top levels run in the same order (in the REPL a
-used file runs when it is loaded). A struct is a value and is copied; a vec or a map is a handle, so copying one (also
-inside a struct) shares its contents. A struct can hold a vec of itself, which makes a tree, and options of itself in
-that vec. A function's last form is its value. An integer literal must fit in 64 bits, and a float needs digits on
-both sides of its point (`4.2`, `4.2e3`; `1e3` and `.5` are errors).
+used file runs when it is loaded). A struct is a value and is copied; a vec, a map or a pool is a reference, so
+copying one (also inside a struct) shares its contents. A struct can hold a vec, a pool or a handle of itself, which
+makes a tree, and options of itself in that vec. A pool is for things that come and go, like entities and particles:
+a handle names a slot and the generation the slot had when the element went in, so a handle kept after its element
+was removed never reads the element that took the slot later. A function's last form is its value. An integer literal
+must fit in 64 bits, and a float needs digits on both sides of its point (`4.2`, `4.2e3`; `1e3` and `.5` are errors).
 
-Memory needs no care in the program: a string made at run time, a vec and a map count their owners, and when the last
-one lets go it is freed on the spot, together with what it held. The compiler knows every type, so it puts the
-counting in; a read that only looks at a variable (`len`, `get`, `=`, `lookup`) borrows it and counts nothing. A
+Memory needs no care in the program: a string made at run time, a vec, a map and a pool count their owners, and when
+the last one lets go it is freed on the spot, together with what it held. The compiler knows every type, so it puts
+the counting in; a read that only looks at a variable (`len`, `get`, `=`, `lookup`) borrows it and counts nothing. A
 cycle, like a node kept in its own list of children, is never freed. With `GAEL_CHECK=1` a program that runs to its
 end reports what it never freed, and freed memory is overwritten, so a read of it shows.
 
@@ -261,15 +266,15 @@ tests/errors/div-zero.gael:1: runtime error: division by zero
 
 ## Status
 
-Version 0.3, tested on Linux x86-64 with gcc 13.3 and clang 18.1. `./test` passes 69 checks per build (20 examples,
-43 compile and runtime error cases, one REPL session, five README examples) with gcc, clang and gcc with both
+Version 0.3, tested on Linux x86-64 with gcc 13.3 and clang 18.1. `./test` passes 74 checks per build (22 examples,
+46 compile and runtime error cases, one REPL session, five README examples) with gcc, clang and gcc with both
 sanitizers, every run with `GAEL_CHECK=1`. GitHub Actions runs shellcheck on the scripts and `./test` on every push
 (`.github/workflows/test.yml`, ubuntu-24.04).
 
-Not in 0.3: gems (packages with versions, see the spec), arenas and pools, calling C, and the editor. The fixed limits
-are 8 parameters per function, 4096 functions, 4096 globals, 4096 types and 2^18 instructions; per unit (a file, or
-one REPL form) 2^18 syntax nodes and an 8 MiB arena for the source and its names; at run time a stack of 65536 cells
-and at most 4096 nested calls. Strings made at run time, vecs and maps live on the heap; the text arena, as big, holds
+Not in 0.3: gems (packages with versions, see the spec), arenas, calling C, and the editor. The fixed limits are 8
+parameters per function, 4096 functions, 4096 globals, 4096 types and 2^18 instructions; per unit (a file, or one REPL
+form) 2^18 syntax nodes and an 8 MiB arena for the source and its names; at run time a stack of 65536 cells and at
+most 4096 nested calls. Strings made at run time, vecs, maps and pools live on the heap; the text arena, as big, holds
 the program's own strings and a string while it is being built (a format, a command's output, a file). Both are 1 GiB
 of address space unless `GAEL_HEAP` says otherwise, and filling either is a runtime error.
 

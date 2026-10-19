@@ -87,6 +87,15 @@
 	X(MAP_LEN, 1)  /* m -- i       a: borrowed */ \
 	X(MAP_KEYS, 2) /* m -- v       (vec key) in the order they went in; a: that vec type, b: the map is borrowed */ \
 	X(MAP_VALUES, 2) /* m -- v     (vec value) in the same order; a: that vec type, b: the map is borrowed */ \
+	X(POOL_NEW, 2) /* i -- p       a pool of i slots; b: the pool type */ \
+	X(POOL_SPAWN, 2) /* p x... -- h the element goes into a free slot; a: cells of an element, b: the pool is borrowed */ \
+	X(POOL_GET, 2) /* p h -- x...  a copy of the element; a stale handle is an error; a: cells, b: borrowed */ \
+	X(POOL_PUT, 2) /* p h x... --  replace the element (the old one dies); a stale handle is an error */ \
+	X(POOL_LOOKUP, 2) /* p h -- o... (option element), a copy; none for a stale handle; b: bit 0 borrowed */ \
+	X(POOL_HAS, 1) /* p h -- b     the handle's element is still there; a: bit 0 borrowed */ \
+	X(POOL_REMOVE, 2) /* p h -- o... (option element): the element moves out and its slot is free again */ \
+	X(POOL_LEN, 1) /* p -- i       elements in the pool; a: borrowed */ \
+	X(POOL_NEXT, 1) /* p i -- i h  the first slot from i on that holds an element, and its handle; -1 and 0 if none */ \
 	X(SHOW, 1)     /* x... --      the REPL's "=> value : type"; a: the type */
 
 #define GAEL_OP_ENUM_(name, n) OP_##name,
