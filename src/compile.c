@@ -157,7 +157,7 @@ static u8 g_seen[MAX_VARIANTS];      /* match: the variants an arm already cover
 
 typedef enum {
 	F_START, F_CALL, F_IF, F_WHEN, F_WHILE, F_DO, F_LET, F_SET, F_AND, F_OR, F_NOT, F_ARITH, F_CMP, F_PRINT,
-	F_CONV, F_BUILTIN, F_NEW, F_SOME, F_MATCH, F_VEC, F_VECOP, F_FOR, F_DOT, F_MAP, F_MAPOP
+	F_CONV, F_BUILTIN, F_NEW, F_SOME, F_MATCH, F_VEC, F_VECOP, F_FOR, F_DOT, F_MAP, F_MAPOP, F_SHPIPE
 } Form;
 
 typedef struct {
@@ -251,6 +251,7 @@ static i32 effect(Op op, i32 a, i32 b)
 	case OP_MAP_INSERT: return -(2 + a);
 	case OP_MAP_LOOKUP: case OP_MAP_REMOVE: return a - 1;
 	case OP_MAP_HAS: return -1;
+	case OP_SHPIPE: return 1 - a;
 	case OP_SHOW: return -cells((Ty)a);
 	default: return builtin_effect(op);
 	}
@@ -317,7 +318,7 @@ static const char *const g_reserved[] = {
 	"if", "when", "while", "do", "let", "set", "and", "or", "not", "+", "-", "*", "/", "%", "<", "<=", ">", ">=", "=",
 	"!=", "print", "println", "int", "float", "bool", "string", "unit", "len", "sh", "defn", "def", "true", "false", ":",
 	"struct", "enum", "match", "some", "none", "option", "_", "format", "eprint", "eprintln", "vec", "push", "get", "put",
-	"pop", "for", "use", ".", "map", "insert", "lookup", "has", "remove", "keys", "values"
+	"pop", "for", "use", ".", "map", "insert", "lookup", "has", "remove", "keys", "values", "&&", "||", "|>", "|", "<<<"
 };
 
 static int is_builtin(const char *s);
@@ -393,27 +394,32 @@ typedef struct {
 	const char *name, *args, *params;
 	char ret;
 	Op op;
+	i32 a, b; /* the instruction's operands */
 } Builtin;
 
 static const Builtin g_builtins[] = {
-	{ "len", "x", "s", 'i', OP_LEN_S },
-	{ "sh", "s", "command", 's', OP_SH },
-	{ "system", "s", "command", 'i', OP_SYSTEM },
-	{ "parse-int", "s", "s", 'I', OP_PARSE_I },
-	{ "parse-float", "s", "s", 'F', OP_PARSE_F },
-	{ "substr", "sii", "s from to", 's', OP_SUBSTR },
-	{ "byte", "si", "s i", 'i', OP_BYTE },
-	{ "find", "ss", "s part", 'I', OP_FIND },
-	{ "split", "ss", "s separator", 'S', OP_SPLIT },
-	{ "join", "Ss", "v separator", 's', OP_JOIN },
-	{ "char", "i", "n", 's', OP_CHAR },
-	{ "trim", "s", "s", 's', OP_TRIM },
-	{ "read-file", "s", "path", 'O', OP_READ_FILE },
-	{ "write-file", "ss", "path text", 'b', OP_WRITE_FILE },
-	{ "read-line", "", "", 'O', OP_READ_LINE },
-	{ "getenv", "s", "name", 'O', OP_GETENV },
-	{ "args", "", "", 'S', OP_ARGS },
-	{ "exit", "i", "status", 'u', OP_EXIT }
+	{ "len", "x", "s", 'i', OP_LEN_S, 0, 0 },
+	{ "sh", "s", "command", 's', OP_SH, 0, 0 },
+	{ "$", "s", "command", 's', OP_SH, 0, 0 },
+	{ "$$", "", "", 'i', OP_PID, 0, 0 },
+	{ "env", "s", "name", 's', OP_ENV, 0, 0 },
+	{ "system", "s", "command", 'i', OP_SYSTEM, 0, 0 },
+	{ "parse-int", "s", "s", 'I', OP_PARSE_I, 0, 0 },
+	{ "parse-float", "s", "s", 'F', OP_PARSE_F, 0, 0 },
+	{ "substr", "sii", "s from to", 's', OP_SUBSTR, 0, 0 },
+	{ "byte", "si", "s i", 'i', OP_BYTE, 0, 0 },
+	{ "find", "ss", "s part", 'I', OP_FIND, 0, 0 },
+	{ "split", "ss", "s separator", 'S', OP_SPLIT, 0, 0 },
+	{ "join", "Ss", "v separator", 's', OP_JOIN, 0, 0 },
+	{ "char", "i", "n", 's', OP_CHAR, 0, 0 },
+	{ "trim", "s", "s", 's', OP_TRIM, 0, 0 },
+	{ "read-file", "s", "path", 'O', OP_READ_FILE, 0, 0 },
+	{ "write-file", "ss", "path text", 'b', OP_WRITE_FILE, 0, 0 },
+	{ ">>", "ss", "text path", 'b', OP_WRITE_FILE, 1, 1 }, /* the bash order: what, then where */
+	{ "read-line", "", "", 'O', OP_READ_LINE, 0, 0 },
+	{ "getenv", "s", "name", 'O', OP_GETENV, 0, 0 },
+	{ "args", "", "", 'S', OP_ARGS, 0, 0 },
+	{ "exit", "i", "status", 'u', OP_EXIT, 0, 0 }
 };
 
 static Ty code_type(char c)
@@ -871,6 +877,17 @@ static o compile_atom(i32 n, Ty want)
 		push_type(T_ERR);
 		return;
 	}
+	if (s[0] == '$' && s[1]) { /* $$ the process id, $NAME an environment variable ("" when it is not set) */
+		if (!strcmp(s, "$$")) {
+			emit(OP_PID, 0, 0, nd->line);
+			push_type(T_INT);
+			return;
+		}
+		emit(OP_PUSH_S, add_str(s + 1, nd->len - 1), 0, nd->line);
+		emit(OP_ENV, 0, 0, nd->line);
+		push_type(T_STR);
+		return;
+	}
 	pl.global = 0;
 	pl.at = 0;
 	pl.type = T_ERR;
@@ -914,6 +931,37 @@ static o compile_atom(i32 n, Ty want)
 	push_type(T_ERR);
 }
 
+/* thread_steps PIPE: (|> x (f a) g) becomes (g (f x a)) - each step gets the value so far as its first argument, the
+ * way a bash pipe hands its output on. The nodes are relinked in place; returns the call that comes out, or -1 */
+static i32 thread_steps(i32 n)
+{
+	i32 cur = next_of(first_of(n)), step = next_of(cur), next;
+	if (cur < 0 || step < 0) {
+		err_node(n, "|> takes a value and at least one step: (|> x (f a) g)");
+		return -1;
+	}
+	for (; step >= 0; step = next) {
+		next = next_of(step);
+		if (is_sym(step)) { /* g: (g x) */
+			i32 call = new_node(N_LIST, g_nodes[step].line, g_nodes[step].col);
+			g_nodes[call].first = step;
+			g_nodes[step].next = cur;
+			g_nodes[cur].next = -1;
+			cur = call;
+		} else if (g_nodes[step].kind == N_LIST && is_sym(first_of(step))) { /* (f a): (f x a) */
+			i32 head = first_of(step);
+			g_nodes[cur].next = g_nodes[head].next;
+			g_nodes[head].next = cur;
+			cur = step;
+		} else {
+			err_node(step, "a step of |> is a function name or a call without its first value, like (split \"\\n\")");
+			return -1;
+		}
+	}
+	g_nodes[cur].next = -1;
+	return cur;
+}
+
 /* start_list FRAME: decide which form a list is, check its shape, and start it */
 static o start_list(Frame *f)
 {
@@ -933,8 +981,17 @@ static o start_list(Frame *f)
 	else if (!strcmp(s, "do")) { f->form = F_DO; f->keep = 1; }
 	else if (!strcmp(s, "let")) f->form = F_LET;
 	else if (!strcmp(s, "set")) f->form = F_SET;
-	else if (!strcmp(s, "and")) f->form = F_AND;
-	else if (!strcmp(s, "or")) f->form = F_OR;
+	else if (!strcmp(s, "and") || !strcmp(s, "&&")) { f->form = F_AND; f->op = (u8)(s[0] == '&'); }
+	else if (!strcmp(s, "or") || !strcmp(s, "||")) { f->form = F_OR; f->op = (u8)(s[0] == '|'); }
+	else if (!strcmp(s, "|") || !strcmp(s, "<<<")) { f->form = F_SHPIPE; f->op = (u8)(s[0] == '<'); }
+	else if (!strcmp(s, "|>")) {
+		i32 n = thread_steps(f->node);
+		if (n < 0) { finish(T_ERR); return; }
+		f->node = n; /* compiled as the call it stands for */
+		f->cur = -1;
+		f->k = 0;
+		return;
+	}
 	else if (!strcmp(s, "not")) f->form = F_NOT;
 	else if (s[1] == 0 && strchr("+-*/%", s[0])) { f->form = F_ARITH; f->op = (u8)s[0]; }
 
@@ -1396,7 +1453,7 @@ static o run_work(i32 base)
 		case F_OR:
 			if (f->phase == 0) {
 				if (f->k < 1) {
-					err_node(f->node, "%s takes one or more bool values", f->form == F_AND ? "and" : "or");
+					err_node(f->node, "%s takes one or more values", f->form == F_AND ? (f->op ? "&&" : "and") : (f->op ? "||" : "or"));
 					finish(T_ERR);
 					break;
 				}
@@ -1407,8 +1464,16 @@ static o run_work(i32 base)
 				break;
 			}
 			t = pop_type();
-			if (t != T_BOOL && t != T_ERR)
-				err_node(f->cur, "%s takes bool values, this one is %s", f->form == F_AND ? "and" : "or", tn(t));
+			if (f->op && t == T_STR) { /* && and || as in bash: a command is true when it exits with 0 */
+				emit(OP_SYSTEM, 0, 0, line);
+				emit(OP_PUSH_K, 0, 0, line);
+				emit(OP_EQ_I, 0, 0, line);
+				t = T_BOOL;
+			}
+			if (t != T_BOOL && t != T_ERR) {
+				if (f->op) err_node(f->cur, "%s takes bools and commands (strings), this one is %s", f->form == F_AND ? "&&" : "||", tn(t));
+				else err_node(f->cur, "%s takes bool values, this one is %s", f->form == F_AND ? "and" : "or", tn(t));
+			}
 			if (next_of(f->cur) >= 0) {
 				if (g_npatches == MAX_WORK) die("too many and/or operands");
 				g_patches[g_npatches++] = emit(f->form == F_AND ? OP_JF : OP_JT, -1, 0, line);
@@ -1498,6 +1563,8 @@ static o run_work(i32 base)
 			if (t != T_ERR && t2 != T_ERR) {
 				if (t != t2)
 					err_node(f->cur, "%s compares %s with %s; both sides need the same type", g_cmp_names[f->op], tn(t), tn(t2));
+				else if (f->op == 2 && t == T_STR) /* (> text path): bash's redirection, true when it was written */
+					emit(OP_WRITE_FILE, 0, 1, line);
 				else if (f->op < 4 && !numeric(t))
 					err_node(f->cur, "%s orders int and float, not %s", g_cmp_names[f->op], tn(t));
 				else if (t == T_UNIT)
@@ -1583,7 +1650,7 @@ static o run_work(i32 base)
 					break;
 				}
 				if (!nargs) {
-					emit(bi->op, 0, 0, line);
+					emit(bi->op, bi->a, bi->b, line);
 					finish(code_type(bi->ret));
 					break;
 				}
@@ -1606,7 +1673,7 @@ static o run_work(i32 base)
 			f->k++;
 			f->cur = next_of(f->cur);
 			if (f->cur >= 0) { push_child(f->cur, code_type(bi->args[f->k])); break; }
-			emit(f->c == 1 ? OP_VEC_LEN : f->c == 2 ? OP_MAP_LEN : bi->op, 0, 0, line);
+			emit(f->c == 1 ? OP_VEC_LEN : f->c == 2 ? OP_MAP_LEN : bi->op, f->c ? 0 : bi->a, f->c ? 0 : bi->b, line);
 			finish(code_type(bi->ret));
 			break;
 		}
@@ -1955,6 +2022,30 @@ static o run_work(i32 base)
 				finish(T_UNIT);
 				break;
 			}
+			break;
+
+		case F_SHPIPE: /* (| cmd...) a pipeline, its output; (<<< text cmd...) the same with text on its stdin */
+			if (f->phase == 0) {
+				if (f->k < 1 + f->op) {
+					err_node(f->node, f->op ? "<<< takes the text and at least one command: (<<< text \"sort\")"
+					                        : "| takes at least one command: (| \"ls\" \"wc -l\")");
+					finish(T_ERR);
+					break;
+				}
+				f->phase = 1;
+				f->a = f->k;
+				f->k = 0;
+				push_child(f->cur, T_STR);
+				break;
+			}
+			t = pop_type();
+			if (t != T_STR && t != T_ERR)
+				err_node(f->cur, "%s: %s is %s, it must be a string", f->op ? "<<<" : "|", f->op && !f->k ? "the text" : "a command", tn(t));
+			f->k++;
+			f->cur = next_of(f->cur);
+			if (f->cur >= 0) { push_child(f->cur, T_STR); break; }
+			emit(OP_SHPIPE, f->a, f->op, line);
+			finish(T_STR);
 			break;
 
 		case F_MAP: /* (map (k v) ...), or (map) when the expected type says which */

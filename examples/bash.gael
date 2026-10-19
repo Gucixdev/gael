@@ -1,0 +1,11 @@
+; bash's operators in gael: |> hands a value on as the first argument of the next step, | joins commands,
+; <<< feeds text in, > and >> write and append (bash's order: what, then where), $ is $(...),
+; && and || go on by a command's success, as in bash
+(def list (format "%s/fruit.txt" $TMPDIR))
+
+(> (<<< "pear\napple\nfig\napple" "sort -u") list)
+(>> "\nkiwi" list)
+(println "[%s]" (| (format "cat %s" list) "tr '\\n' ','"))
+(println "%v" (|> (format "cat %s" list) $ (split "\n")))
+(println "%b %b %b" (&& (format "test -s %s" list) "true") (|| "false" "true") (&& "true" (> 1 2)))
+(&& "false" "echo this never runs")

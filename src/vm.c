@@ -280,16 +280,16 @@ static int parse_float(i64 v, f64 *out_v)
 	return *end == 0;
 }
 
-/* run_sh CMD: the command's standard output as a new string, the newlines at its end left out; 0 when the text arena
- * filled up (the rest of the output is still read, so the command can finish) */
-static int run_sh(i64 cmd, i64 *res)
+/* run_cmd CMD RES: run a command (0-terminated) and return its standard output as a new string, the newlines at its
+ * end left out; 0 when the text arena filled up (the rest of the output is still read, so the command can finish).
+ * CMD may sit at the free end of the text arena: popen has passed it to the child before the output lands on it */
+static int run_cmd(const char *c, i64 *res)
 {
 	size_t start = g_text.used;
-	const char *c = c_str(cmd);
 	int full = !c;
 	FILE *pipe = 0;
 	fflush(stdout);
-	if (c) pipe = popen(c, "r"); /* the command is copied into the child before the output lands on it */
+	if (c) pipe = popen(c, "r");
 	if (pipe) {
 		for (;;) {
 			char buf[4096];
@@ -306,6 +306,41 @@ static int run_sh(i64 cmd, i64 *res)
 	while (g_text.used > start && g_text.base[g_text.used - 1] == '\n') g_text.used--;
 	*res = text_end(start);
 	return 1;
+}
+
+static int run_sh(i64 cmd, i64 *res) { return run_cmd(c_str(cmd), res); }
+
+/* run_pipe CMDS N INPUT RES: the commands joined into one pipeline, each in its own subshell; with INPUT the first
+ * string goes to its stdin through a temporary file. 0 when the text arena filled up or no file could be made */
+static int run_pipe(const Cell *cmds, i64 n, int input, i64 *res)
+{
+	size_t start = g_text.used;
+	char tmp[600];
+	int ok = 1, fd;
+	i64 k;
+	if (input) {
+		const char *dir = getenv("TMPDIR");
+		if (!dir || strlen(dir) > 500) dir = "/tmp";
+		sprintf(tmp, "%s/gael-stdin.XXXXXX", dir);
+		if ((fd = mkstemp(tmp)) < 0) return 0;
+		ok = write(fd, STR_P(cmds[0].i), STR_LEN(cmds[0].i)) == (long)STR_LEN(cmds[0].i);
+		close(fd);
+	}
+	for (k = input; ok && k < n; k++) { /* "(a) < 'tmp' | (b)", built at the free end of the text arena */
+		if (k > input) ok = text_put(" | ", 3);
+		ok = ok && text_put("(", 1) && text_put(STR_P(cmds[k].i), STR_LEN(cmds[k].i)) && text_put(")", 1);
+		if (ok && input && k == input) ok = text_put(" < '", 4) && text_put(tmp, strlen(tmp)) && text_put("'", 1);
+	}
+	if (ok) ok = text_room();
+	if (ok) {
+		g_text.base[g_text.used] = 0;
+		g_text.used = start; /* the command was scratch; the output goes where it was */
+		ok = run_cmd((const char *)g_text.base + start, res);
+	} else {
+		g_text.used = start;
+	}
+	if (input) unlink(tmp);
+	return ok;
 }
 
 /* heap_alloc N: N cells off the heap; -1 when it is full */
@@ -639,6 +674,25 @@ static int vm_run(i32 pc)
 		case OP_SH:
 			if (!run_sh(s[sp - 1].i, &s[sp - 1].i)) return vm_error(in->line, TEXT_FULL);
 			break;
+		case OP_SHPIPE: {
+			i64 res;
+			sp -= in->a;
+			if (!run_pipe(s + sp, in->a, in->b, &res))
+				return vm_error(in->line, in->b ? "<<<: no room for the text, or no temporary file for it" : TEXT_FULL);
+			s[sp++].i = res;
+			break;
+		}
+		case OP_PID: s[sp++].i = (i64)getpid(); break;
+		case OP_ENV: {
+			const char *name = c_str(s[sp - 1].i), *val;
+			size_t start = g_text.used;
+			if (!name) return vm_error(in->line, TEXT_FULL);
+			val = getenv(name);
+			if (!val) val = "";
+			if (!text_put(val, strlen(val)) || !text_room()) return vm_error(in->line, TEXT_FULL);
+			s[sp - 1].i = text_end(start);
+			break;
+		}
 		case OP_SYSTEM: {
 			const char *c = c_str(s[sp - 1].i);
 			int st;
@@ -748,10 +802,10 @@ static int vm_run(i32 pc)
 			s[sp++].i = v;
 			break;
 		}
-		case OP_WRITE_FILE: {
-			i64 text = s[sp - 1].i;
-			const char *path = c_str(s[sp - 2].i);
-			FILE *file = path ? fopen(path, "wb") : 0;
+		case OP_WRITE_FILE: { /* a: append, b: the text is below the path */
+			i64 text = s[sp - (in->b ? 2 : 1)].i;
+			const char *path = c_str(s[sp - (in->b ? 1 : 2)].i);
+			FILE *file = path ? fopen(path, in->a ? "ab" : "wb") : 0;
 			int ok = file && fwrite(STR_P(text), 1, STR_LEN(text), file) == STR_LEN(text);
 			if (file && fclose(file)) ok = 0;
 			if (!path) return vm_error(in->line, TEXT_FULL);

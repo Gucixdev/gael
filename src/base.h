@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h> /* getpid, unlink */
 
 typedef void o;
 typedef __INT8_TYPE__ i8;

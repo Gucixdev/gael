@@ -56,11 +56,14 @@
 	X(CHAR, 0)     /* i -- s       the one-byte string of 0 to 255 */ \
 	X(TRIM, 0)     /* s -- s       without the spaces, tabs and newlines around it (no copy) */ \
 	X(READ_FILE, 0)  /* s -- o     (option string): the whole file, or none when it cannot be read */ \
-	X(WRITE_FILE, 0) /* s s -- b   write the second string to the file named by the first; false on failure */ \
+	X(WRITE_FILE, 2) /* s s -- b   write a string to a file, false on failure; a: 1 appends, b: 1 when the text comes first */ \
 	X(READ_LINE, 0)  /* -- o       (option string): one line of standard input without its newline; none at the end */ \
 	X(GETENV, 0)   /* s -- o       (option string): an environment variable */ \
 	X(ARGS, 0)     /* -- v         (vec string): the arguments after the file name */ \
 	X(EXIT, 0)     /* i --         end the program with this exit status */ \
+	X(SHPIPE, 2)   /* s... -- s    a: strings: commands joined by | (b: 1 when the first is text for its stdin); the output */ \
+	X(PID, 0)      /* -- i         the process id, bash's $$ */ \
+	X(ENV, 0)      /* s -- s       an environment variable, "" when it is not set */ \
 	X(INC_L, 1)    /* --           a: local slot; adds 1 to the int in it */ \
 	X(VEC_NEW, 2)  /* x... -- v    a: elements on the stack, b: cells of one */ \
 	X(VEC_LEN, 0)  /* v -- i */ \
