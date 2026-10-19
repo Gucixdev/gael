@@ -1,0 +1,13 @@
+(def x 41)
+(+ x 1)
+(defn sq ((n : int)) : int
+  (* n n))
+(sq 12)
+(+ 1 true)
+(sq 3)
+"str"
+(= 1.5 1.5)
+(defn sq ((n : int)) : int (+ n 1))
+(sq 3)
+:q
+(println "not reached")

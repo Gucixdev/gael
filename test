@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# test - build gael with every compiler here (C89, pedantic, warnings as errors) and once with AddressSanitizer and
+# UndefinedBehaviorSanitizer, then run each build against:
+#   examples/NAME.gael      stdout must equal examples/NAME.out, exit 0
+#   tests/errors/NAME.gael  every line of NAME.err must appear on stderr, exit 1
+#   tests/repl.in           the REPL's stdout must equal tests/repl.out
+# Exit 0 when everything passed. Build outputs go to a temp folder; the checkout is not touched.
+set -u
+cd "$(dirname "${BASH_SOURCE[0]}")" || exit 1
+
+out=$(mktemp -d "${TMPDIR:-/tmp}/gael-test.XXXXXX") || exit 1
+trap 'rm -rf -- "$out"' EXIT
+flags=(-std=c89 -pedantic -Wall -Wextra -Werror)
+builds=()
+pass=0 fail=0
+
+for cc in gcc clang; do
+	command -v "$cc" > /dev/null || continue
+	if "$cc" "${flags[@]}" -O2 -o "$out/gael-$cc" src/main.c 2> "$out/$cc.log"; then
+		builds+=("$out/gael-$cc")
+	else
+		echo "FAIL build with $cc:"; sed 's/^/  /' "$out/$cc.log"; fail=$((fail + 1))
+	fi
+done
+sanitized=0
+for cc in gcc clang; do # the first compiler whose sanitizer runtime is installed
+	command -v "$cc" > /dev/null || continue
+	if "$cc" "${flags[@]}" -O1 -g -fno-omit-frame-pointer -fsanitize=address,undefined -fno-sanitize-recover=all \
+		-o "$out/gael-asan" src/main.c 2> "$out/asan.log"; then
+		builds+=("$out/gael-asan")
+		sanitized=1
+		break
+	fi
+done
+[ "$sanitized" = 1 ] || echo "skipped: no compiler here has its sanitizer runtime installed (libasan, libubsan)"
+
+check() {	# check NAME OK: count a result, say what failed
+	if [ "$2" = 1 ]; then pass=$((pass + 1)); else fail=$((fail + 1)); echo "FAIL $1"; fi
+}
+
+for bin in "${builds[@]}"; do
+	b=${bin##*/}
+	for f in examples/*.gael; do
+		ok=1
+		"$bin" "$f" > "$out/stdout" 2> "$out/stderr" || ok=0
+		cmp -s "$out/stdout" "${f%.gael}.out" || ok=0
+		[ -s "$out/stderr" ] && ok=0
+		check "$b $f" "$ok"
+		[ "$ok" = 1 ] || { diff "${f%.gael}.out" "$out/stdout" | head -5; head -5 "$out/stderr"; }
+	done
+	for f in tests/errors/*.gael; do
+		ok=1
+		"$bin" "$f" > /dev/null 2> "$out/stderr"
+		[ $? = 1 ] || ok=0
+		while IFS= read -r line; do
+			grep -qxF -- "$line" "$out/stderr" || { ok=0; echo "  missing: $line"; }
+		done < "${f%.gael}.err"
+		grep -q 'Sanitizer\|runtime error: .*\.c:' "$out/stderr" && ok=0
+		check "$b $f" "$ok"
+	done
+	ok=1
+	"$bin" < tests/repl.in > "$out/stdout" 2> "$out/stderr" || ok=0
+	cmp -s "$out/stdout" tests/repl.out || { ok=0; diff tests/repl.out "$out/stdout" | head -5; }
+	grep -q 'Sanitizer' "$out/stderr" && ok=0
+	check "$b repl" "$ok"
+done
+
+echo "$pass passed, $fail failed (${#builds[@]} builds)"
+[ "$fail" = 0 ]

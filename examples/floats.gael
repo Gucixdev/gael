@@ -1,0 +1,7 @@
+; int and float never mix silently: convert on purpose
+(defn mean ((total : float) (count : int)) : float
+  (/ total (float count)))
+
+(def speed : float 4.5)
+(println "mean %f, speed %f, as int %d" (mean 10.0 4) speed (int speed))
+(println "%f %f %f" 2.0 (/ 1.0 3.0) (- 0.5))
