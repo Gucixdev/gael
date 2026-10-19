@@ -31,18 +31,20 @@ static Cell g_global_cells[MAX_GLOBAL_CELLS];
 static Cell g_vstack[VM_STACK];
 static VFrame g_vframes[VM_FRAMES];
 
-/* The heap: blocks of 2^k cells (k from 2 to HEAP_ORDER), each starting at a multiple of its size. A block's buddy
- * is the other half of the block twice its size. Free blocks of each size are a doubly linked list through their
- * first two cells, -(next + 2) and -(prev + 2), so a freed object's count cell reads as freed (below 1). Cells 0 to
- * 3 are a block of their own that is never freed: an empty string, so a cell of 0 (a zeroed slot) reads as "" and as
- * no object */
-#define HEAP_ORDER 22
-#define HEAP_CELLS (1 << HEAP_ORDER)
-static Cell g_heap[HEAP_CELLS];
-static i64 g_free_head[HEAP_ORDER + 1];  /* the first free block of each size, -1 when none */
-static u8 g_free_order[HEAP_CELLS >> 2]; /* k + 1 when a free block of 2^k cells starts at this cell * 4, else 0 */
-static i64 g_live;                       /* cells handed out and not freed yet, for the leak check */
-static int g_check;                      /* GAEL_CHECK=1: freed blocks get a pattern, leaks are reported */
+/* The heap: one array of 2^g_heap_order cells, reserved as address space when the VM starts (the system gives it
+ * pages only where something is written), like holyc's flat arena. Blocks of 2^k cells, each starting at a multiple
+ * of its size; a block's buddy is the other half of the block twice its size. Free blocks of each size are a doubly
+ * linked list through their first two cells, -(next + 2) and -(prev + 2), so a freed object's count cell reads as
+ * freed (below 1). Cells 0 to 3 are a block of their own that is never freed: an empty string, so a cell of 0 (a
+ * zeroed slot) reads as "" and as no object. Handles are indexes, not pointers, so the heap can be copied whole */
+#define MAX_HEAP_ORDER 34     /* 128 GiB */
+#define DEFAULT_HEAP_ORDER 27 /* 1 GiB; GAEL_HEAP sets another size */
+static Cell *g_heap;
+static i32 g_heap_order;
+static i64 g_free_head[MAX_HEAP_ORDER + 1]; /* the first free block of each size, -1 when none */
+static u8 *g_free_order;                    /* k + 1 when a free block of 2^k cells starts at this cell * 4, else 0 */
+static i64 g_live;                          /* cells handed out and not freed yet, for the leak check */
+static int g_check;                         /* GAEL_CHECK=1: freed blocks get a pattern, leaks are reported */
 
 static o free_push(i64 at, i32 k)
 {
@@ -66,7 +68,7 @@ static o free_unlink(i64 at, i32 k)
 static i32 order_of(i64 n)
 {
 	i32 k = 2;
-	while (((i64)1 << k) < n) k++;
+	while (k < 62 && ((i64)1 << k) < n) k++;
 	return k;
 }
 
@@ -78,8 +80,8 @@ static i64 heap_alloc(i64 n)
 	i64 at;
 	if (n <= 0) return 0;
 	k = order_of(n);
-	for (j = k; j <= HEAP_ORDER && g_free_head[j] < 0; j++) {}
-	if (j > HEAP_ORDER) return -1;
+	for (j = k; j <= g_heap_order && g_free_head[j] < 0; j++) {}
+	if (j > g_heap_order) return -1;
 	at = g_free_head[j];
 	free_unlink(at, j);
 	while (j > k) { /* the upper half of each split stays free */
@@ -98,7 +100,7 @@ static o heap_free(i64 at, i64 n)
 	k = order_of(n);
 	g_live -= (i64)1 << k;
 	if (g_check) memset(g_heap + at, 0xa5, ((size_t)1 << k) * sizeof(Cell)); /* a stale read shows, a stale count dies */
-	while (k < HEAP_ORDER) {
+	while (k < g_heap_order) {
 		i64 buddy = at ^ ((i64)1 << k);
 		if (g_free_order[buddy >> 2] != k + 1) break;
 		free_unlink(buddy, k);
@@ -117,19 +119,60 @@ static int heap_grow(i64 at, i64 n)
 	if (at <= 0 || n <= 0) return 0;
 	k = order_of(n);
 	buddy = at + ((i64)1 << k);
-	if (k >= HEAP_ORDER || (at & ((i64)1 << k)) || g_free_order[buddy >> 2] != k + 1) return 0;
+	if (k >= g_heap_order || (at & ((i64)1 << k)) || g_free_order[buddy >> 2] != k + 1) return 0;
 	free_unlink(buddy, k);
 	g_live += (i64)1 << k;
 	return 1;
 }
 
-/* vm_init CHECK: the whole heap one free block, then cells 0 to 3 taken for the empty string */
+/* reserve BYTES: that much address space, given pages only where something is written; 0 when the system refuses */
+static o *reserve(size_t bytes)
+{
+	o *p = mmap(0, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+	return p == MAP_FAILED ? 0 : p;
+}
+
+/* heap_order_of SIZE: GAEL_HEAP's value, bytes with K, M or G after them, as the order of the largest number of cells
+ * (a power of 2) that fits; 0 when it is not a size or is under 32K */
+static i32 heap_order_of(const char *s)
+{
+	char *end;
+	u64 bytes;
+	i32 k = 12, shift;
+	if (*s < '0' || *s > '9') return 0;
+	bytes = strtoul(s, &end, 10);
+	if (!strchr("KkMmGg", *end) || (*end && end[1])) return 0;
+	shift = !*end ? 0 : *end == 'K' || *end == 'k' ? 10 : *end == 'M' || *end == 'm' ? 20 : 30;
+	bytes = shift && bytes >> (64 - shift) ? ~(u64)0 : bytes << shift; /* too big: as big as can be */
+	while (k < MAX_HEAP_ORDER && ((u64)8 << (k + 1)) <= bytes) k++;
+	return ((u64)8 << k) <= bytes ? k : 0;
+}
+
+/* vm_init CHECK: reserve the heap and, as big, the text arena (a system that refuses gets them halved), make the heap
+ * one free block, and take cells 0 to 3 for the empty string */
 static o vm_init(int check)
 {
-	i32 k;
+	const char *size = getenv("GAEL_HEAP");
+	i32 k = size ? heap_order_of(size) : DEFAULT_HEAP_ORDER;
+	o *text;
+	if (!k) die("GAEL_HEAP: give a size of 32K or more, like 64M or 2G");
+	for (;; k--) {
+		size_t bytes = (size_t)8 << k;
+		g_heap = (Cell *)reserve(bytes);
+		g_free_order = (u8 *)reserve(bytes >> 5); /* a byte for every 4 cells */
+		text = reserve(bytes);
+		if (g_heap && g_free_order && text) break;
+		if (g_heap) munmap((o *)g_heap, bytes);
+		if (g_free_order) munmap(g_free_order, bytes >> 5);
+		if (text) munmap(text, bytes);
+		if (k == 12) die("the system gave no address space for the heap");
+	}
+	g_text.base = (u8 *)text;
+	g_text.cap = (size_t)8 << k;
+	g_heap_order = k;
 	g_check = check;
-	for (k = 0; k <= HEAP_ORDER; k++) g_free_head[k] = -1;
-	free_push(0, HEAP_ORDER);
+	for (k = 0; k <= MAX_HEAP_ORDER; k++) g_free_head[k] = -1;
+	free_push(0, g_heap_order);
 	(void)heap_alloc(4);
 	memset(g_heap, 0, 4 * sizeof(Cell));
 	g_live = 0;

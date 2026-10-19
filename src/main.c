@@ -27,8 +27,9 @@ static const char g_usage[] =
 	"       gael -e CODE ARGS...   compile and run CODE\n"
 	"       gael -h                this help\n";
 static const char g_usage_env[] =
-	"GAEL_CHECK=1 checks memory: freed blocks are filled with a pattern, and a program that ran to its end reports\n"
-	"the strings, vecs and maps it never freed\n";
+	"GAEL_HEAP=SIZE  the heap for strings, vecs and maps, and as much for the program's own text (default 1G;\n"
+	"                K, M, G; the system gives pages only where they are written)\n"
+	"GAEL_CHECK=1    freed memory is overwritten, and a program that ran to its end reports what it never freed\n";
 
 enum { RUN, CHECK, DIS };
 
@@ -284,8 +285,8 @@ static int repl(void)
 int main(int argc, char **argv)
 {
 	int st;
+	vm_init(getenv("GAEL_CHECK") && !strcmp(getenv("GAEL_CHECK"), "1")); /* the text arena first: compile_init writes to it */
 	compile_init();
-	vm_init(getenv("GAEL_CHECK") && !strcmp(getenv("GAEL_CHECK"), "1"));
 	if (argc == 1) return repl();
 	if (!strcmp(argv[1], "-h") || !strcmp(argv[1], "--help")) {
 		fputs(g_usage, stdout);

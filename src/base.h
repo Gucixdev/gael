@@ -1,18 +1,21 @@
 /* base.h - fixed-size types (the names of holyc's base/src/core/base.h), a C89 static assert, and flat arenas.
  *
- * No malloc anywhere: every arena is one static block with a bump pointer, emptied all at once. Running out is a
- * fatal error that names the arena, so a limit shows up as a clear message instead of corrupted memory.
+ * No malloc anywhere: an arena is one block with a bump pointer, emptied all at once - a static array, or for the
+ * VM's heap and text one reservation of address space (mmap), whose pages the system gives only where something is
+ * written. Running out is an error that names the arena, so a limit shows up as a clear message, not corrupt memory.
  * The integer types come from the compiler's __INT*_TYPE__ macros (gcc and clang define them in -std=c89 too). */
 
 #ifndef GAEL_BASE_H_
 #define GAEL_BASE_H_
 
 #define _XOPEN_SOURCE 700 /* popen, pclose and realpath; the language stays C89 */
+#define _DEFAULT_SOURCE   /* MAP_ANONYMOUS and MAP_NORESERVE */
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <unistd.h> /* getpid, unlink */
 
 typedef void o;

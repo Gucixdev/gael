@@ -30,9 +30,13 @@ gael -c FILE           only compile: report every type error, run nothing
 gael -d FILE           compile and print the bytecode
 gael -e CODE ARGS...   compile and run CODE
 gael -h                this help
+GAEL_HEAP=SIZE  the heap for strings, vecs and maps, and as much for the program's own text (default 1G;
+                K, M, G; the system gives pages only where they are written)
+GAEL_CHECK=1    freed memory is overwritten, and a program that ran to its end reports what it never freed
 ```
 
-The exit status is 0 when everything went fine, 1 after a compile or runtime error, and 2 for bad usage.
+The exit status is 0 when everything went fine, 1 after a compile or runtime error (or what `GAEL_CHECK=1` found),
+and 2 for bad usage.
 
 ## What it looks like
 
@@ -234,8 +238,9 @@ tests/errors/div-zero.gael:1: runtime error: division by zero
 
 - C89 in one translation unit (`src/main.c` includes the rest), with the fixed-size types `i8`..`i64`, `u8`..`u64`,
   `f32`, `f64` and `o` for void (`src/base.h`).
-- No `malloc`: every table is a static array and every arena a static block. Running out of one is a fatal error that
-  names it.
+- No `malloc`: every table is a static array, and the VM's heap and text arena are each one reservation of address
+  space (mmap with `MAP_NORESERVE`), which the system fills with pages only where something is written. Running out
+  of a table is a fatal error that names it.
 - No recursion in C. The reader keeps its own stack of open lists, the compiler runs a work stack of frames (type
   checking and code generation happen in the same pass), and the VM keeps its own call stack, so deep recursion in a
   gael program is a gael runtime error, not a crash.
@@ -246,9 +251,9 @@ tests/errors/div-zero.gael:1: runtime error: division by zero
   fields for a struct, and one more than the value inside for an option. A string is one cell too: the program's own
   strings point into the text arena and are not counted, a string made at run time is an object on the heap.
   `substr`, `split` and `trim` point into the program's own text and copy out of a string made at run time.
-- The heap is one static array of 4M cells with a buddy allocator: blocks of 2^k cells, split to fit and merged with
-  their free neighbour when freed. A growing vec doubles in place when the block after it is free. Freeing is a loop
-  over a chain of objects whose count reached 0, not a recursion.
+- The heap is that one array with a buddy allocator: blocks of 2^k cells, split to fit and merged with their free
+  neighbour when freed. A growing vec doubles in place when the block after it is free. Objects refer to each other by
+  index, not by pointer. Freeing is a loop over a chain of objects whose count reached 0, not a recursion.
 - A vec of structs is stored as columns, one per field (SoA), so going over one field of every element reads one
   run of memory; the program sees ordinary values, `get` gathers an element and `put` spreads it out again.
 - The compiler counts how deep each function's operand stack can get, and the VM checks that the whole frame fits
@@ -256,7 +261,7 @@ tests/errors/div-zero.gael:1: runtime error: division by zero
 
 ## Status
 
-Version 0.3, tested on Linux x86-64 with gcc 13.3 and clang 18.1. `./test` passes 68 checks per build (19 examples,
+Version 0.3, tested on Linux x86-64 with gcc 13.3 and clang 18.1. `./test` passes 69 checks per build (20 examples,
 43 compile and runtime error cases, one REPL session, five README examples) with gcc, clang and gcc with both
 sanitizers, every run with `GAEL_CHECK=1`. GitHub Actions runs shellcheck on the scripts and `./test` on every push
 (`.github/workflows/test.yml`, ubuntu-24.04).
@@ -264,9 +269,9 @@ sanitizers, every run with `GAEL_CHECK=1`. GitHub Actions runs shellcheck on the
 Not in 0.3: gems (packages with versions, see the spec), arenas and pools, calling C, and the editor. The fixed limits
 are 8 parameters per function, 4096 functions, 4096 globals, 4096 types and 2^18 instructions; per unit (a file, or
 one REPL form) 2^18 syntax nodes and an 8 MiB arena for the source and its names; at run time a stack of 65536 cells
-and at most 4096 nested calls. The program's own strings live in a 32 MiB text arena, which also holds a string while
-it is being built (a format, a command's output, a file); strings made at run time, vecs and maps live on a heap of 4M
-cells (32 MiB). Filling either is a runtime error.
+and at most 4096 nested calls. Strings made at run time, vecs and maps live on the heap; the text arena, as big, holds
+the program's own strings and a string while it is being built (a format, a command's output, a file). Both are 1 GiB
+of address space unless `GAEL_HEAP` says otherwise, and filling either is a runtime error.
 
 ## License
 

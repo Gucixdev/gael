@@ -139,9 +139,9 @@ static Arena g_perm = { (u8 *)g_perm_mem, sizeof(g_perm_mem), 0, "permanent" };
 
 /* The program's own strings, each followed by a 0, and scratch space for strings being built at run time. A string
  * of the program is one cell: bit 63 set, its offset in this arena in bits 32 to 62 and its length in the low 32. It
- * lives as long as the process; a string made at run time is an object on the VM's heap (vm.c). */
-static u64 g_text_mem[(32u << 20) / 8];
-static Arena g_text = { (u8 *)g_text_mem, sizeof(g_text_mem), 0, "text" };
+ * lives as long as the process; a string made at run time is an object on the VM's heap (vm.c). vm_init reserves the
+ * arena, as big as the heap */
+static Arena g_text = { 0, 0, 0, "text" };
 
 static i64 str_cell(size_t off, size_t len) { return (i64)((u64)1 << 63 | (u64)off << 32 | (u64)len); }
 

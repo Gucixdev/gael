@@ -1,4 +1,4 @@
-; a string that doubles each round soon needs more than the 32 MiB heap holds: a runtime error, not a crash
+; a string that doubles each round soon needs more than the heap holds (32 MiB here): a runtime error, not a crash
 (let ((s "0123456789abcdef") (i 0))
   (while (< i 40)
     (set s (format "%s%s" s s))

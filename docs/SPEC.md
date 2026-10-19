@@ -248,7 +248,12 @@ Potem: makra i moduły (0.2), manifest i resolver gemów (0.3), bufor i okno (0.
 - **SoA:** `(vec struktura)` trzyma pola jako kolumny (komórka c elementu i pod `dane + c * pojemność + i`);
   `get` zbiera element, `put` i `push` go rozkładają. Odczyt jednego pola wszystkich elementów to dziś nadal pełny
   `get`; czytanie samej kolumny przez kompilator to następny krok optymalizacji.
-- **Następne, po kolei:** sterta jako jedna rezerwacja mmap, `pool`, `arena` z trybem wydania, typy o rozmiarze
+- **Sterta FLAT (2026-10-19):** sterta i arena tekstu to po jednej rezerwacji przestrzeni adresowej (mmap z
+  `MAP_NORESERVE`, jak `ARENA_BACKEND_FLAT` w holyc), domyślnie po 1 GiB; system daje strony dopiero przy zapisie.
+  `GAEL_HEAP=64M` ustawia inny rozmiar, a system, który odmówi, dostaje połowę. Wcześniej obie były statycznymi
+  tablicami po 32 MiB: `vec` z 5 mln intów kończył się błędem, teraz działa (`examples/bigvec.gael`). Testy pamięci
+  ustawiają sobie mniejszą stertę w `NAZWA.env`.
+- **Następne, po kolei:** `pool`, `arena` z trybem wydania, typy o rozmiarze
   (`i8`..`u64`, `f32`, `f64`), jedna przestrzeń nazw z funkcjami jako wartościami i wywołaniami ogonowymi, makra
   higieniczne, traits, manifest gemów, bufor i okno. Numery wersji przesuwają się względem planu wyżej.
 
