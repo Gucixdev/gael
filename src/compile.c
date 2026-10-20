@@ -15,15 +15,15 @@
 
 typedef u16 Ty;
 enum { T_ERR, T_UNIT, T_INT, T_FLOAT, T_BOOL, T_STR, T_NONE, T_ANY, T_I8, T_I16, T_I32, T_U8, T_U16, T_U32, T_U64, T_F32, T_USER };
-typedef enum { K_PRIM, K_STRUCT, K_ENUM, K_OPTION, K_VEC, K_MAP, K_POOL, K_HANDLE } TyKind;
+typedef enum { K_PRIM, K_STRUCT, K_ENUM, K_OPTION, K_VEC, K_MAP, K_POOL, K_HANDLE, K_FN } TyKind;
 
 typedef struct {
 	const char *name;
 	u8 kind;
-	Ty elem;      /* option, vec, pool and handle: the type inside; map: the value type */
+	Ty elem;      /* option, vec, pool and handle: the type inside; map: the value type; fn: the return type */
 	Ty key;       /* map: the key type */
 	i32 cells;    /* VM cells of one value */
-	i32 first, n; /* struct: its fields g_fields[first...]; enum: its variants g_variants[first...] */
+	i32 first, n; /* struct: its fields g_fields[first...]; enum: its variants g_variants[first...]; fn: g_tparams */
 	i32 line;     /* where it was declared; 0 for the built-in and the option types */
 	const char *file;
 	u8 broken;    /* its declaration had an error (already reported): uses of it stay quiet */
@@ -60,6 +60,8 @@ static TyInfo g_tys[MAX_TYS] = {
 static i32 g_ntys = T_USER;
 static Field g_fields[MAX_FIELDS];
 static i32 g_nfields;
+static Ty g_tparams[MAX_FIELDS]; /* the parameter types of function types */
+static i32 g_ntparams;
 static const char *g_variants[MAX_VARIANTS];
 static i32 g_nvariants;
 
@@ -180,7 +182,7 @@ static u8 g_seen[MAX_VARIANTS];      /* match: the variants an arm already cover
 typedef enum {
 	F_START, F_CALL, F_IF, F_WHEN, F_WHILE, F_DO, F_LET, F_SET, F_AND, F_OR, F_NOT, F_ARITH, F_CMP, F_PRINT,
 	F_CONV, F_BUILTIN, F_NEW, F_SOME, F_MATCH, F_VEC, F_VECOP, F_FOR, F_DOT, F_MAP, F_MAPOP, F_SHPIPE, F_POOL, F_ARENA,
-	F_KEEP
+	F_KEEP, F_CALLV, F_LAMBDA
 } Form;
 
 typedef struct {
@@ -233,6 +235,7 @@ static int is_vec(Ty t) { return t < g_ntys && g_tys[t].kind == K_VEC; }
 static int is_map(Ty t) { return t < g_ntys && g_tys[t].kind == K_MAP; }
 static int is_pool(Ty t) { return t < g_ntys && g_tys[t].kind == K_POOL; }
 static int is_handle(Ty t) { return t < g_ntys && g_tys[t].kind == K_HANDLE; }
+static int is_fn(Ty t) { return t < g_ntys && g_tys[t].kind == K_FN; }
 static Ty elem_of(Ty t) { return t < g_ntys && g_tys[t].kind >= K_OPTION ? g_tys[t].elem : (Ty)T_ERR; }
 static Ty key_of(Ty t) { return is_map(t) ? g_tys[t].key : (Ty)T_ERR; }
 static int has_refs(Ty t) { return t < g_ntys && g_tys[t].nleaf > 0; }
@@ -273,6 +276,11 @@ static i32 effect(Op op, i32 a, i32 b)
 	case OP_LT_F: case OP_LE_F: case OP_GT_F: case OP_GE_F: case OP_EQ_F: case OP_NE_F:
 	case OP_EQ_S: case OP_NE_S: case OP_DIV_U: case OP_MOD_U: case OP_LT_U: case OP_LE_U: case OP_GT_U: case OP_GE_U: return -1;
 	case OP_CALL: return cells(g_fns[a].ret) - g_fns[a].pcells;
+	case OP_CALL_V: {
+		i32 k, d = cells(g_tys[a].elem) - 1;
+		for (k = 0; k < g_tys[a].n; k++) d -= cells(g_tparams[g_tys[a].first + k]);
+		return d;
+	}
 	case OP_PRINT: case OP_PRINTLN: return -g_fmts[a].cells;
 	case OP_FORMAT: return 1 - g_fmts[a].cells;
 	case OP_PARSE_I: case OP_PARSE_F: return 1;
@@ -416,7 +424,7 @@ static const char *const g_reserved[] = {
 	"!=", "print", "println", "int", "float", "bool", "string", "unit", "len", "sh", "defn", "def", "true", "false", ":",
 	"struct", "enum", "match", "some", "none", "option", "_", "format", "eprint", "eprintln", "vec", "push", "get", "put",
 	"pop", "for", "use", ".", "map", "insert", "lookup", "has", "remove", "keys", "values", "&&", "||", "|>", "|", "<<<",
-	"pool", "spawn", "handle", "arena", "keep", "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64"
+	"pool", "spawn", "handle", "arena", "keep", "fn", "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64"
 };
 
 static int is_builtin(const char *s);
@@ -524,6 +532,43 @@ static Ty intern_map(Ty key, Ty val)
 	t->key = key;
 	t->elem = val;
 	t->cells = 1;
+	set_leaves((Ty)g_ntys);
+	return (Ty)g_ntys++;
+}
+
+/* intern_fn PARAMS N RET: the type (fn (params...) ret), made once. A function value is one cell, the function's
+ * number + 1 (0: none); a call through it checks the arguments against these types like a direct call */
+static Ty intern_fn(const Ty *params, i32 n, Ty ret)
+{
+	char name[300];
+	size_t used;
+	TyInfo *t;
+	i32 i, j;
+	for (i = T_USER; i < g_ntys; i++) {
+		const TyInfo *ti = &g_tys[i];
+		if (ti->kind != K_FN || ti->n != n || ti->elem != ret) continue;
+		for (j = 0; j < n && g_tparams[ti->first + j] == params[j]; j++) {}
+		if (j == n) return (Ty)i;
+	}
+	if (g_ntys == MAX_TYS) die("too many types");
+	if (g_ntparams + n > MAX_FIELDS) die("too many function types");
+	strcpy(name, "(fn (");
+	for (i = 0; i < n; i++) {
+		used = strlen(name);
+		sprintf(name + used, "%s%.24s", i ? " " : "", tn(params[i]));
+	}
+	used = strlen(name);
+	sprintf(name + used, ") %.40s)", tn(ret));
+	t = &g_tys[g_ntys];
+	memset(t, 0, sizeof(*t));
+	t->name = arena_strndup(&g_perm, name, strlen(name));
+	t->kind = K_FN;
+	t->elem = ret;
+	t->first = g_ntparams;
+	t->n = n;
+	t->cells = 1;
+	memcpy(g_tparams + g_ntparams, params, (size_t)n * sizeof(Ty));
+	g_ntparams += n;
 	set_leaves((Ty)g_ntys);
 	return (Ty)g_ntys++;
 }
@@ -637,7 +682,7 @@ static Ty parse_type(i32 root)
 		i32 node;
 		u8 phase;
 	} st[MAX_DEPTH + 1];
-	Ty res[MAX_DEPTH + 2]; /* finished types; a map's key waits here while its value is read */
+	Ty res[(MAX_DEPTH + 2) * (MAX_PARAMS + 1)]; /* finished types: a map's key or a fn's parameters wait here */
 	i32 ns = 1, nr = 0;
 	st[0].node = root;
 	st[0].phase = 0;
@@ -647,7 +692,7 @@ static Ty parse_type(i32 root)
 		if (n < 0) return T_ERR;
 		if (g_nodes[n].kind != N_LIST) {
 			if (!is_sym(n)) {
-				err_node(n, "expected a type here: int, float, bool, string, unit, a struct, an enum, (option type), (vec type), (map key value), (pool type) or (handle type)");
+				err_node(n, "expected a type here: a number type, bool, string, unit, a struct, an enum, (option type), (vec type), (map key value), (pool type), (handle type) or (fn (types) type)");
 				return T_ERR;
 			}
 			t = find_named_type(g_nodes[n].text);
@@ -683,6 +728,38 @@ static Ty parse_type(i32 root)
 			ns--;
 			continue;
 		}
+		if (head_is(n, "fn")) { /* (fn (param types...) return type) */
+			i32 np = a1 >= 0 && g_nodes[a1].kind == N_LIST ? count_from(first_of(a1)) : -1, x, k;
+			Ty params[MAX_PARAMS];
+			if (np < 0 || a2 < 0 || next_of(a2) >= 0) {
+				err_node(n, "a function type is (fn (parameter types) return type), like (fn (int int) int)");
+				return T_ERR;
+			}
+			if (np > MAX_PARAMS) {
+				err_node(a1, "at most %d parameters", MAX_PARAMS);
+				return T_ERR;
+			}
+			if (st[ns - 1].phase <= np) { /* the parameter types in turn, then the return type */
+				for (x = first_of(a1), k = 0; k < st[ns - 1].phase && x >= 0; k++) x = next_of(x);
+				st[ns].node = st[ns - 1].phase == np ? a2 : x;
+				st[ns].phase = 0;
+				st[ns - 1].phase++;
+				ns++;
+				continue;
+			}
+			t = res[--nr];
+			nr -= np;
+			for (k = 0; k < np; k++) {
+				params[k] = res[nr + k];
+				if (params[k] == T_UNIT) {
+					err_node(a1, "a parameter cannot be unit");
+					return T_ERR;
+				}
+			}
+			res[nr++] = intern_fn(params, np, t);
+			ns--;
+			continue;
+		}
 		if (head_is(n, "map")) {
 			Ty k;
 			if (a1 < 0 || a2 < 0 || next_of(a2) >= 0) {
@@ -710,7 +787,7 @@ static Ty parse_type(i32 root)
 			ns--;
 			continue;
 		}
-		err_node(n, "expected a type here: int, float, bool, string, unit, a struct, an enum, (option type), (vec type), (map key value), (pool type) or (handle type)");
+		err_node(n, "expected a type here: a number type, bool, string, unit, a struct, an enum, (option type), (vec type), (map key value), (pool type), (handle type) or (fn (types) type)");
 		return T_ERR;
 	}
 	return res[0];
@@ -1186,7 +1263,13 @@ static o compile_atom(i32 n, Ty want)
 		}
 	}
 	t = find_named_type(s);
-	if (find_fn(s) >= 0) err_node(n, NAME_FMT " is a function; call it with (" NAME_FMT " ...)", s, s);
+	if ((r = find_fn(s)) >= 0) { /* one namespace: a function's name is a value too */
+		emit(OP_PUSH_K, r + 1, 0, nd->line);
+		push_type(intern_fn(g_fns[r].params, g_fns[r].nparams, g_fns[r].ret));
+		return;
+	}
+	for (r = g_local_floor - 1; r >= 0 && strcmp(g_locals[r].name, s); r--) {}
+	if (r >= 0) err_node(n, NAME_FMT " is a local of the code around this fn; a fn cannot use those yet, pass it in", s);
 	else if (is_struct(t)) err_node(n, NAME_FMT " is a type; make one with (" NAME_FMT " ...)", s, s);
 	else if (is_enum(t) && g_tys[t].n) err_node(n, NAME_FMT " is a type; a value of it is written " NAME_FMT ".%s", s, s, g_variants[g_tys[t].first]);
 	else if (t != T_NONE) err_node(n, NAME_FMT " is a type, not a value", s);
@@ -1233,6 +1316,16 @@ static o start_list(Frame *f)
 	size_t k;
 	Ty t;
 	if (head < 0) { err_node(f->node, "empty list: a list starts with a form, an operator or a function"); finish(T_ERR); return; }
+	if (g_nodes[head].kind == N_LIST) { /* ((get handlers 0) x): the function comes from an expression */
+		f->form = F_CALLV;
+		f->op = 3;
+		f->cur = next_of(head);
+		f->k = count_from(f->cur);
+		f->mark2 = g_slots;
+		f->phase = 5;
+		push_child(head, T_NONE);
+		return;
+	}
 	if (!is_sym(head)) { err_node(head, "a list must start with a name: a form, an operator or a function"); finish(T_ERR); return; }
 	s = g_nodes[head].text;
 	f->cur = next_of(head);
@@ -1265,6 +1358,7 @@ static o start_list(Frame *f)
 	else if (!strcmp(s, "pool")) f->form = F_POOL;
 	else if (!strcmp(s, "arena")) f->form = F_ARENA;
 	else if (!strcmp(s, "keep")) f->form = F_KEEP;
+	else if (!strcmp(s, "fn")) f->form = F_LAMBDA;
 	else if (!strcmp(s, "for")) f->form = F_FOR;
 	else if (!strcmp(s, "match")) f->form = F_MATCH;
 	else if (!strcmp(s, "defn") || !strcmp(s, "def") || !strcmp(s, "struct") || !strcmp(s, "enum") || !strcmp(s, "use")) {
@@ -1292,6 +1386,27 @@ static o start_list(Frame *f)
 			if (!strcmp(s, g_mapop_names[k])) { f->form = F_MAPOP; f->op = (u8)k; break; }
 		}
 		if (f->form != F_START) return;
+		{ /* one namespace: a variable (or a field) named here comes before a function of that name */
+			Place pl;
+			int r;
+			pl.global = 0;
+			pl.at = 0;
+			pl.type = T_ERR;
+			r = resolve_place(head, &pl);
+			if (r == 0) { finish(T_ERR); return; }
+			if (r > 0 && !is_fn(pl.type)) {
+				if (pl.type != T_ERR) err_node(head, NAME_FMT " is %s, not a function", s, tn(pl.type));
+				finish(T_ERR);
+				return;
+			}
+			if (r > 0) {
+				f->form = F_CALLV;
+				f->op = (u8)(pl.global ? 2 : 1);
+				f->c = pl.at;
+				f->rt = pl.type;
+				return;
+			}
+		}
 		if (is_struct(t = find_named_type(s))) {
 			f->form = F_NEW;
 			f->a = t;
@@ -1496,6 +1611,7 @@ static i32 arena_mark(void)
 {
 	i32 i;
 	for (i = g_nwork - 1; i >= 0; i--) {
+		if (g_work[i].form == F_LAMBDA) return -1; /* a fn's body runs when it is called, not inside this arena */
 		if (g_work[i].form == F_ARENA) return g_work[i].mark;
 	}
 	return -1;
@@ -1548,6 +1664,114 @@ static o start_arm(Frame *f)
 	want = f->want != T_NONE ? f->want : (f->res == T_ERR ? (Ty)T_NONE : f->res);
 	f->phase = 3;
 	push_body(shaped ? next_of(p) : -1, 1, want);
+}
+
+/* A fn's body is compiled in the middle of the code around it, with a jump over it; what the compiler was counting
+ * for the code around it waits here */
+#define MAX_LAMBDAS 64
+static struct {
+	i32 slots, maxslots, depth, maxdepth, nlocals, floor, jmp, fi;
+} g_lambdas[MAX_LAMBDAS];
+static i32 g_nlambdas;
+
+/* lambda_begin FN: (fn ((x : int)) : int body...) - register it and start its body; 0 after an error it reported */
+static int lambda_begin(Frame *f)
+{
+	i32 params = f->cur, ret = -1, body, p, q, k, fi, line = g_nodes[f->node].line;
+	Fn fn;
+	char name[64];
+	if (params < 0 || g_nodes[params].kind != N_LIST) {
+		err_node(params < 0 ? f->node : params, "fn needs a parameter list, () when it takes none: (fn ((x : int)) : int (* x x))");
+		return 0;
+	}
+	body = next_of(params);
+	if (sym_is(body, ":")) {
+		ret = next_of(body);
+		body = next_of(ret);
+	}
+	memset(&fn, 0, sizeof(fn));
+	for (p = first_of(params); p >= 0; p = next_of(p)) {
+		i32 pn = first_of(p), colon = next_of(pn), pt = next_of(colon);
+		if (g_nodes[p].kind != N_LIST || !is_sym(pn) || !sym_is(colon, ":") || pt < 0 || next_of(pt) >= 0) {
+			err_node(p, "a parameter is (name : type)");
+			return 0;
+		}
+		if (is_reserved(g_nodes[pn].text) || strchr(g_nodes[pn].text, '.'))
+			err_node(pn, NAME_FMT " cannot be a parameter name", g_nodes[pn].text);
+		for (q = first_of(params); q != p; q = next_of(q)) {
+			if (!strcmp(g_nodes[first_of(q)].text, g_nodes[pn].text)) err_node(pn, "parameter " NAME_FMT " twice", g_nodes[pn].text);
+		}
+		if (fn.nparams == MAX_PARAMS) {
+			err_node(p, "at most %d parameters", MAX_PARAMS);
+			return 0;
+		}
+		fn.params[fn.nparams] = parse_type(pt);
+		if (fn.params[fn.nparams] == T_UNIT) err_node(pt, "a parameter cannot be unit");
+		fn.pcells += cells(fn.params[fn.nparams]);
+		fn.nparams++;
+	}
+	fn.ret = ret >= 0 ? parse_type(ret) : (Ty)T_UNIT;
+	sprintf(name, "fn@%ld:%ld", (long)line, (long)g_nodes[f->node].col);
+	fn.name = arena_strndup(&g_perm, name, strlen(name));
+	fn.line = line;
+	fn.file = g_unit.file;
+	fn.decl_unit = g_unit_id;
+	fn.decl_node = f->node;
+	if (g_nfns == MAX_FNS) die("too many functions");
+	if (g_nlambdas == MAX_LAMBDAS) {
+		err_node(f->node, "fns nested deeper than %d", MAX_LAMBDAS);
+		return 0;
+	}
+	fi = g_nfns++;
+	g_fns[fi] = fn;
+	g_lambdas[g_nlambdas].fi = fi;
+	g_lambdas[g_nlambdas].jmp = emit(OP_JMP, -1, 0, line);
+	g_lambdas[g_nlambdas].slots = g_slots;
+	g_lambdas[g_nlambdas].maxslots = g_maxslots;
+	g_lambdas[g_nlambdas].depth = g_depth;
+	g_lambdas[g_nlambdas].maxdepth = g_maxdepth;
+	g_lambdas[g_nlambdas].nlocals = g_nlocals;
+	g_lambdas[g_nlambdas].floor = g_local_floor;
+	g_nlambdas++;
+	g_fns[fi].entry = g_ncode;
+	g_slots = g_maxslots = 0;
+	g_depth = g_maxdepth = 0;
+	g_local_floor = g_nlocals; /* the locals around it belong to another frame */
+	for (p = first_of(params), k = 0; p >= 0; p = next_of(p), k++)
+		add_local(g_nodes[first_of(p)].text, g_fns[fi].params[k], new_slots(cells(g_fns[fi].params[k])));
+	f->phase = 1;
+	push_body(body, 1, g_fns[fi].ret);
+	return 1;
+}
+
+/* lambda_end FN TYPE LINE: its body is done, with TYPE: return, go back to the code around it, push the fn */
+static o lambda_end(Ty t, i32 line)
+{
+	i32 fi = g_lambdas[g_nlambdas - 1].fi, k, nc;
+	Fn *fn = &g_fns[fi];
+	for (k = 0; k < fn->nparams; k++) emit_release(0, g_locals[g_local_floor + k].slot, fn->params[k], line);
+	if (fn->ret == T_UNIT) {
+		emit_pop(t, line);
+		emit(OP_RET_U, 0, 0, line);
+	} else {
+		if (t != T_ERR && fn->ret != T_ERR && t != fn->ret) err_node(g_fns[fi].decl_node, "this fn must return %s, its body ends with %s", tn(fn->ret), tn(t));
+		nc = cells(fn->ret);
+		if (nc == 0) emit(OP_RET_U, 0, 0, line);
+		else if (nc == 1) emit(OP_RET_V, 0, 0, line);
+		else emit(OP_RET_N, nc, 0, line);
+	}
+	fn->nslots = g_maxslots;
+	fn->maxdepth = g_maxdepth;
+	g_nlambdas--;
+	g_slots = g_lambdas[g_nlambdas].slots;
+	g_maxslots = g_lambdas[g_nlambdas].maxslots;
+	g_depth = g_lambdas[g_nlambdas].depth;
+	g_maxdepth = g_lambdas[g_nlambdas].maxdepth;
+	g_nlocals = g_lambdas[g_nlambdas].nlocals;
+	g_local_floor = g_lambdas[g_nlambdas].floor;
+	patch(g_lambdas[g_nlambdas].jmp, g_ncode);
+	emit(OP_PUSH_K, fi + 1, 0, line);
+	finish(intern_fn(fn->params, fn->nparams, fn->ret));
 }
 
 /* run_work BASE: compile until the work stack is back at BASE; leaves one type per finished root */
@@ -2606,6 +2830,61 @@ static o run_work(i32 base)
 			finish(t);
 			break;
 
+		case F_LAMBDA: /* (fn ((x : int)) : int body...): a function without a name, as a value */
+			if (f->phase == 0) {
+				if (!lambda_begin(f)) finish(T_ERR);
+				break;
+			}
+			lambda_end(pop_type(), line);
+			break;
+
+		case F_CALLV: { /* (f args...) where f is a variable, a field or an expression of a function type */
+			const TyInfo *ft;
+			const char *what = f->op == 3 ? "this function" : g_nodes[first_of(f->node)].text;
+			if (f->phase == 5) { /* an expression made the function: it waits in a slot while the arguments run */
+				t = pop_type();
+				if (!is_fn(t)) {
+					if (t != T_ERR) err_node(first_of(f->node), "this is %s, not a function, so it cannot be called", tn(t));
+					finish(T_ERR);
+					break;
+				}
+				f->rt = t;
+				f->c = new_slots(1);
+				emit(OP_STORE_L, f->c, 0, line);
+				f->phase = 0;
+			}
+			ft = &g_tys[f->rt];
+			if (f->phase == 0) {
+				if (f->k != ft->n) {
+					err_node(f->node, "%.64s takes %ld argument%s, got %ld", what, (long)ft->n, ft->n == 1 ? "" : "s", (long)f->k);
+					if (f->op == 3) g_slots = f->mark2;
+					finish(T_ERR);
+					break;
+				}
+				f->k = 0;
+				f->phase = 1;
+				if (f->cur >= 0) {
+					push_child(f->cur, g_tparams[ft->first]);
+					break;
+				}
+			} else {
+				t = pop_type();
+				if (t != T_ERR && t != g_tparams[ft->first + f->k])
+					err_node(f->cur, "%.64s: argument %ld is %s, it must be %s", what, (long)(f->k + 1), tn(t), tn(g_tparams[ft->first + f->k]));
+				f->k++;
+				f->cur = next_of(f->cur);
+				if (f->cur >= 0) {
+					push_child(f->cur, g_tparams[ft->first + f->k]);
+					break;
+				}
+			}
+			emit(f->op == 2 ? OP_LOAD_G : OP_LOAD_L, f->c, 0, line); /* the function value goes on top */
+			emit(OP_CALL_V, f->rt, 0, line);
+			if (f->op == 3) g_slots = f->mark2;
+			finish(ft->elem);
+			break;
+		}
+
 		case F_DOT: { /* (. expr pos.x): a field of the value of any expression; (f x).pos.x reads as this */
 			i32 path = next_of(f->cur), off = 0, slot;
 			const char *p, *end;
@@ -3006,7 +3285,8 @@ static o compile_def(i32 n, int repl)
 
 /* everything a failed unit may have added, so the REPL can forget it */
 static struct {
-	i32 ncode, nints, nfloats, nstrs, nfns, nglobals, nglobal_cells, ntys, nfields, nvariants, nfmts, nfmt_tys, nleaves, nguards;
+	i32 ncode, nints, nfloats, nstrs, nfns, nglobals, nglobal_cells, ntys, nfields, nvariants, nfmts, nfmt_tys, nleaves, nguards,
+	    ntparams;
 	size_t perm, text;
 } g_snap;
 static i32 g_snap_entry[MAX_FNS], g_snap_slots[MAX_FNS], g_snap_depth[MAX_FNS];
@@ -3030,6 +3310,7 @@ static i32 compile_unit(i32 top, int repl)
 	g_snap.nfmts = g_nfmts;
 	g_snap.nfmt_tys = g_nfmt_tys;
 	g_snap.nleaves = g_nleaves;
+	g_snap.ntparams = g_ntparams;
 	g_snap.nguards = g_nguards;
 	g_snap.perm = g_perm.used;
 	g_snap.text = g_text.used;
@@ -3085,6 +3366,7 @@ static i32 compile_unit(i32 top, int repl)
 	g_nfmts = g_snap.nfmts;
 	g_nfmt_tys = g_snap.nfmt_tys;
 	g_nleaves = g_snap.nleaves;
+	g_ntparams = g_snap.ntparams;
 	g_nguards = g_snap.nguards;
 	g_perm.used = g_snap.perm;
 	g_text.used = g_snap.text;

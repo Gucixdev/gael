@@ -172,7 +172,7 @@ and the source line it came from.
 ## The language in 0.3
 
 Types: `int` (64-bit, arithmetic wraps around), `float` (64-bit), `bool`, `string`, `unit` (no value), structs,
-enums, `(option type)`, `(vec type)`, `(map key value)`, `(pool type)` and `(handle type)`, and numbers with a size:
+enums, `(option type)`, `(vec type)`, `(map key value)`, `(pool type)`, `(handle type)`, `(fn (types) type)`, and numbers with a size:
 `i8`, `i16`, `i32`, `i64` (the same as `int`), `u8`, `u16`, `u32`, `u64`, `f32`, `f64` (the same as `float`). Arithmetic
 stays in its size and wraps around; a number literal takes the size expected where it stands (a declared type, a
 parameter, a field, the other operand) and must fit in it, so `(def b : u8 300)` is a compile error. Nothing converts
@@ -185,6 +185,7 @@ starts with `;`.
 | `(use "lib/geometry.gael")` | compile that file first, its path relative to this one; a file used by several others is compiled once, and a file that ends up using itself is an error |
 | `(def hp : int 100)`, `(def hp 100)` | a global; without `: type` the type is the value's |
 | `(defn name ((x : int) (y : float)) : int body...)` | a function, `()` when it takes nothing; without `: type` it returns unit. A function can be called above its definition |
+| `inc`, `(fn ((x : int)) : int (* x x))`, `(f 3)` | one namespace, as in Scheme: a function's name is a value of type `(fn (int) int)`, `fn` makes one without a name (it cannot use the locals around it yet), and a variable, a field or an expression of that type is called like a function; a local of the same name hides a function |
 | `(let ((x 1) (y : float 2.0)) body...)` | locals for the body |
 | `(set x 5)`, `(set b.pos.x 3.0)` | assign to a variable or a field of one; the value must have its type |
 | `(if c then else)`, `(when c body...)`, `(while c body...)`, `(do body...)` | a condition must be a bool; `if` without `else` is unit |
@@ -289,8 +290,8 @@ tests/errors/div-zero.gael:1: runtime error: division by zero
 
 ## Status
 
-Version 0.3, tested on Linux x86-64 with gcc 13.3 and clang 18.1. `./test` passes 82 checks per build (24 examples,
-51 compile and runtime error cases, two REPL sessions, five README examples) with gcc, clang and gcc with both
+Version 0.3, tested on Linux x86-64 with gcc 13.3 and clang 18.1. `./test` passes 84 checks per build (25 examples,
+52 compile and runtime error cases, two REPL sessions, five README examples) with gcc, clang and gcc with both
 sanitizers, every run with `GAEL_CHECK=1`. GitHub Actions runs shellcheck on the scripts and `./test` on every push
 (`.github/workflows/test.yml`, ubuntu-24.04).
 

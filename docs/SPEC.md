@@ -286,9 +286,15 @@ Potem: makra i moduły (0.2), manifest i resolver gemów (0.3), bufor i okno (0.
   `u64`. Konwersje tylko jawne: `(u8 x)`, `(f32 x)`, `(int x)`...; między intami zawinięcie, float do inta poza
   zakresem to błąd czasu wykonania. `%d` i `%f` biorą każdy rozmiar; `f32` drukuje się najkrótszym zapisem, który
   wraca do tej samej wartości (`0.1`). Typy SIMD (`vec4` itd.) przyjdą osobno.
-- **Następne, po kolei:** jedna przestrzeń nazw z funkcjami jako wartościami i wywołaniami ogonowymi, makra
-  higieniczne, traits, tryb wydania aren (po pomiarze), manifest gemów, bufor i okno. Numery wersji przesuwają się
-  względem planu wyżej.
+- **Funkcje jako wartości (2026-10-20):** jedna przestrzeń nazw: nazwa funkcji to wartość typu `(fn (int) int)`
+  (numer funkcji + 1, zero znaczy brak), zmienna, pole albo wyrażenie takiego typu woła się jak funkcję
+  (`(b.on-click 2)`, `((get handlers 0) 5)` - wyrażenie liczy się przed argumentami), a lokalna nazwa przesłania
+  funkcję. `(fn ((x : int)) : int ciało...)` to funkcja bez nazwy, kompilowana w środku otaczającego kodu ze skokiem
+  nad nią; nie widzi lokalnych zmiennych dookoła (komunikat mówi to wprost) - domknięcia przyjdą osobno.
+- **Następne, po kolei:** operatory basha jako funkcje (`chain`, `pipe`, `pipe-in`, `run`, `append-file`, `pid`;
+  zostają zwykłe operatory), `$Ścieżka` jako `NodePath`, adnotacje `@export`, wywołania ogonowe, makra higieniczne,
+  traits, tryb wydania aren (po pomiarze), manifest gemów, bufor i okno. Numery wersji przesuwają się względem planu
+  wyżej.
 
 ## Notatki → stan
 

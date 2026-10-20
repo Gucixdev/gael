@@ -51,6 +51,7 @@
 	X(F2I, 1)      /* f -- i       truncates toward zero; a: the int type, a value outside it is a runtime error */ \
 	X(LEN_S, 1)    /* s -- i       length in bytes; a: borrowed */ \
 	X(CALL, 1)     /* args -- r    a: function index */ \
+	X(CALL_V, 1)   /* args f -- r  call the function value on top (its number + 1); a: its type */ \
 	X(RET_V, 0)    /* r --         return with a one-cell value */ \
 	X(RET_N, 1)    /* r... --      return with a value of a cells */ \
 	X(RET_U, 0)    /* --           return without a value */ \

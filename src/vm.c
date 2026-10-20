@@ -646,6 +646,10 @@ static o print_value(Ty type, const Cell *c)
 		}
 		if (ti->kind == K_ENUM) {
 			out_s(g_variants[ti->first + v->i]);
+		} else if (ti->kind == K_FN) {
+			out_s("(fn ");
+			out_s(v->i > 0 ? g_fns[v->i - 1].name : "none");
+			out_s(")");
 		} else if (ti->kind == K_POOL || ti->kind == K_HANDLE) {
 			char buf[64];
 			if (ti->kind == K_POOL) sprintf(buf, "(pool %ld/%ld)", (long)g_heap[v->i + PH_COUNT].i, (long)g_heap[v->i + PH_CAP].i);
@@ -1294,9 +1298,18 @@ static int vm_run(i32 pc)
 			break;
 		}
 
-		case OP_CALL: {
-			const Fn *fn = &g_fns[in->a];
-			i32 nfp = sp - fn->pcells;
+		case OP_CALL:
+		case OP_CALL_V: {
+			const Fn *fn;
+			i32 nfp;
+			if (in->op == OP_CALL_V) {
+				i64 fv = s[--sp].i;
+				if (fv <= 0) return vm_error(in->line, "this function value was never set: a global read before its def ran");
+				fn = &g_fns[fv - 1];
+			} else {
+				fn = &g_fns[in->a];
+			}
+			nfp = sp - fn->pcells;
 			if (nf == VM_FRAMES || nfp + fn->nslots + fn->maxdepth > VM_STACK)
 				return vm_error(in->line, "stack overflow (recursion too deep?)");
 			g_vframes[nf].ret_pc = pc;
@@ -1881,7 +1894,7 @@ static o disassemble(i32 from, i32 to)
 		if (in->op == OP_PRINT || in->op == OP_PRINTLN || in->op == OP_FORMAT) printf("\t(\"%.40s\")", g_strs[g_fmts[in->a].str].p);
 		if (in->op == OP_CALL) printf("\t(%.40s)", g_fns[in->a].name);
 		if (in->op == OP_SHOW || in->op == OP_RETAIN || in->op == OP_DROP || in->op == OP_MAP_KEYS || in->op == OP_MAP_VALUES ||
-		    in->op == OP_KEEP || in->op == OP_WRAP || in->op == OP_F2I)
+		    in->op == OP_KEEP || in->op == OP_WRAP || in->op == OP_F2I || in->op == OP_CALL_V)
 			printf("\t(%.40s)", tn((Ty)in->a));
 		if (in->op == OP_RELEASE_L || in->op == OP_RELEASE_G || in->op == OP_VEC_NEW || in->op == OP_MAP_NEW || in->op == OP_POOL_NEW)
 			printf("\t(%.40s)", tn((Ty)in->b));
