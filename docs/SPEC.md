@@ -367,9 +367,23 @@ Potem: makra i moduły (0.2), manifest i resolver gemów (0.3), bufor i okno (0.
   (które sloty i wartości na stosie trzymają referencje w każdym miejscu wywołania), żeby refcount mógł zwolnić to,
   co zadanie trzyma. Na razie zadanie kończy się samo (pętla sprawdza warunek), a z `GAEL_CHECK=1` to, co trzymają
   zadania czekające do końca programu, liczy się jako niezwolnione.
-- **Następne, po kolei:** manifest gemów (`:requires`, `:provides`, `:excludes`, wywołania między gemami sprawdzane
-  w kompilacji, ładowanie tylko włączonych), mapy stosu (anulowanie zadań), traits, tryb wydania aren (po pomiarze),
-  domknięcia, bufor i okno. Numery wersji przesuwają się względem planu wyżej.
+- **Gemy: manifest i zależności (2026-10-20):** gem to `gems/NAZWA.gael` albo folder `gems/NAZWA/` z `main.gael`
+  (reszta przez `use`), szukany obok programu, potem w folderze gaela. Plik główny zaczyna się od manifestu
+  `(gem nazwa :version "0.1" :requires (...) :provides (...) :excludes (...))`. Program włącza gemy przez
+  `(enable a b)`: loader czyta manifesty tylko gemów z listy (najpierw wszystkie, żeby wymaganie spełnił też gem
+  wymieniony dalej), potem ładuje każdy po tym, czego wymaga. Wymaganie spełnia gem o tej nazwie albo taki, który ją
+  dostarcza (`:provides`); gdy żaden nie jest włączony, loader szuka gemu o tej nazwie na dysku. Błędy z miejscem:
+  brak gemu, brak dostawcy wymagania, cykl wymagań, dwa włączone gemy dostarczające to samo („wybierz jeden”, jak
+  ecs-archetype i ecs-sparse dla `ecs`), wykluczenie, zły manifest, plik jednego gemu użyty przez inny. Gem używa
+  tylko swoich nazw i nazw gemów, których wymaga - sprawdzane w kompilacji przy każdym użyciu funkcji, globalnej,
+  typu i makra (każda nazwa zna swój gem); program widzi wszystkie włączone. W REPL-u `(enable x)` kompiluje gem do
+  działającego programu, `(disable x)` go wyłącza (błąd, gdy potrzebuje go inny włączony gem) i jego nazw nie da się
+  użyć aż do ponownego `enable`; kod skompilowany wcześniej działa dalej. Jeszcze nie: zakresy wersji w wymaganiach
+  (`:version` jest zapisywana), `:depends` (opcjonalne), wyładowanie kodu, zamiana jednej implementacji na drugą w
+  trakcie (nazwy wyłączonego gemu są dalej zajęte), gemy natywne i procesowe, prywatne nazwy gemu.
+- **Następne, po kolei:** mapy stosu (anulowanie zadań), tablice kompilatora na rezerwacji mmap (przed dużymi gemami),
+  traits, tryb wydania aren (po pomiarze), domknięcia, bufor i okno. Numery wersji przesuwają się względem planu
+  wyżej.
 
 ## Notatki → stan
 
@@ -407,12 +421,14 @@ Każdy punkt z notatek o godot-rs i gaelu, z tym, co się z nim stało. ✓ zrob
   wersją (wersja rdzenia osobno od wersji języka).
 
 **Gemy**
-- ○ wszystko jest gemem, wbudowane tylko kernel i editor; requires / depends / exclude; wersjonowanie; wybór gemów
-  przy nowym projekcie (2d, 3d, sdf, aabb, noise); gemy dają nody; build gry wycina nieużywane gemy.
+- ✓ manifest gemu (`:requires`, `:provides`, `:excludes`), `(enable ...)` i `(disable ...)`, wybór jednej
+  implementacji spośród dających to samo, wywołania między gemami sprawdzane w kompilacji; ○ wszystko jest gemem,
+  wbudowane tylko kernel i editor; `:depends`; wersjonowanie; wybór gemów przy nowym projekcie (2d, 3d, sdf, aabb,
+  noise); gemy dają nody; build gry wycina nieużywane gemy.
 - ○ gemy w dowolnym języku (C, Rust, C++ - wejście C ABI; procesowe przez stdin/socket).
 - ○ prosty menedżer pakietów: gemy na Twoim GitHubie, Ty decydujesz o merge'ach, gałąź `experimental`.
-- ○ start ładuje tylko włączone gemy (liczba zainstalowanych nie ma znaczenia); gemy i tryby włączane i wyłączane w
-  trakcie działania.
+- ✓ start ładuje tylko włączone gemy (liczba zainstalowanych nie ma znaczenia); ✓ gemy włączane i wyłączane w REPL-u
+  w trakcie działania; ○ to samo z kodu (tryby edytora), wyładowanie kodu.
 - ○ ustawienia per projekt i globalne (gemy, pluginy, assety); profile zmieniane w trakcie działania.
 - ○ katalog: soulslike, voxel, input buffer, parallax, dialogi w Markdownie, event flags, priority i event queue,
   fsm, hfsm, A*, voronoi, perlin, LOD, HLOD, raycast, raytrace, world-env, timeact editor, edytor poziomów jak w

@@ -217,6 +217,7 @@ starts with `;`.
 | `(await t)`, `(sleep 0.5)`, `(yield)` | wait for a task's result, for seconds of task time, or for the next step. In a task they let the others run; in the main program `await` and `sleep` run the tasks meanwhile |
 | `(tasks-step dt)`, `(tasks-run)` | from the main program: task time goes `dt` seconds on and each task that can goes on until it waits again (the number of tasks left); run them until none is left, waiting in real time |
 | `(done? t)`, `(task-time)` | whether a task has ended; the task time in seconds |
+| `(enable name...)`, `(disable name...)` | turn gems on, loading each one after what it requires, or off (below) |
 | `(some 5)`, `none` | the two kinds of `(option int)` value; `none` takes its type from where it goes: a declared binding, a parameter, a field, a return type, or the else branch of an `if` whose then branch has one |
 | `(match x (pattern body...)...)` | patterns are `_`, int and string literals, `true` and `false`, enum values (`north` or `Dir.north`), `(some name)` and `none`; every value must be covered, and an arm that can never run is an error |
 | `(print "fmt" args...)`, `(println "fmt" args...)` | `%d` int, `%f` float, `%s` string, `%b` bool, `%v` any value, `%%`; the codes are checked against the arguments when compiling. `eprint` and `eprintln` write to stderr |
@@ -301,6 +302,22 @@ A task cannot wait inside an `(arena ...)` (the arena would end while other code
 own, not part of the arena of the code that resumed it. A task that never ends holds what it holds: one stopped from
 outside (cancel) is not there yet. `examples/tasks.gael` has more.
 
+A gem is a package by name: `gems/NAME.gael`, or a folder `gems/NAME/` whose `main.gael` uses the rest, next to the
+program or in gael's own folder. Its main file starts with a manifest:
+
+```
+(gem inventory :version "0.2.0" :requires (ecs) :provides (bags) :excludes (inventory-legacy))
+```
+
+`(enable inventory ecs-flat)` loads the gems named, each after what it requires; no other file under `gems/` is read,
+so many installed gems cost nothing at start. A requirement is met by the gem of that name or by one that provides
+it (here `ecs-flat` provides `ecs`), and two gems that are on may not provide the same thing or exclude each other:
+`gems ecs-archetype and ecs-sparse both provide ecs; turn on one of them`. A gem's code uses only its own names and
+those of the gems it requires, checked at each use when compiling: `gem sneaky uses ecs-spawn of gem ecs-flat, which
+it does not require; add ecs-flat to its :requires`. The program uses every gem that is on. In the REPL
+`(enable name)` compiles a gem into the running program, and `(disable name)` turns one off: its names cannot be used
+until it is on again (code compiled before goes on working). `examples/gems.gael` uses two gems.
+
 `@export` before a `def` marks a global the way GDScript's `@export` marks a variable, for an editor's inspector to
 show and change; an annotation gael does not know is a compile error. `gael -x` lists them, with the value when it is
 written as a literal:
@@ -362,8 +379,8 @@ tests/errors/div-zero.gael:1: runtime error: division by zero
 
 ## Status
 
-Version 0.3, tested on Linux x86-64 with gcc 13.3 and clang 18.1. `./test` passes 101 checks per build (31 examples,
-62 compile and runtime error cases, two REPL sessions, six README examples) with gcc, clang and gcc with both
+Version 0.3, tested on Linux x86-64 with gcc 13.3 and clang 18.1. `./test` passes 112 checks per build (32 examples,
+71 compile and runtime error cases, three REPL sessions, six README examples) with gcc, clang and gcc with both
 sanitizers, every run with `GAEL_CHECK=1`. GitHub Actions runs shellcheck on the scripts and `./test` on every push
 (`.github/workflows/test.yml`, ubuntu-24.04).
 

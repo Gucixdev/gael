@@ -34,6 +34,7 @@ typedef struct {
 	i32 rule0, nrules; /* its rules in g_rules */
 	const char *file;  /* where it was defined */
 	i32 line;
+	i32 gem;           /* the gem it belongs to, 0 for the program */
 } Macro;
 
 typedef struct {
@@ -387,6 +388,7 @@ static int macro_define(i32 n)
 	g_macros[g_nmacros].nrules = k;
 	g_macros[g_nmacros].file = g_unit.file;
 	g_macros[g_nmacros].line = g_nodes[n].line;
+	g_macros[g_nmacros].gem = g_unit_gem;
 	names_put(g_macros[g_nmacros].name)->macro = g_nmacros;
 	g_nmacros++;
 	return 1;

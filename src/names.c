@@ -17,6 +17,7 @@ typedef struct {
 
 static NameSlot g_names[NAME_SLOTS];
 static i32 g_nnames;
+static i32 g_unit_gem; /* the gem the unit being compiled belongs to, 0 for the program; what it defines is that gem's */
 
 static u32 name_hash(const char *s)
 {

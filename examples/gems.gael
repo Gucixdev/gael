@@ -1,0 +1,10 @@
+; Gems: packages by name. (enable name...) loads each one from gems/ (next to this file, then in gael's own folder),
+; after what its manifest asks for. inventory requires ecs, which ecs-flat provides; a gem may only use the names of
+; the gems it requires, and two gems that provide the same thing cannot be on together.
+
+(enable inventory ecs-flat)
+
+(def hero (ecs-spawn "hero"))
+(inv-give hero (InvItem "sword" 3.5))
+(inv-give hero (InvItem "rope" 1.0))
+(println "%s carries %f kg" (ecs-name hero) (inv-weight hero))

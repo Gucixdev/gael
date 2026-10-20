@@ -15,6 +15,10 @@
  * A file can use others: (use "lib.gael") at its top level, the path relative to the file. Every file is compiled
  * once, the used ones first, and the program runs only when none of them has an error.
  *
+ * Gems are files by name: (enable name...) loads gems/NAME.gael or gems/NAME/main.gael, from the program's folder or
+ * else from gael's own, each after the gems its manifest requires; a gem's main file starts with the manifest,
+ * (gem name :requires (...) :provides (...) :excludes (...)). Only the gems named are read.
+ *
  * Exit status: 0 fine, 1 a compile or runtime error, 2 bad usage; (exit n) ends with n.
  * One translation unit (this file includes the others), C89, no malloc and no recursion. */
 
@@ -37,12 +41,14 @@ static const char g_usage[] =
 	"       gael -e CODE ARGS...   compile and run CODE\n"
 	"       gael -x FILE           compile FILE and list its @export globals: name : type = value\n"
 	"       gael -h                this help\n";
-static const char g_usage_env[] =
-	"GAEL_HEAP=SIZE  the heap for strings, vecs, maps and pools, and as much again for arenas and for the program's\n"
-	"                own text (default 1G; K, M, G; the system gives pages only where they are written)\n"
-	"GAEL_CHECK=1    freed memory is overwritten, and a program that ran to its end reports what it never freed\n"
-	"GAEL_HOME=DIR   gael's own folder (default ~/.gael): the REPL runs main.gael from there first and appends\n"
-	"                what ran to repldump.gael; set to nothing, it does neither\n";
+static const char *const g_usage_env[] = { /* one string each: C89 promises only 509 bytes in one */
+	"GAEL_HEAP=SIZE  the heap for strings, vecs, maps and pools, and as much again for arenas and for the program's\n",
+	"                own text (default 1G; K, M, G; the system gives pages only where they are written)\n",
+	"GAEL_CHECK=1    freed memory is overwritten, and a program that ran to its end reports what it never freed\n",
+	"GAEL_HOME=DIR   gael's own folder (default ~/.gael): the REPL runs main.gael from there first and appends\n",
+	"                what ran to repldump.gael; its gems/ comes after the program's; set to nothing, none of it\n",
+	0
+};
 
 enum { RUN, CHECK, DIS };
 
@@ -52,6 +58,7 @@ typedef struct {
 	const char *real;  /* the canonical path: the same file reached two ways is one module */
 	const char *shown; /* the path as messages show it */
 	u8 state;          /* 0 not loaded, 1 on the load stack, 2 compiled */
+	i32 gem;           /* the gem it belongs to, 0 for the program */
 } Module;
 static Module g_mods[MAX_MODULES];
 static i32 g_nmods;
@@ -62,6 +69,8 @@ typedef struct {
 	const char *name, *src;
 	size_t len;
 	i32 mod;
+	i32 gem;  /* the gem the file belongs to, 0 for the program */
+	u8 main;  /* it is that gem's main file, which starts with the manifest */
 } Source;
 #define MAX_USE_DEPTH 256
 static Source g_load[MAX_USE_DEPTH];
@@ -84,6 +93,7 @@ static i32 module_of(const char *path)
 	g_mods[g_nmods].real = arena_strndup(&g_perm, real, strlen(real));
 	g_mods[g_nmods].shown = arena_strndup(&g_perm, path, strlen(path));
 	g_mods[g_nmods].state = 0;
+	g_mods[g_nmods].gem = -1;
 	return g_nmods++;
 }
 
@@ -123,7 +133,7 @@ static int read_source(const Source *so)
 
 /* next_use TOP FROM AT: the first (use "path") at the top level whose file is not compiled yet, as a module; -1 when
  * there is none, -2 after an error it reported. AT gets the path's node. The path is relative to FROM's folder */
-static i32 next_use(i32 top, const char *from, i32 *at)
+static i32 next_use(i32 top, const char *from, i32 gem, i32 *at)
 {
 	const char *slash = strrchr(from, '/');
 	char path[PATH_MAX];
@@ -143,6 +153,11 @@ static i32 next_use(i32 top, const char *from, i32 *at)
 			error_at(g_nodes[arg].line, g_nodes[arg].col, "use: there is no file %s", path);
 			return -2;
 		}
+		if (g_mods[m].gem >= 0 && g_mods[m].gem != gem) {
+			error_at(g_nodes[arg].line, g_nodes[arg].col, "use: %s belongs to %s%s; a gem's files are its own",
+			         g_mods[m].shown, g_mods[m].gem ? "gem " : "", g_gems[g_mods[m].gem].name);
+			return -2;
+		}
 		if (g_mods[m].state == 2) continue;
 		*at = arg;
 		return m;
@@ -157,7 +172,146 @@ static int load_failed(void)
 	for (i = 0; i < g_nmods; i++) {
 		if (g_mods[i].state == 1) g_mods[i].state = 0;
 	}
+	for (i = 1; i < g_ngems; i++) {
+		if (g_gems[i].state == GEM_LOADING) g_gems[i].state = GEM_KNOWN;
+	}
+	g_unit_gem = 0;
+	g_unit_main = 0;
 	return 1;
+}
+
+static char g_gem_root[PATH_MAX]; /* the folder of the program being loaded: its gems/ is looked at first */
+static int gael_home(char *path);
+
+/* gem_path NAME OUT: the main file of gem NAME into OUT (PATH_MAX bytes) - gems/NAME.gael or gems/NAME/main.gael in
+ * the program's folder, then in gael's own folder; 0 when there is none */
+static int gem_path(const char *name, char *out)
+{
+	char home[1024];
+	const char *dirs[2];
+	i32 nd = 0, i;
+	const char *c;
+	for (c = name; *c; c++) { /* a gem's name is its file's: letters, digits, - and _ */
+		if (!((*c >= 'a' && *c <= 'z') || (*c >= 'A' && *c <= 'Z') || (*c >= '0' && *c <= '9') || *c == '-' || *c == '_')) return 0;
+	}
+	dirs[nd++] = g_gem_root;
+	if (gael_home(home)) dirs[nd++] = home;
+	for (i = 0; i < nd; i++) {
+		if (strlen(dirs[i]) + 2 * strlen(name) + 24 > PATH_MAX) continue;
+		sprintf(out, "%s/gems/%s.gael", dirs[i], name);
+		if (!access(out, R_OK)) return 1;
+		sprintf(out, "%s/gems/%s/main.gael", dirs[i], name);
+		if (!access(out, R_OK)) return 1;
+	}
+	return 0;
+}
+
+/* gem_register NAME PATH: gem NAME's manifest, read from its main file PATH, into the gem table; its index, or -2
+ * after an error it reported (in that file) */
+static i32 gem_register(const char *name, const char *path)
+{
+	Source so;
+	Gem g;
+	i32 top;
+	if (g_ngems == MAX_GEMS) die("too many gems (MAX_GEMS)");
+	memset(&so, 0, sizeof(so));
+	so.name = arena_strndup(&g_perm, path, strlen(path));
+	so.mod = -1;
+	if (!read_source(&so)) return -2;
+	top = read_unit();
+	if (g_unit.nerrors) return -2;
+	if (top < 0) {
+		error_at(1, 1, "a gem's main file starts with its manifest: (gem %.64s :requires (...))", name);
+		return -2;
+	}
+	if (!gem_manifest(top, name, &g)) return -2;
+	g.file = so.name;
+	g.state = GEM_KNOWN;
+	g_gems[g_ngems] = g;
+	return g_ngems++;
+}
+
+/* next_gem TOP SO: the gems that must be loaded before the source SO (just read; TOP is its first form) compiles -
+ * those its (enable ...) forms name when it is the program, those its manifest requires when it is a gem's main
+ * file. Returns a gem to load now, -1 when they are all there, -3 when a manifest was read (so SO must be read again),
+ * -2 after an error it reported */
+static i32 next_gem(i32 top, const Source *so)
+{
+	static char names[MAX_GEMS][64];
+	static i32 pos[MAX_GEMS][2];
+	char path[PATH_MAX];
+	i32 n = 0, i, g, x, k;
+	const char *why;
+	if (so->main) { /* a gem: each thing it requires comes from a gem on, or one known that provides it, or the gem of that name */
+		const Gem *me = &g_gems[so->gem];
+		i32 line = g_nodes[top].line, col = g_nodes[top].col;
+		for (i = 0; i < me->nrequires; i++) {
+			const char *what = me->requires[i];
+			i32 known = -1, nknown = 0;
+			for (g = 1; g < g_ngems; g++) {
+				if (g == so->gem || !gem_gives(g, what)) continue;
+				if (g_gems[g].state >= GEM_LOADING) break;
+				known = g;
+				nknown++;
+			}
+			if (g < g_ngems) { /* there already */
+				if (g_gems[g].state == GEM_LOADING) {
+					error_at(line, col, "gem %.64s requires %.64s, which needs %.64s first: they require each other", me->name, what, me->name);
+					return -2;
+				}
+				if (g_gems[g].state == GEM_OFF) {
+					error_at(line, col, "gem %.64s requires %.64s, and gem %.64s is off; (enable %.64s) first", me->name, what, g_gems[g].name, g_gems[g].name);
+					return -2;
+				}
+				continue;
+			}
+			if (nknown > 1) {
+				error_at(line, col, "gem %.64s requires %.64s, which more than one gem provides; enable the one to use", me->name, what);
+				return -2;
+			}
+			if (nknown == 1) {
+				if ((why = gem_clash(known)) != 0) { error_at(line, col, "%s", why); return -2; }
+				return known;
+			}
+			if (!gem_path(what, path)) {
+				error_at(line, col, "gem %.64s requires %.64s, and no gem provides it: none is on, and there is no gems/%.64s.gael or gems/%.64s/main.gael",
+				         me->name, what, what, what);
+				return -2;
+			}
+			return gem_register(what, path) < 0 ? -2 : -3;
+		}
+		return -1;
+	}
+	if (so->gem) return -1; /* another file of a gem */
+	for (x = top; x >= 0; x = next_of(x)) { /* the program: the names in its (enable ...) forms */
+		if (!head_is(x, "enable")) continue;
+		for (k = next_of(first_of(x)); k >= 0; k = next_of(k)) {
+			if (!is_sym(k) || g_nodes[k].len >= sizeof(names[0]) || n == MAX_GEMS) continue; /* compile_unit says what is wrong */
+			memcpy(names[n], g_nodes[k].text, g_nodes[k].len + 1);
+			pos[n][0] = g_nodes[k].line;
+			pos[n][1] = g_nodes[k].col;
+			n++;
+		}
+	}
+	for (i = 0; i < n; i++) { /* every manifest first, so a requirement can be met by a gem named later in the list */
+		if (gem_find(names[i]) >= 0) continue;
+		if (!gem_path(names[i], path)) {
+			error_at(pos[i][0], pos[i][1], "there is no gem %.64s: no gems/%.64s.gael or gems/%.64s/main.gael here or in gael's folder",
+			         names[i], names[i], names[i]);
+			return -2;
+		}
+		return gem_register(names[i], path) < 0 ? -2 : -3;
+	}
+	for (i = 0; i < n; i++) {
+		g = gem_find(names[i]);
+		if (g_gems[g].state != GEM_KNOWN) continue;
+		if ((why = gem_clash(g)) != 0) {
+			error_at(pos[i][0], pos[i][1], "%s", why);
+			return -2;
+		}
+		return g;
+	}
+	return -1;
 }
 
 /* load NAME SRC LEN REPL MODE: compile NAME (SRC 0: read the file) and, before it, every file it uses and they use.
@@ -171,6 +325,13 @@ static int load(const char *name, const char *src, size_t len, int repl, int mod
 	g_load[0].src = src;
 	g_load[0].len = len;
 	g_load[0].mod = -1;
+	g_load[0].gem = 0;
+	g_load[0].main = 0;
+	strcpy(g_gem_root, ".");
+	if (!src && strlen(name) < sizeof(g_gem_root) && strrchr(name, '/')) {
+		strcpy(g_gem_root, name);
+		*strrchr(g_gem_root, '/') = 0;
+	}
 	if (!src) {
 		if ((m = module_of(name)) < 0) {
 			fprintf(stderr, "gael: cannot open %s\n", name);
@@ -184,7 +345,31 @@ static int load(const char *name, const char *src, size_t len, int repl, int mod
 		if (!read_source(so)) return load_failed();
 		top = read_unit();
 		if (g_unit.nerrors) return load_failed();
-		m = next_use(top, so->name, &at);
+		if ((m = next_gem(top, so)) == -2) return load_failed();
+		if (m == -3) continue;
+		if (m >= 0) { /* a gem to load first, from its main file */
+			i32 g = m;
+			if (depth == MAX_USE_DEPTH) {
+				error_at(g_nodes[top].line, g_nodes[top].col, "gems nested deeper than %d", MAX_USE_DEPTH);
+				return load_failed();
+			}
+			if ((m = module_of(g_gems[g].file)) < 0) {
+				fprintf(stderr, "gael: cannot open %s\n", g_gems[g].file);
+				return load_failed();
+			}
+			g_gems[g].state = GEM_LOADING;
+			g_mods[m].state = 1;
+			g_mods[m].gem = g;
+			g_load[depth].name = g_mods[m].shown;
+			g_load[depth].src = 0;
+			g_load[depth].len = 0;
+			g_load[depth].mod = m;
+			g_load[depth].gem = g;
+			g_load[depth].main = 1;
+			depth++;
+			continue;
+		}
+		m = next_use(top, so->name, so->gem, &at);
 		if (m == -2) return load_failed();
 		if (m >= 0) {
 			if (g_mods[m].state == 1) {
@@ -196,15 +381,23 @@ static int load(const char *name, const char *src, size_t len, int repl, int mod
 				return load_failed();
 			}
 			g_mods[m].state = 1;
+			g_mods[m].gem = so->gem;
 			g_load[depth].name = g_mods[m].shown;
 			g_load[depth].src = 0;
 			g_load[depth].len = 0;
 			g_load[depth].mod = m;
+			g_load[depth].gem = so->gem;
+			g_load[depth].main = 0;
 			depth++;
 			continue;
 		}
+		g_unit_gem = so->gem;
+		g_unit_main = so->main;
 		entry = compile_unit(top, repl && depth == 1);
 		if (entry < 0) return load_failed();
+		g_unit_gem = 0;
+		g_unit_main = 0;
+		if (so->main) g_gems[so->gem].state = GEM_ON;
 		if (so->mod >= 0) g_mods[so->mod].state = 2;
 		if (mode == DIS) {
 			if (depth > 1) printf("; %s\n", so->name);
@@ -248,12 +441,12 @@ static long balance(const char *s)
  * the heap. What is left was kept alive by a cycle (a vec, map or pool that holds itself) or lost by a counting bug */
 static int leaks(void)
 {
-	static const char *const kinds[] = { "?", "string", "vec", "map", "pool" };
+	static const char *const kinds[] = { "?", "string", "vec", "map", "pool", "task" };
 	int k, any = 0;
 	if (!g_check || !leak_check()) return 0;
 	fflush(stdout);
 	fputs("gael: GAEL_CHECK: never freed:", stderr);
-	for (k = 1; k < 5; k++) {
+	for (k = 1; k < 6; k++) {
 		if (!g_objects[k]) continue;
 		fprintf(stderr, "%s %ld %s%s", any ? "," : "", (long)g_objects[k], kinds[k], g_objects[k] == 1 ? "" : "s");
 		any = 1;
@@ -343,13 +536,13 @@ static int repl(void)
 
 int main(int argc, char **argv)
 {
-	int st;
+	int st, k;
 	vm_init(getenv("GAEL_CHECK") && !strcmp(getenv("GAEL_CHECK"), "1")); /* the text arena first: compile_init writes to it */
 	compile_init();
 	if (argc == 1) return repl();
 	if (!strcmp(argv[1], "-h") || !strcmp(argv[1], "--help")) {
 		fputs(g_usage, stdout);
-		fputs(g_usage_env, stdout);
+		for (k = 0; g_usage_env[k]; k++) fputs(g_usage_env[k], stdout);
 		return 0;
 	}
 	if (argv[1][0] != '-') {
@@ -374,7 +567,7 @@ int main(int argc, char **argv)
 		if (!st) st = leaks();
 	} else {
 		fputs(g_usage, stderr);
-		fputs(g_usage_env, stderr);
+		for (k = 0; g_usage_env[k]; k++) fputs(g_usage_env[k], stderr);
 		return 2;
 	}
 	fflush(stdout);

@@ -5,7 +5,8 @@
 #   tests/errors/NAME.gael  every line of NAME.err must appear on stderr, exit 1; stdout must equal NAME.out if there is one
 #   (for both, NAME.env holds VAR=value words for its environment, like a smaller heap)
 #   tests/repl.in           the REPL's stdout must equal tests/repl.out, every line of tests/repl.err on stderr, and
-#                           what it saved to repldump.gael (its header lines aside) must equal tests/repl.dump
+#                           what it saved to repldump.gael (its header lines aside) must equal tests/repl.dump; then
+#                           the REPL with a main.gael, and with a gem from gael's folder turned on and off
 #   README.md               every "$ ./gael ARGS" example prints exactly the lines shown under it
 # Every run has GAEL_CHECK=1: freed memory is overwritten, so a stale read shows, and a program that ends normally
 # must have freed every string, vec and map it made.
@@ -94,6 +95,14 @@ for bin in "${builds[@]}"; do
 	printf 'greeting\n' | GAEL_HOME="$out/home-main-$b" "$bin" > "$out/stdout" 2>&1 || ok=0
 	[ "$(cat "$out/stdout")" = '=> hi there : string' ] || { ok=0; head -3 "$out/stdout"; }
 	check "$b repl with main.gael" "$ok"
+	mkdir -p "$out/home-gems-$b/gems" # a gem from gael's folder, turned on and off while the REPL runs
+	cp examples/gems/ecs-flat.gael "$out/home-gems-$b/gems/"
+	ok=1
+	printf '(enable ecs-flat)\n(ecs-name (ecs-spawn "x"))\n(disable ecs-flat)\n(ecs-name 0)\n(enable ecs-flat)\n(ecs-name 0)\n' |
+		GAEL_HOME="$out/home-gems-$b" "$bin" > "$out/stdout" 2> "$out/stderr" || ok=0
+	[ "$(cat "$out/stdout")" = $'=> x : string\n=> x : string' ] || { ok=0; head -3 "$out/stdout"; }
+	grep -q 'ecs-name is in gem ecs-flat, which is off' "$out/stderr" || { ok=0; head -3 "$out/stderr"; }
+	check "$b repl with gems" "$ok"
 	for ((k = 1; k <= readme; k++)); do
 		read -r -a args < "$out/readme-$k.args"
 		"$bin" "${args[@]}" > "$out/stdout" 2>&1

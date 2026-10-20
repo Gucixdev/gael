@@ -29,6 +29,7 @@ typedef struct {
 	const char *file;
 	u8 broken;    /* its declaration had an error (already reported): uses of it stay quiet */
 	i32 leaf_first, nleaf; /* the objects inside a value: g_leaves[leaf_first...] */
+	i32 gem;      /* the gem that declared it, 0 for the program and the built-in types */
 } TyInfo;
 
 typedef struct {
@@ -41,23 +42,23 @@ typedef struct {
 #define MAX_FIELDS 16384
 #define MAX_VARIANTS 16384
 static TyInfo g_tys[MAX_TYS] = {
-	{ "<error>", K_PRIM, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
-	{ "unit", K_PRIM, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
-	{ "int", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0 },
-	{ "float", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0 },
-	{ "bool", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0 },
-	{ "string", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1 },
-	{ "<none>", K_PRIM, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
-	{ "any value", K_PRIM, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
-	{ "i8", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0 },
-	{ "i16", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0 },
-	{ "i32", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0 },
-	{ "u8", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0 },
-	{ "u16", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0 },
-	{ "u32", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0 },
-	{ "u64", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0 },
-	{ "f32", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0 },
-	{ "NodePath", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0 } /* $Player/Sprite, the program's own text */
+	{ "<error>", K_PRIM, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+	{ "unit", K_PRIM, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+	{ "int", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0 },
+	{ "float", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0 },
+	{ "bool", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0 },
+	{ "string", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0 },
+	{ "<none>", K_PRIM, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+	{ "any value", K_PRIM, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+	{ "i8", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0 },
+	{ "i16", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0 },
+	{ "i32", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0 },
+	{ "u8", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0 },
+	{ "u16", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0 },
+	{ "u32", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0 },
+	{ "u64", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0 },
+	{ "f32", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0 },
+	{ "NodePath", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0 } /* $Player/Sprite, the program's own text */
 };
 static i32 g_ntys = T_USER;
 static Field g_fields[MAX_FIELDS];
@@ -102,6 +103,7 @@ typedef struct {
 	i32 entry, nslots, maxdepth, line;
 	const char *file;
 	i32 decl_unit, decl_node; /* the defn that declared it, so only that one compiles a body into it */
+	i32 gem;                  /* the gem it belongs to, 0 for the program */
 } Fn;
 
 typedef struct {
@@ -112,7 +114,29 @@ typedef struct {
 	const char *file;
 	u8 exported;        /* @export: an editor shows it and lets you change it */
 	const char *value;  /* the source of its value when that is a literal, for gael -x */
+	i32 gem;            /* the gem it belongs to, 0 for the program */
 } Global;
+
+/* Gems. A gem's main file starts with its manifest, (gem name :version "0.1" :requires (a b) :provides (c)
+ * :excludes (d)); the program turns gems on with (enable name...), which loads each one after what it requires (the
+ * loader in main.c). A gem's code uses only its own names and those of the gems it requires - by name, or through
+ * something they provide - checked at each use when compiling. Two gems on together may not provide the same thing,
+ * and neither may exclude the other. The program can use every gem that is on; (disable name) turns one off, and its
+ * names cannot be used again until (enable name). */
+#define MAX_GEMS 256
+#define MAX_GEM_LINKS 16
+enum { GEM_KNOWN = 1, GEM_LOADING, GEM_ON, GEM_OFF };
+typedef struct {
+	const char *name, *file, *version;
+	const char *requires[MAX_GEM_LINKS], *provides[MAX_GEM_LINKS], *excludes[MAX_GEM_LINKS];
+	i32 nrequires, nprovides, nexcludes;
+	u8 state;
+} Gem;
+static Gem g_gems[MAX_GEMS] = { { "the program", 0, 0, { 0 }, { 0 }, { 0 }, 0, 0, 0, GEM_ON } };
+static i32 g_ngems = 1;
+static int g_unit_main; /* the unit is a gem's main file: it starts with the manifest */
+
+static int gem_use(i32 n, i32 owner);
 
 typedef struct {
 	const char *name;
@@ -441,7 +465,7 @@ static const char *const g_reserved[] = {
 	"pop", "for", "use", ".", "map", "insert", "lookup", "has", "remove", "keys", "values", "chain", "pipe", "pipe-in",
 	"nand", "nor", "xor", "xnor", "bit-and", "bit-or", "bit-xor", "bit-not", "shl", "shr",
 	"pool", "spawn", "handle", "arena", "keep", "fn", "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64",
-	"defmacro", "...", "task", "async", "await", "sleep", "yield", "tasks-step", "tasks-run", "done?", "task-time"
+	"defmacro", "...", "gem", "enable", "disable", "task", "async", "await", "sleep", "yield", "tasks-step", "tasks-run", "done?", "task-time"
 };
 
 
@@ -711,6 +735,7 @@ static Ty parse_type(i32 root)
 				err_node(n, "unknown type " NAME_FMT, g_nodes[n].text);
 				return T_ERR;
 			}
+			if (t >= T_USER && !gem_use(n, g_tys[t].gem)) return T_ERR; /* the built-in types are everyone's */
 			res[nr++] = t;
 			ns--;
 			continue;
@@ -1171,6 +1196,7 @@ static int resolve_place(i32 n, Place *pl)
 		pl->at = g_locals[i].slot;
 		pl->type = g_locals[i].type;
 	} else if ((i = find_global(base)) >= 0) {
+		if (!gem_use(n, g_globals[i].gem)) return 0;
 		pl->global = 1;
 		pl->at = g_globals[i].cell;
 		pl->type = g_globals[i].type;
@@ -1302,6 +1328,7 @@ static o compile_atom(i32 n, Ty want)
 		base[dot - s] = 0;
 		t = find_named_type(base);
 		if (is_enum(t) && (v = find_variant(t, dot + 1, strlen(dot + 1))) >= 0) {
+			if (!gem_use(n, g_tys[t].gem)) { push_type(T_ERR); return; }
 			emit(OP_PUSH_K, v, 0, nd->line);
 			push_type(t);
 			return;
@@ -1317,6 +1344,7 @@ static o compile_atom(i32 n, Ty want)
 	}
 	t = find_named_type(s);
 	if ((r = find_fn(s)) >= 0) { /* one namespace: a function's name is a value too */
+		if (!gem_use(n, g_fns[r].gem)) { push_type(T_ERR); return; }
 		emit(OP_PUSH_K, r + 1, 0, nd->line);
 		push_type(intern_fn(g_fns[r].params, g_fns[r].nparams, g_fns[r].ret));
 		return;
@@ -1414,6 +1442,7 @@ static o start_list(Frame *f)
 			finish(T_ERR);
 			return;
 		}
+		if (!gem_use(h, g_fns[fi].gem)) { finish(T_ERR); return; }
 		f->node = call;
 		f->form = F_CALL;
 		f->a = fi;
@@ -1487,7 +1516,7 @@ static o start_list(Frame *f)
 			}
 		}
 		if ((fi = find_macro(s)) >= 0) { /* a macro: what it expands to is compiled in its place */
-			i32 x = macro_expand(fi, f->node);
+			i32 x = gem_use(head, g_macros[fi].gem) ? macro_expand(fi, f->node) : -1;
 			if (x < 0) { finish(T_ERR); return; }
 			f->node = x;
 			f->cur = -1;
@@ -1495,6 +1524,7 @@ static o start_list(Frame *f)
 			return;
 		}
 		if (is_struct(t = find_named_type(s))) {
+			if (!gem_use(head, g_tys[t].gem)) { finish(T_ERR); return; }
 			f->form = F_NEW;
 			f->a = t;
 			return;
@@ -1506,6 +1536,7 @@ static o start_list(Frame *f)
 			finish(T_ERR);
 			return;
 		}
+		if (!gem_use(head, g_fns[fi].gem)) { finish(T_ERR); return; }
 		f->form = F_CALL;
 		f->a = fi;
 	}
@@ -3202,6 +3233,7 @@ static Ty new_type(i32 name, u8 kind)
 	t->kind = kind;
 	t->line = g_nodes[name].line;
 	t->file = g_unit.file;
+	t->gem = g_unit_gem;
 	names_put(t->name)->type = g_ntys;
 	return (Ty)g_ntys++;
 }
@@ -3403,6 +3435,7 @@ static o declare_fn(i32 n, int repl)
 	fn.entry = -1;
 	fn.decl_unit = g_unit_id;
 	fn.decl_node = n;
+	fn.gem = g_unit_gem;
 	if ((fi = find_fn(g_nodes[name].text)) >= 0) {
 		Fn *old = &g_fns[fi];
 		if (!repl || old->nparams != fn.nparams || old->ret != fn.ret || memcmp(old->params, fn.params, fn.nparams * sizeof(Ty))) {
@@ -3509,6 +3542,7 @@ static o compile_def(i32 n, int repl, int exported)
 		if (g_nglobal_cells + cells(type) > MAX_GLOBAL_CELLS) die("globals too large (MAX_GLOBAL_CELLS)");
 		gi = g_nglobals++;
 		g_globals[gi].name = arena_strndup(&g_perm, s, g_nodes[name].len);
+		g_globals[gi].gem = g_unit_gem;
 		names_put(g_globals[gi].name)->global = gi;
 		g_globals[gi].type = type;
 		g_globals[gi].cell = g_nglobal_cells;
@@ -3521,6 +3555,177 @@ static o compile_def(i32 n, int repl, int exported)
 		g_globals[gi].value = arena_strndup(&g_perm, g_nodes[value].text, g_nodes[value].len);
 	emit_release(1, g_globals[gi].cell, type, g_nodes[name].line); /* the REPL's new value for it; a new global holds 0 */
 	emit_store(1, g_globals[gi].cell, type, g_nodes[name].line);
+}
+
+/* gem_find NAME: the gem of that name in the table, -1 when there is none */
+static i32 gem_find(const char *name)
+{
+	i32 i;
+	for (i = 1; i < g_ngems; i++) {
+		if (!strcmp(g_gems[i].name, name)) return i;
+	}
+	return -1;
+}
+
+/* gem_gives G WHAT: gem G is WHAT, or provides it */
+static int gem_gives(i32 g, const char *what)
+{
+	i32 k;
+	if (!strcmp(g_gems[g].name, what)) return 1;
+	for (k = 0; k < g_gems[g].nprovides; k++) {
+		if (!strcmp(g_gems[g].provides[k], what)) return 1;
+	}
+	return 0;
+}
+
+static int gem_is_on(i32 g) { return g_gems[g].state == GEM_ON || g_gems[g].state == GEM_LOADING; }
+
+/* gem_sees FROM TO: the code of gem FROM may use the names of gem TO */
+static int gem_sees(i32 from, i32 to)
+{
+	i32 k;
+	if (from == to || from == 0) return 1;
+	if (to == 0) return 0;
+	for (k = 0; k < g_gems[from].nrequires; k++) {
+		if (gem_gives(to, g_gems[from].requires[k])) return 1;
+	}
+	return 0;
+}
+
+/* gem_use N OWNER: N names something of gem OWNER; 0 after an error when the unit being compiled may not use it */
+static int gem_use(i32 n, i32 owner)
+{
+	const char *s = g_nodes[n].text;
+	if (owner && g_gems[owner].state == GEM_OFF) {
+		err_node(n, NAME_FMT " is in gem %s, which is off; (enable %s) turns it on", s, g_gems[owner].name, g_gems[owner].name);
+		return 0;
+	}
+	if (gem_sees(g_unit_gem, owner)) return 1;
+	if (!owner)
+		err_node(n, "gem %.64s uses " NAME_FMT ", a name of the program; a gem uses its own names and those of the gems it requires",
+		         g_gems[g_unit_gem].name, s);
+	else
+		err_node(n, "gem %.64s uses " NAME_FMT " of gem %.64s, which it does not require; add %.64s to its :requires",
+		         g_gems[g_unit_gem].name, s, g_gems[owner].name, g_gems[owner].name);
+	return 0;
+}
+
+/* gem_manifest N NAME G: the manifest form N of gem NAME, (gem NAME :version "1.0" :requires (...) :provides (...)
+ * :excludes (...)), into G; 0 after an error it reported */
+static int gem_manifest(i32 n, const char *name, Gem *g)
+{
+	i32 x = next_of(first_of(n)), key, val, it;
+	memset(g, 0, sizeof(*g));
+	if (!head_is(n, "gem")) {
+		err_node(n < 0 ? 0 : n, "a gem's main file starts with its manifest: (gem %.64s :requires (...))", name);
+		return 0;
+	}
+	if (!is_sym(x) || strcmp(g_nodes[x].text, name)) {
+		err_node(x < 0 ? n : x, "this file is gem %.64s, so its manifest starts (gem %.64s", name, name);
+		return 0;
+	}
+	g->name = arena_strndup(&g_perm, name, strlen(name));
+	for (key = next_of(x); key >= 0; key = next_of(val)) {
+		const char *k = g_nodes[key].text;
+		const char **list;
+		i32 *count;
+		val = next_of(key);
+		if (g_nodes[key].kind != N_KEY || val < 0) {
+			err_node(key, "a manifest is (gem name :key value ...); the keys are :version, :requires, :provides and :excludes");
+			return 0;
+		}
+		if (!strcmp(k, ":version")) {
+			if (g_nodes[val].kind != N_STR) { err_node(val, ":version is a string, like \"0.1.0\""); return 0; }
+			g->version = arena_strndup(&g_perm, g_nodes[val].text, g_nodes[val].len);
+			continue;
+		}
+		if (!strcmp(k, ":requires")) { list = g->requires; count = &g->nrequires; }
+		else if (!strcmp(k, ":provides")) { list = g->provides; count = &g->nprovides; }
+		else if (!strcmp(k, ":excludes")) { list = g->excludes; count = &g->nexcludes; }
+		else {
+			err_node(key, "unknown manifest key " NAME_FMT "; the keys are :version, :requires, :provides and :excludes", k);
+			return 0;
+		}
+		if (g_nodes[val].kind != N_LIST) { err_node(val, NAME_FMT " takes a list of names, like (ecs debug-draw)", k); return 0; }
+		for (it = first_of(val); it >= 0; it = next_of(it)) {
+			if (!is_sym(it)) { err_node(it, "a gem or what one provides is named by a symbol, like ecs"); return 0; }
+			if (*count == MAX_GEM_LINKS) { err_node(it, "at most %d names in " NAME_FMT, MAX_GEM_LINKS, k); return 0; }
+			list[(*count)++] = arena_strndup(&g_perm, g_nodes[it].text, g_nodes[it].len);
+		}
+	}
+	return 1;
+}
+
+/* gem_clash G: why gem G cannot be on with the gems on now - one of them provides what it provides, or one excludes
+ * the other - into a message; 0 when nothing stands in its way */
+static const char *gem_clash(i32 g)
+{
+	static char msg[300];
+	i32 h, k, j;
+	for (h = 1; h < g_ngems; h++) {
+		if (h == g || !gem_is_on(h)) continue;
+		for (k = -1; k < g_gems[g].nprovides; k++) {
+			const char *what = k < 0 ? g_gems[g].name : g_gems[g].provides[k];
+			if (gem_gives(h, what)) {
+				sprintf(msg, "gems %.60s and %.60s both provide %.60s; turn on one of them", g_gems[h].name, g_gems[g].name, what);
+				return msg;
+			}
+		}
+		for (j = 0; j < g_gems[g].nexcludes; j++) {
+			if (gem_gives(h, g_gems[g].excludes[j])) {
+				sprintf(msg, "gem %.60s excludes %.60s, and gem %.60s is on", g_gems[g].name, g_gems[g].excludes[j], g_gems[h].name);
+				return msg;
+			}
+		}
+		for (j = 0; j < g_gems[h].nexcludes; j++) {
+			if (gem_gives(g, g_gems[h].excludes[j])) {
+				sprintf(msg, "gem %.60s, which is on, excludes %.60s", g_gems[h].name, g_gems[h].excludes[j]);
+				return msg;
+			}
+		}
+	}
+	return 0;
+}
+
+/* gem_needed G: a gem that is on and needs G (requires something G provides that no other gem on provides); -1 */
+static i32 gem_needed(i32 g)
+{
+	i32 h, k, p;
+	for (h = 1; h < g_ngems; h++) {
+		if (h == g || !gem_is_on(h)) continue;
+		for (k = 0; k < g_gems[h].nrequires; k++) {
+			const char *what = g_gems[h].requires[k];
+			if (!gem_gives(g, what)) continue;
+			for (p = 1; p < g_ngems && (p == g || !gem_is_on(p) || !gem_gives(p, what)); p++) {}
+			if (p == g_ngems) return h;
+		}
+	}
+	return -1;
+}
+
+/* gem_switch N ON: (enable name...) or (disable name...) in the program; the loader has loaded the gems already */
+static o gem_switch(i32 n, int on)
+{
+	i32 x, g, h;
+	const char *why;
+	if (g_unit_gem) {
+		err_node(n, "a gem says what it needs in its manifest, with :requires; (%s ...) is for the program", on ? "enable" : "disable");
+		return;
+	}
+	for (x = next_of(first_of(n)); x >= 0; x = next_of(x)) {
+		if (!is_sym(x) || (g = gem_find(g_nodes[x].text)) < 0 || g_gems[g].state < GEM_ON) {
+			if (!is_sym(x)) err_node(x, "a gem is named by a symbol: (%s ecs)", on ? "enable" : "disable");
+			else if (!on) err_node(x, "there is no gem " NAME_FMT " on", g_nodes[x].text);
+			continue; /* enable: the loader said why */
+		}
+		if (on && g_gems[g].state == GEM_OFF) {
+			if ((why = gem_clash(g)) != 0) err_node(x, "%s", why);
+			else g_gems[g].state = GEM_ON;
+		} else if (!on && g_gems[g].state == GEM_ON) {
+			if ((h = gem_needed(g)) >= 0) err_node(x, "gem %.64s requires " NAME_FMT "; turn it off first", g_gems[h].name, g_nodes[x].text);
+			else g_gems[g].state = GEM_OFF;
+		}
+	}
 }
 
 /* define_macro N REPL: (defmacro name rule...) at the top level; its name must be free, but the REPL may define a macro
@@ -3560,7 +3765,7 @@ static i32 expand_top(i32 top, int repl)
 			g_nodes[n].ival = 1;
 		}
 		if ((mi = find_macro(g_nodes[head].text)) < 0) { prev = n; n = next; continue; }
-		x = macro_expand(mi, n);
+		x = gem_use(head, g_macros[mi].gem) ? macro_expand(mi, n) : -1;
 		if (x >= 0 && head_is(x, "do")) { /* spliced: its elements take its place */
 			last = -1;
 			for (head = next_of(first_of(x)); head >= 0; head = next_of(head)) last = head;
@@ -3654,6 +3859,14 @@ static i32 compile_unit(i32 top, int repl)
 		if (head_is(n, "defn")) { compile_fn(n); continue; }
 		if (head_is(n, "def")) { compile_def(n, repl, exported); exported = 0; continue; }
 		if (head_is(n, "struct") || head_is(n, "enum") || head_is(n, "defmacro")) continue;
+		if (head_is(n, "gem")) { /* the loader read it */
+			if (!g_unit_main || n != top) err_node(n, "a (gem ...) manifest is the first form of a gem's main file");
+			continue;
+		}
+		if (head_is(n, "enable") || head_is(n, "disable")) {
+			gem_switch(n, head_is(n, "enable"));
+			continue;
+		}
 		if (head_is(n, "use")) { /* the loader compiled the file already; here only its shape is checked */
 			i32 arg = next_of(first_of(n));
 			if (arg < 0 || g_nodes[arg].kind != N_STR || next_of(arg) >= 0) err_node(n, "use takes one file name: (use \"lib.gael\")");
