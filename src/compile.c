@@ -438,28 +438,20 @@ static const char *const g_reserved[] = {
 	"defmacro", "..."
 };
 
-static int is_builtin(const char *s);
 
 static int is_reserved(const char *s)
 {
-	size_t i;
-	for (i = 0; i < GAEL_COUNT(g_reserved); i++) {
-		if (!strcmp(s, g_reserved[i])) return 1;
-	}
-	return is_builtin(s);
+	const NameSlot *sl = names_get(s);
+	return sl && sl->reserved;
 }
 
 /* find_named_type NAME: a built-in type, a struct or an enum by name; T_NONE when there is none */
 static Ty find_named_type(const char *s)
 {
-	i32 i;
+	const NameSlot *sl = names_get(s);
 	if (!strcmp(s, "i64")) return T_INT;
 	if (!strcmp(s, "f64")) return T_FLOAT;
-	for (i = T_UNIT; i < g_ntys; i++) {
-		if (i == T_NONE || i == T_ANY || g_tys[i].kind >= K_OPTION) continue;
-		if (!strcmp(g_tys[i].name, s)) return (Ty)i;
-	}
-	return T_NONE;
+	return sl && sl->type >= 0 ? (Ty)sl->type : (Ty)T_NONE;
 }
 
 /* add_leaf LEAF SHIFT GUARD: a leaf of a type inside the one being made, SHIFT cells further on; with GUARD it sits in
@@ -585,10 +577,13 @@ static Ty intern_fn(const Ty *params, i32 n, Ty ret)
 }
 
 /* compile_init: what every program starts with */
+static o names_rebuild(void);
+
 static o compile_init(void)
 {
 	text_init();
 	g_vec_str = intern_wrap(K_VEC, T_STR);
+	names_rebuild();
 }
 
 /* Builtins with a fixed signature. Argument and result types are letters: i int, f float, b bool, s string, u unit,
@@ -652,15 +647,6 @@ static i32 builtin_effect(Op op)
 		d = cells(code_type(g_builtins[i].ret));
 		for (a = g_builtins[i].args; *a; a++) d -= *a == 'x' ? 1 : cells(code_type(*a));
 		return d;
-	}
-	return 0;
-}
-
-static int is_builtin(const char *s)
-{
-	size_t i;
-	for (i = 0; i < GAEL_COUNT(g_builtins); i++) {
-		if (!strcmp(s, g_builtins[i].name)) return 1;
 	}
 	return 0;
 }
@@ -844,20 +830,34 @@ static i32 find_local(const char *name, u32 stamp)
 
 static i32 find_global(const char *name)
 {
-	i32 i;
-	for (i = 0; i < g_nglobals; i++) {
-		if (!strcmp(g_globals[i].name, name)) return i;
-	}
-	return -1;
+	const NameSlot *sl = names_get(name);
+	return sl ? sl->global : -1;
 }
 
 static i32 find_fn(const char *name)
 {
+	const NameSlot *sl = names_get(name);
+	return sl ? sl->fn : -1;
+}
+
+/* names_rebuild: the name index from the tables - at the start, and after a failed REPL unit took names back. A
+ * fn's lambdas (named fn@line:col) are not looked up by name. Later entries win, so the REPL's newest macro does. */
+static o names_rebuild(void)
+{
+	size_t k;
 	i32 i;
-	for (i = 0; i < g_nfns; i++) {
-		if (!strcmp(g_fns[i].name, name)) return i;
+	names_clear();
+	for (k = 0; k < GAEL_COUNT(g_reserved); k++) names_put(g_reserved[k])->reserved = 1;
+	for (k = 0; k < GAEL_COUNT(g_builtins); k++) names_put(g_builtins[k].name)->reserved = 1;
+	for (i = T_UNIT; i < g_ntys; i++) {
+		if (i == T_NONE || i == T_ANY || g_tys[i].kind >= K_OPTION) continue;
+		names_put(g_tys[i].name)->type = i;
 	}
-	return -1;
+	for (i = 0; i < g_nfns; i++) {
+		if (strncmp(g_fns[i].name, "fn@", 3)) names_put(g_fns[i].name)->fn = i;
+	}
+	for (i = 0; i < g_nglobals; i++) names_put(g_globals[i].name)->global = i;
+	for (i = 0; i < g_nmacros; i++) names_put(g_macros[i].name)->macro = i;
 }
 
 static const Field *find_field(Ty st, const char *name, size_t len)
@@ -3123,6 +3123,7 @@ static Ty new_type(i32 name, u8 kind)
 	t->kind = kind;
 	t->line = g_nodes[name].line;
 	t->file = g_unit.file;
+	names_put(t->name)->type = g_ntys;
 	return (Ty)g_ntys++;
 }
 
@@ -3339,6 +3340,7 @@ static o declare_fn(i32 n, int repl)
 	}
 	if (g_nfns == MAX_FNS) die("too many functions");
 	fn.name = arena_strndup(&g_perm, g_nodes[name].text, g_nodes[name].len);
+	names_put(fn.name)->fn = g_nfns;
 	g_fns[g_nfns++] = fn;
 }
 
@@ -3428,6 +3430,7 @@ static o compile_def(i32 n, int repl, int exported)
 		if (g_nglobal_cells + cells(type) > MAX_GLOBAL_CELLS) die("globals too large (MAX_GLOBAL_CELLS)");
 		gi = g_nglobals++;
 		g_globals[gi].name = arena_strndup(&g_perm, s, g_nodes[name].len);
+		names_put(g_globals[gi].name)->global = gi;
 		g_globals[gi].type = type;
 		g_globals[gi].cell = g_nglobal_cells;
 		g_globals[gi].line = g_nodes[name].line;
@@ -3608,6 +3611,7 @@ static i32 compile_unit(i32 top, int repl)
 	g_nrules = g_snap.nrules;
 	g_nmnodes = g_snap.nmnodes;
 	g_mtext.used = g_snap.mtext;
+	names_rebuild();
 	for (i = 0; i < g_nfns; i++) {
 		g_fns[i].entry = g_snap_entry[i];
 		g_fns[i].nslots = g_snap_slots[i];

@@ -24,6 +24,7 @@
 #include <time.h>
 #include "ops.h"
 #include "read.c"
+#include "names.c"
 #include "macro.c"
 #include "compile.c"
 #include "vm.c"

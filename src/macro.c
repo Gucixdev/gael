@@ -94,11 +94,8 @@ static i64 bit(i32 v) { return (i64)1 << v; }
 /* find_macro NAME: the macro of that name, the newest one when the REPL defined it again; -1 when there is none */
 static i32 find_macro(const char *name)
 {
-	i32 i;
-	for (i = g_nmacros - 1; i >= 0; i--) {
-		if (!strcmp(g_macros[i].name, name)) return i;
-	}
-	return -1;
+	const NameSlot *sl = names_get(name);
+	return sl ? sl->macro : -1;
 }
 
 /* mcopy N: the unit's form N, everything in it and its text, copied into the macro table */
@@ -390,6 +387,7 @@ static int macro_define(i32 n)
 	g_macros[g_nmacros].nrules = k;
 	g_macros[g_nmacros].file = g_unit.file;
 	g_macros[g_nmacros].line = g_nodes[n].line;
+	names_put(g_macros[g_nmacros].name)->macro = g_nmacros;
 	g_nmacros++;
 	return 1;
 }

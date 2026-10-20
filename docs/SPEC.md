@@ -344,11 +344,14 @@ Potem: makra i moduły (0.2), manifest i resolver gemów (0.3), bufor i okno (0.
   (żadna reguła nie pasuje - z listą wzorców, różne długości pod jednym `...`, makro rozwijające się w nieskończoność)
   w linii użycia. Analiza pożyczania operandów traktuje użycie makra jak możliwy `set`, bo `set` może być w środku
   (test pokazał zły wynik bez tego). Koszt: 2000 funkcji z `cond` na 4 gałęzie (8000 rozwinięć) kompiluje się w
-  ~30 ms wobec ~18 ms z ręcznymi `if`. Przy okazji wyszło, że nazwy są szukane liniowo: 1000/2000/4000 funkcji to
-  ~11/24/78 ms kompilacji - do naprawy tablicą haszującą.
-- **Następne, po kolei:** nazwy w tablicach haszujących (szybki start przy dużych programach), traits, tryb wydania
-  aren (po pomiarze), domknięcia, manifest gemów (ładowanie tylko włączonych), bufor i okno. Numery wersji przesuwają
-  się względem planu wyżej.
+  ~30 ms wobec ~18 ms z ręcznymi `if` (po indeksie nazw niżej: ~21 i ~11 ms).
+- **Indeks nazw (2026-10-20):** nazwy górnego poziomu (funkcje, globalne, struktury i enumy, makra) i nazwy
+  wbudowane są w jednej tablicy haszującej (`src/names.c`, FNV-1a, adresowanie otwarte), bo dzielą jedną przestrzeń
+  nazw. Wcześniej każde szukanie szło po całej tabeli i kompilacja rosła z kwadratem liczby funkcji: 1000/2000/4000
+  funkcji kompilowało się w ~11/24/78 ms, teraz ~7/11/17 ms (z ~2 ms startu procesu; callgrind: 689 mln instrukcji
+  → 100 mln). Nieudana jednostka REPL-a, która zabiera nazwy, odbudowuje indeks z tabel.
+- **Następne, po kolei:** traits, tryb wydania aren (po pomiarze), domknięcia, manifest gemów (ładowanie tylko
+  włączonych), bufor i okno. Numery wersji przesuwają się względem planu wyżej.
 
 ## Notatki → stan
 

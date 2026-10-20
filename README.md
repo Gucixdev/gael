@@ -312,6 +312,8 @@ tests/errors/div-zero.gael:1: runtime error: division by zero
 - Macros (`src/macro.c`) are checked when defined, kept in a table of their own (a unit's nodes are gone when the next
   one is read) and matched and copied with explicit stacks. Hygiene is a stamp: each symbol a template brings in
   carries the stamp of its expansion, and the compiler finds a local by its name and that stamp.
+- The top level's names (functions, globals, types, macros) and the built-in ones are in one hash index
+  (`src/names.c`), so compiling grows with the size of the program, not with its square.
 - Every instruction is listed once in `src/ops.h` (an x-macro); the opcode enum, the disassembler's names and the
   operand counts come from that list.
 - The VM's cells carry no type tag: the compiler has already proved the types, so `ADD_I` reads two ints. A value
