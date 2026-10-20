@@ -1,0 +1,3 @@
+tests/errors/annotations.gael:1:1: error: unknown annotation @exprot; gael knows @export
+tests/errors/annotations.gael:2:9: error: @export goes before a def, like @export (def speed : float 10.0)
+tests/errors/annotations.gael:4:8: error: @export is an annotation: it goes before a top-level def, like @export (def speed : float 10.0)

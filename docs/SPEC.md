@@ -300,9 +300,13 @@ Potem: makra i moduły (0.2), manifest i resolver gemów (0.3), bufor i okno (0.
   `(env "HOME")`.
 - **`$` jak w GDScripcie (decyzja 2026-10-20):** `$Gracz/Sprite` to wartość typu `NodePath` (stała programu,
   porównywalna, klucz mapy, drukuje się jako `$Gracz/Sprite`). Węzeł, na który wskazuje, przyjdzie z drzewem sceny.
-- **Następne, po kolei:** adnotacje `@export` (przed formą, nieznana to błąd), wywołania ogonowe, makra higieniczne,
-  traits, tryb wydania aren (po pomiarze), manifest gemów, bufor i okno. Numery wersji przesuwają się względem planu
-  wyżej.
+- **Adnotacje `@` (decyzja 2026-10-20):** stoją przed formą, jak w GDScripcie: `@export (def speed : float 10.0)`
+  oznacza globalną zmienną dla inspektora edytora; nieznana adnotacja albo `@export` przed czymś innym niż `def` to
+  błąd kompilacji. `gael -x PLIK` wypisuje eksporty (`nazwa : typ = wartość`, wartość gdy jest literałem) - tekstowy
+  inspektor; edytor weźmie tę samą tabelę. Później: `@export` na polach struktur i nodach, adnotacje z argumentami
+  (`(@export-range 0 100)`), `@onready` i `@tool` z drzewem sceny.
+- **Następne, po kolei:** wywołania ogonowe, makra higieniczne, traits, tryb wydania aren (po pomiarze), manifest
+  gemów, bufor i okno. Numery wersji przesuwają się względem planu wyżej.
 
 ## Notatki → stan
 
@@ -331,7 +335,7 @@ Każdy punkt z notatek o godot-rs i gaelu, z tym, co się z nim stało. ✓ zrob
 - ✓ x-macro dla opkodów (`src/ops.h`).
 - ○ async/await, korutyny, fibery, joby (fine-grained, master/slave) - gemy.
 - ○ typy deltatime, tick, tag, uuid; ○ typy SIMD i cache-friendly; ○ kluczowa matematyka z czasem do rdzenia w C.
-- ○ lazy export (jak `@export`).
+- ✓ `@export` przed `def` jak w GDScripcie, `gael -x` jako tekstowy inspektor; ○ „lazy export” (eksport bez pisania typu), adnotacje na polach i nodach.
 - ✓ moduły (`use`); ○ gemy rozszerzają typy i pętle, rdzeń daje podstawy.
 - ○ inspiracje TempleOS (shell = REPL, typy holyc już są w C).
 - zasady: im mniej logiki w C, tym więcej w gaelu; single-header libs; rdzeń w C może się rozwijać z własną

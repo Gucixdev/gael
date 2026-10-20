@@ -5,6 +5,7 @@
  *   gael -c FILE           only compile: report every type error, run nothing
  *   gael -d FILE           compile and print the bytecode
  *   gael -e CODE ARGS...   compile and run CODE
+ *   gael -x FILE           compile FILE and list what it exports (@export), the way an editor's inspector shows it
  *   gael -h                this help
  *
  * gael's own folder is $GAEL_HOME or ~/.gael (like ~/.emacs.d). The REPL first runs main.gael from there when there is
@@ -32,6 +33,7 @@ static const char g_usage[] =
 	"       gael -c FILE           only compile: report every type error, run nothing\n"
 	"       gael -d FILE           compile and print the bytecode\n"
 	"       gael -e CODE ARGS...   compile and run CODE\n"
+	"       gael -x FILE           compile FILE and list its @export globals: name : type = value\n"
 	"       gael -h                this help\n";
 static const char g_usage_env[] =
 	"GAEL_HEAP=SIZE  the heap for strings, vecs, maps and pools, and as much again for arenas and for the program's\n"
@@ -354,6 +356,16 @@ int main(int argc, char **argv)
 		if (!st) st = leaks();
 	} else if (argc == 3 && (!strcmp(argv[1], "-c") || !strcmp(argv[1], "-d"))) {
 		st = load(argv[2], 0, 0, 0, argv[1][1] == 'c' ? CHECK : DIS);
+	} else if (argc == 3 && !strcmp(argv[1], "-x")) { /* the inspector, as text */
+		i32 i;
+		st = load(argv[2], 0, 0, 0, CHECK);
+		for (i = 0; !st && i < g_nglobals; i++) {
+			const Global *gl = &g_globals[i];
+			if (!gl->exported) continue;
+			printf("%s : %s", gl->name, tn(gl->type));
+			if (gl->value) printf(gl->type == T_STR ? " = \"%s\"" : " = %s", gl->value);
+			printf("\t%s:%ld\n", gl->file, (long)gl->line);
+		}
 	} else if (argc >= 3 && !strcmp(argv[1], "-e")) {
 		args_init(argc - 3, argv + 3);
 		st = load("<-e>", argv[2], strlen(argv[2]), 0, RUN);

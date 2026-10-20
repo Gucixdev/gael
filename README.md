@@ -29,6 +29,7 @@ gael FILE ARGS...      compile FILE; when there are no errors, run it; (args) gi
 gael -c FILE           only compile: report every type error, run nothing
 gael -d FILE           compile and print the bytecode
 gael -e CODE ARGS...   compile and run CODE
+gael -x FILE           compile FILE and list its @export globals: name : type = value
 gael -h                this help
 GAEL_HEAP=SIZE  the heap for strings, vecs, maps and pools, and as much again for arenas and for the program's
                 own text (default 1G; K, M, G; the system gives pages only where they are written)
@@ -253,6 +254,18 @@ still held (put in a global, say, or in a cycle), that is a runtime error at the
 reference. Where the compiler can see a value made in an arena go somewhere that outlives it (`set` or `push` to a
 variable from outside, or the arena's own value), that is a compile error. `keep` is the way out: it copies the value.
 
+`@export` before a `def` marks a global the way GDScript's `@export` marks a variable, for an editor's inspector to
+show and change; an annotation gael does not know is a compile error. `gael -x` lists them, with the value when it is
+written as a literal:
+
+```
+$ ./gael -x examples/export.gael
+speed : float = 10.0	examples/export.gael:3
+player-name : string = "Kacper"	examples/export.gael:4
+lives : u8 = 3	examples/export.gael:5
+spawn-point : NodePath = $Level/Start	examples/export.gael:7
+```
+
 A runtime error stops the program and names the line it happened on:
 
 ```
@@ -292,8 +305,8 @@ tests/errors/div-zero.gael:1: runtime error: division by zero
 
 ## Status
 
-Version 0.3, tested on Linux x86-64 with gcc 13.3 and clang 18.1. `./test` passes 88 checks per build (27 examples,
-54 compile and runtime error cases, two REPL sessions, five README examples) with gcc, clang and gcc with both
+Version 0.3, tested on Linux x86-64 with gcc 13.3 and clang 18.1. `./test` passes 91 checks per build (28 examples,
+55 compile and runtime error cases, two REPL sessions, six README examples) with gcc, clang and gcc with both
 sanitizers, every run with `GAEL_CHECK=1`. GitHub Actions runs shellcheck on the scripts and `./test` on every push
 (`.github/workflows/test.yml`, ubuntu-24.04).
 

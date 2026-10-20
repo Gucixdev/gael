@@ -110,6 +110,8 @@ typedef struct {
 	i32 cell; /* the first of its cells in the global area */
 	i32 line;
 	const char *file;
+	u8 exported;        /* @export: an editor shows it and lets you change it */
+	const char *value;  /* the source of its value when that is a literal, for gael -x */
 } Global;
 
 typedef struct {
@@ -1218,6 +1220,11 @@ static o compile_atom(i32 n, Ty want)
 	}
 	if (!strcmp(s, "_")) {
 		err_node(n, "_ means \"anything\" only as a match pattern");
+		push_type(T_ERR);
+		return;
+	}
+	if (s[0] == '@') {
+		err_node(n, NAME_FMT " is an annotation: it goes before a top-level def, like @export (def speed : float 10.0)", s);
 		push_type(T_ERR);
 		return;
 	}
@@ -3317,7 +3324,7 @@ static o compile_fn(i32 n)
 }
 
 /* compile_def DEF REPL: (def name value) or (def name : type value) - a global */
-static o compile_def(i32 n, int repl)
+static o compile_def(i32 n, int repl, int exported)
 {
 	i32 name = next_of(first_of(n)), x, value, gi;
 	Ty declared = T_NONE, t, type;
@@ -3358,6 +3365,9 @@ static o compile_def(i32 n, int repl)
 		g_globals[gi].file = g_unit.file;
 		g_nglobal_cells += cells(type);
 	}
+	g_globals[gi].exported |= (u8)exported;
+	if (g_nodes[value].kind != N_LIST && g_nodes[value].kind != N_KEY) /* a literal, or a name: shown by gael -x */
+		g_globals[gi].value = arena_strndup(&g_perm, g_nodes[value].text, g_nodes[value].len);
 	emit_release(1, g_globals[gi].cell, type, g_nodes[name].line); /* the REPL's new value for it; a new global holds 0 */
 	emit_store(1, g_globals[gi].cell, type, g_nodes[name].line);
 }
@@ -3375,6 +3385,7 @@ static i32 g_snap_entry[MAX_FNS], g_snap_slots[MAX_FNS], g_snap_depth[MAX_FNS];
 static i32 compile_unit(i32 top, int repl)
 {
 	i32 n, entry, i;
+	int exported = 0; /* an @export was just read */
 	Ty t;
 	g_snap.ncode = g_ncode;
 	g_snap.nints = g_nints;
@@ -3414,8 +3425,14 @@ static i32 compile_unit(i32 top, int repl)
 	entry = emit(OP_ENTER, 0, 0, top >= 0 ? g_nodes[top].line : 1);
 	for (n = top; n >= 0; n = next_of(n)) {
 		int shown = repl && next_of(n) < 0;
+		if (is_sym(n) && g_nodes[n].text[0] == '@') { /* an annotation, for the form after it */
+			if (strcmp(g_nodes[n].text, "@export")) err_node(n, "unknown annotation " NAME_FMT "; gael knows @export", g_nodes[n].text);
+			else if (!head_is(next_of(n), "def")) err_node(next_of(n) < 0 ? n : next_of(n), "@export goes before a def, like @export (def speed : float 10.0)");
+			else exported = 1;
+			continue;
+		}
 		if (head_is(n, "defn")) { compile_fn(n); continue; }
-		if (head_is(n, "def")) { compile_def(n, repl); continue; }
+		if (head_is(n, "def")) { compile_def(n, repl, exported); exported = 0; continue; }
 		if (head_is(n, "struct") || head_is(n, "enum")) continue;
 		if (head_is(n, "use")) { /* the loader compiled the file already; here only its shape is checked */
 			i32 arg = next_of(first_of(n));

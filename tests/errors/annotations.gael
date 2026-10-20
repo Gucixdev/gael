@@ -1,0 +1,4 @@
+@exprot (def a 1)
+@export (defn f () 1)
+@export
+(def b @export)
