@@ -107,6 +107,7 @@ typedef struct {
 	const char *file;
 	i32 decl_unit, decl_node; /* the defn that declared it, so only that one compiles a body into it */
 	i32 gem;                  /* the gem it belongs to, 0 for the program */
+	u8 env;                   /* made by (fn ...): it takes its closure (or 0) in slot 0, before the arguments */
 } Fn;
 
 typedef struct {
@@ -140,6 +141,8 @@ static i32 g_ngems = 1;
 static int g_unit_main; /* the unit is a gem's main file: it starts with the manifest */
 
 static int gem_use(i32 n, i32 owner);
+
+enum { AT_LOCAL, AT_GLOBAL, AT_ENV }; /* a slot of the frame, a global, a value the running fn's closure keeps */
 
 typedef struct {
 	const char *name;
@@ -338,6 +341,10 @@ static i32 effect(Op op, i32 a, i32 b)
 	case OP_ARENA_BEGIN: case OP_ARENA_END: case OP_KEEP: return 0;
 	case OP_SHPIPE: return 1 - a;
 	case OP_ASYNC: return 1 - g_fns[a].pcells;
+	case OP_CLOSURE: return 1 - cells((Ty)b);
+	case OP_ENV_LOAD: return b;
+	case OP_ENV_STORE: return -b;
+	case OP_ENV_RELEASE: return 0;
 	case OP_AWAIT: return cells(elem_of((Ty)a)) - 1;
 	case OP_SLEEP: return -1;
 	case OP_YIELD: case OP_TASKS_STEP: case OP_TASKS_RUN: case OP_TASK_DONE: case OP_TASK_END: return 0;
@@ -361,31 +368,36 @@ static i32 emit(Op op, i32 a, i32 b, i32 line)
 static o patch(i32 at, i32 target) { g_code[at].a = target; }
 
 /* emit_load GLOBAL AT TYPE LINE: push the value of TYPE kept at slot (or global cell) AT */
-static o emit_load(int global, i32 at, Ty t, i32 line)
+/* WHERE is AT_LOCAL (AT a slot of the frame), AT_GLOBAL (a cell of the globals) or AT_ENV (an offset in the running
+ * fn's closure, whose handle is in slot 0) */
+static o emit_load(int where, i32 at, Ty t, i32 line)
 {
 	i32 n = cells(t);
-	if (n == 1) emit(global ? OP_LOAD_G : OP_LOAD_L, at, 0, line);
-	else if (n > 1) emit(global ? OP_LOADN_G : OP_LOADN_L, at, n, line);
+	if (where == AT_ENV) { if (n) emit(OP_ENV_LOAD, at, n, line); }
+	else if (n == 1) emit(where ? OP_LOAD_G : OP_LOAD_L, at, 0, line);
+	else if (n > 1) emit(where ? OP_LOADN_G : OP_LOADN_L, at, n, line);
 }
 
-static o emit_store(int global, i32 at, Ty t, i32 line)
+static o emit_store(int where, i32 at, Ty t, i32 line)
 {
 	i32 n = cells(t);
-	if (n == 1) emit(global ? OP_STORE_G : OP_STORE_L, at, 0, line);
-	else if (n > 1) emit(global ? OP_STOREN_G : OP_STOREN_L, at, n, line);
+	if (where == AT_ENV) { if (n) emit(OP_ENV_STORE, at, n, line); }
+	else if (n == 1) emit(where ? OP_STORE_G : OP_STORE_L, at, 0, line);
+	else if (n > 1) emit(where ? OP_STOREN_G : OP_STOREN_L, at, n, line);
 }
 
-/* emit_copy GLOBAL AT TYPE LINE: push a copy of the value kept at AT; the objects in it get one owner more */
-static o emit_copy(int global, i32 at, Ty t, i32 line)
+/* emit_copy WHERE AT TYPE LINE: push a copy of the value kept at AT; the objects in it get one owner more */
+static o emit_copy(int where, i32 at, Ty t, i32 line)
 {
-	emit_load(global, at, t, line);
+	emit_load(where, at, t, line);
 	if (has_refs(t)) emit(OP_RETAIN, t, 0, line);
 }
 
-/* emit_release GLOBAL AT TYPE LINE: the value kept at AT dies; the objects in it lose an owner */
-static o emit_release(int global, i32 at, Ty t, i32 line)
+/* emit_release WHERE AT TYPE LINE: the value kept at AT dies; the objects in it lose an owner */
+static o emit_release(int where, i32 at, Ty t, i32 line)
 {
-	if (has_refs(t)) emit(global ? OP_RELEASE_G : OP_RELEASE_L, at, t, line);
+	if (!has_refs(t)) return;
+	emit(where == AT_ENV ? OP_ENV_RELEASE : where ? OP_RELEASE_G : OP_RELEASE_L, at, t, line);
 }
 
 /* borrow_last ARG REST: when ARG, just compiled, is a variable read (a LOAD and a RETAIN) and the operands REST after
@@ -512,7 +524,7 @@ static o set_leaves(Ty t)
 {
 	TyInfo *ti = &g_tys[t];
 	i32 first = g_nleaves, i, k;
-	if (ti->kind == K_VEC || ti->kind == K_MAP || ti->kind == K_POOL || ti->kind == K_TASK) {
+	if (ti->kind == K_VEC || ti->kind == K_MAP || ti->kind == K_POOL || ti->kind == K_TASK || ti->kind == K_FN) {
 		ti->leaf_first = 0;
 		ti->nleaf = 1;
 		return;
@@ -1214,10 +1226,67 @@ static const char *const g_vecop_usage[] = { "(push v x)", "(get v i)", "(put v 
 static const i32 g_vecop_args[] = { 2, 2, 3, 1, 2 };
 
 typedef struct {
-	int global;
+	int where;
 	i32 at;
 	Ty type;
 } Place;
+
+#define MAX_LAMBDAS 64
+#define MAX_CAPS 64
+/* a local of the code around a fn that the fn uses: its closure keeps a copy, made when the fn is */
+typedef struct {
+	const char *name;
+	u32 stamp;
+	Ty type;
+	i32 off;     /* cells into the closure's values */
+	i32 src;     /* where the code around gets it: a slot of its frame, or (from_env) an offset in its own closure */
+	u8 from_env;
+} Capture;
+static struct {
+	i32 slots, maxslots, depth, maxdepth, nlocals, floor, jmp, fi, fn_base;
+	Ty fn_ret;
+	i32 ncaps, envcells;
+	Capture caps[MAX_CAPS];
+} g_lambdas[MAX_LAMBDAS];
+static i32 g_nlambdas;
+
+/* cap_add LEVEL NAME STAMP TYPE FROM_ENV SRC: lambda LEVEL keeps one more value; its capture's index */
+static i32 cap_add(i32 lv, const char *name, u32 stamp, Ty type, int from_env, i32 src)
+{
+	Capture *cp;
+	if (g_lambdas[lv].ncaps == MAX_CAPS) die("a fn uses more than 64 locals of the code around it (MAX_CAPS)");
+	cp = &g_lambdas[lv].caps[g_lambdas[lv].ncaps];
+	cp->name = arena_strndup(&g_unit_arena, name, strlen(name)); /* NAME may be a caller's buffer */
+	cp->stamp = stamp;
+	cp->type = type;
+	cp->from_env = (u8)from_env;
+	cp->src = src;
+	cp->off = g_lambdas[lv].envcells;
+	g_lambdas[lv].envcells += cells(type);
+	return g_lambdas[lv].ncaps++;
+}
+
+/* capture NAME STAMP: NAME is no local of the fn being compiled; when it is one of the code around it (around the fns
+ * it sits in), the innermost fn keeps a copy in its closure, and so does each fn in between, to hand it in. The
+ * capture's index in the innermost fn; -1 when no code around has such a local */
+static i32 capture(const char *name, u32 stamp)
+{
+	i32 lv, c = -1, i;
+	for (lv = g_nlambdas - 1; lv >= 0; lv--) {
+		for (c = 0; c < g_lambdas[lv].ncaps && (g_lambdas[lv].caps[c].stamp != stamp || strcmp(g_lambdas[lv].caps[c].name, name)); c++) {}
+		if (c < g_lambdas[lv].ncaps) break; /* fn lv keeps it already */
+		for (i = g_lambdas[lv].nlocals - 1; i >= g_lambdas[lv].floor; i--) { /* the locals of the code around fn lv */
+			if (g_locals[i].stamp == stamp && !strcmp(g_locals[i].name, name)) break;
+		}
+		if (i >= g_lambdas[lv].floor) {
+			c = cap_add(lv, name, stamp, g_locals[i].type, 0, g_locals[i].slot);
+			break;
+		}
+	}
+	if (lv < 0) return -1;
+	for (lv++; lv < g_nlambdas; lv++) c = cap_add(lv, name, stamp, g_lambdas[lv - 1].caps[c].type, 1, g_lambdas[lv - 1].caps[c].off);
+	return c;
+}
 
 /* resolve_place NODE PLACE: where a variable or a field path like v.pos.x lives, and its type. 1 when found, 0 after
  * an error it reported, -1 when the first part is not a variable */
@@ -1231,12 +1300,17 @@ static int resolve_place(i32 n, Place *pl)
 	memcpy(base, s, blen);
 	base[blen] = 0;
 	if ((i = find_local(base, g_nodes[n].stamp)) >= 0) {
-		pl->global = 0;
+		pl->where = AT_LOCAL;
 		pl->at = g_locals[i].slot;
 		pl->type = g_locals[i].type;
+	} else if ((i = capture(base, g_nodes[n].stamp)) >= 0) { /* a local of the code around: the closure keeps it */
+		const Capture *cp = &g_lambdas[g_nlambdas - 1].caps[i];
+		pl->where = AT_ENV;
+		pl->at = cp->off;
+		pl->type = cp->type;
 	} else if ((i = find_global(base)) >= 0) {
 		if (!gem_use(n, g_globals[i].gem)) return 0;
-		pl->global = 1;
+		pl->where = AT_GLOBAL;
 		pl->at = g_globals[i].cell;
 		pl->type = g_globals[i].type;
 	} else {
@@ -1346,12 +1420,12 @@ static o compile_atom(i32 n, Ty want)
 		push_type(T_PATH);
 		return;
 	}
-	pl.global = 0;
+	pl.where = AT_LOCAL;
 	pl.at = 0;
 	pl.type = T_ERR;
 	r = resolve_place(n, &pl);
 	if (r > 0) {
-		emit_copy(pl.global, pl.at, pl.type, nd->line);
+		emit_copy(pl.where, pl.at, pl.type, nd->line);
 		push_type(pl.type);
 		return;
 	}
@@ -1384,7 +1458,7 @@ static o compile_atom(i32 n, Ty want)
 	t = find_named_type(s);
 	if ((r = find_fn(s)) >= 0) { /* one namespace: a function's name is a value too */
 		if (!gem_use(n, g_fns[r].gem)) { push_type(T_ERR); return; }
-		emit(OP_PUSH_K, r + 1, 0, nd->line);
+		emit(OP_PUSH_K, -(r + 1), 0, nd->line); /* a function as a value: minus (its number + 1); a closure is a handle */
 		push_type(intern_fn(g_fns[r].params, g_fns[r].nparams, g_fns[r].ret));
 		return;
 	}
@@ -1536,7 +1610,7 @@ static o start_list(Frame *f)
 		{ /* one namespace: a variable (or a field) named here comes before a function of that name */
 			Place pl;
 			int r;
-			pl.global = 0;
+			pl.where = AT_LOCAL;
 			pl.at = 0;
 			pl.type = T_ERR;
 			r = resolve_place(head, &pl);
@@ -1546,9 +1620,19 @@ static o start_list(Frame *f)
 				finish(T_ERR);
 				return;
 			}
+			if (r > 0 && pl.where == AT_ENV) { /* from the closure: loaded into a slot before the arguments, like an expression's */
+				f->form = F_CALLV;
+				f->op = 3;
+				f->cur = next_of(head);
+				f->k = count_from(f->cur);
+				f->mark2 = g_slots;
+				f->phase = 5;
+				push_child(head, T_NONE);
+				return;
+			}
 			if (r > 0) {
 				f->form = F_CALLV;
-				f->op = (u8)(pl.global ? 2 : 1);
+				f->op = (u8)(pl.where == AT_GLOBAL ? 2 : 1);
 				f->c = pl.at;
 				f->rt = pl.type;
 				return;
@@ -1828,12 +1912,6 @@ static o start_arm(Frame *f)
 
 /* A fn's body is compiled in the middle of the code around it, with a jump over it; what the compiler was counting
  * for the code around it waits here */
-#define MAX_LAMBDAS 64
-static struct {
-	i32 slots, maxslots, depth, maxdepth, nlocals, floor, jmp, fi, fn_base;
-	Ty fn_ret;
-} g_lambdas[MAX_LAMBDAS];
-static i32 g_nlambdas;
 
 /* lambda_begin FN: (fn ((x : int)) : int body...) - register it and start its body; 0 after an error it reported */
 static int lambda_begin(Frame *f)
@@ -1872,6 +1950,8 @@ static int lambda_begin(Frame *f)
 		fn.nparams++;
 	}
 	fn.ret = ret >= 0 ? parse_type(ret) : (Ty)T_UNIT;
+	fn.env = 1; /* its closure comes first, in slot 0 */
+	fn.pcells++;
 	sprintf(name, "fn@%ld:%ld", (long)line, (long)g_nodes[f->node].col);
 	fn.name = arena_strndup(&g_perm, name, strlen(name));
 	fn.line = line;
@@ -1895,11 +1975,14 @@ static int lambda_begin(Frame *f)
 	g_lambdas[g_nlambdas].floor = g_local_floor;
 	g_lambdas[g_nlambdas].fn_base = g_fn_base;
 	g_lambdas[g_nlambdas].fn_ret = g_fn_ret;
+	g_lambdas[g_nlambdas].ncaps = 0;
+	g_lambdas[g_nlambdas].envcells = 0;
 	g_nlambdas++;
 	g_fns[fi].entry = g_ncode;
 	g_slots = g_maxslots = 0;
 	g_depth = g_maxdepth = 0;
-	g_local_floor = g_nlocals; /* the locals around it belong to another frame */
+	g_local_floor = g_nlocals; /* the locals around it belong to another frame: what it uses of them, its closure keeps */
+	add_local("", 0, intern_fn(g_fns[fi].params, g_fns[fi].nparams, g_fns[fi].ret), new_slots(1)); /* the closure, no name */
 	for (p = first_of(params), k = 0; p >= 0; p = next_of(p), k++)
 		add_local(g_nodes[first_of(p)].text, g_nodes[first_of(p)].stamp, g_fns[fi].params[k], new_slots(cells(g_fns[fi].params[k])));
 	f->phase = 1;
@@ -1910,12 +1993,37 @@ static int lambda_begin(Frame *f)
 	return 1;
 }
 
+/* env_type LEVEL: the values fn LEVEL keeps, as a struct type of its own (it says how to free them) */
+static Ty env_type(i32 lv)
+{
+	TyInfo *t;
+	i32 k;
+	if (g_ntys == MAX_TYS) die("too many types");
+	if (g_nfields + g_lambdas[lv].ncaps > MAX_FIELDS) die("too many fields");
+	t = &g_tys[g_ntys];
+	memset(t, 0, sizeof(*t));
+	t->name = "(what a fn keeps)";
+	t->kind = K_STRUCT;
+	t->first = g_nfields;
+	t->n = g_lambdas[lv].ncaps;
+	t->cells = g_lambdas[lv].envcells;
+	for (k = 0; k < g_lambdas[lv].ncaps; k++) {
+		const Capture *cp = &g_lambdas[lv].caps[k];
+		g_fields[g_nfields].name = arena_strndup(&g_perm, cp->name, strlen(cp->name));
+		g_fields[g_nfields].type = cp->type;
+		g_fields[g_nfields].offset = cp->off;
+		g_nfields++;
+	}
+	set_leaves((Ty)g_ntys);
+	return (Ty)g_ntys++;
+}
+
 /* lambda_end FN TYPE LINE: its body is done, with TYPE: return, go back to the code around it, push the fn */
 static o lambda_end(Ty t, i32 line)
 {
 	i32 fi = g_lambdas[g_nlambdas - 1].fi, k, nc;
 	Fn *fn = &g_fns[fi];
-	for (k = 0; k < fn->nparams; k++) emit_release(0, g_locals[g_local_floor + k].slot, fn->params[k], line);
+	for (k = 0; k <= fn->nparams; k++) emit_release(AT_LOCAL, g_locals[g_local_floor + k].slot, g_locals[g_local_floor + k].type, line);
 	if (fn->ret == T_UNIT) {
 		emit_pop(t, line);
 		emit(OP_RET_U, 0, 0, line);
@@ -1938,7 +2046,16 @@ static o lambda_end(Ty t, i32 line)
 	g_fn_base = g_lambdas[g_nlambdas].fn_base;
 	g_fn_ret = g_lambdas[g_nlambdas].fn_ret;
 	patch(g_lambdas[g_nlambdas].jmp, g_ncode);
-	emit(OP_PUSH_K, fi + 1, 0, line);
+	if (g_lambdas[g_nlambdas].ncaps) { /* a closure: the values it keeps, copied now, in the code around it */
+		Ty env = env_type(g_nlambdas);
+		for (k = 0; k < g_lambdas[g_nlambdas].ncaps; k++) {
+			const Capture *cp = &g_lambdas[g_nlambdas].caps[k];
+			emit_copy(cp->from_env ? AT_ENV : AT_LOCAL, cp->src, cp->type, line);
+		}
+		emit(OP_CLOSURE, fi, env, line);
+	} else {
+		emit(OP_PUSH_K, -(fi + 1), 0, line);
+	}
 	finish(intern_fn(fn->params, fn->nparams, fn->ret));
 }
 
@@ -2151,13 +2268,13 @@ static o run_work(i32 base)
 					finish(T_ERR);
 					break;
 				}
-				pl.global = 0;
+				pl.where = AT_LOCAL;
 				pl.at = 0;
 				pl.type = T_ERR;
 				f->c = resolve_place(f->cur, &pl);
 				if (f->c < 0) err_node(f->cur, "set: unknown name " NAME_FMT, g_nodes[f->cur].text);
 				f->rt = f->c > 0 ? pl.type : (Ty)T_ERR;
-				f->op = (u8)pl.global;
+				f->op = (u8)pl.where;
 				f->a = pl.at;
 				f->phase = 1;
 				push_child(next_of(f->cur), f->rt);
@@ -3170,8 +3287,10 @@ static o run_work(i32 base)
 					break;
 				}
 			}
-			if (tail_ok(f, ft->elem)) emit_tail_releases(line);
-			emit(f->op == 2 ? OP_LOAD_G : OP_LOAD_L, f->c, 0, line); /* the function value goes on top */
+			/* the function value goes on top, owned: the call takes it (a closure becomes the callee's slot 0) */
+			if (f->op == 3) emit(OP_LOAD_L, f->c, 0, line); /* the slot's value moves into the call */
+			else emit_copy(f->op == 2 ? AT_GLOBAL : AT_LOCAL, f->c, f->rt, line);
+			if (tail_ok(f, ft->elem)) emit_tail_releases(line); /* after the copy: the variable may be one of them */
 			emit(tail_ok(f, ft->elem) ? OP_TAILCALL_V : OP_CALL_V, f->rt, 0, line);
 			if (f->op == 3) g_slots = f->mark2;
 			finish(ft->elem);

@@ -310,7 +310,7 @@ Potem: makra i moduły (0.2), manifest i resolver gemów (0.3), bufor i okno (0.
   (numer funkcji + 1, zero znaczy brak), zmienna, pole albo wyrażenie takiego typu woła się jak funkcję
   (`(b.on-click 2)`, `((get handlers 0) 5)` - wyrażenie liczy się przed argumentami), a lokalna nazwa przesłania
   funkcję. `(fn ((x : int)) : int ciało...)` to funkcja bez nazwy, kompilowana w środku otaczającego kodu ze skokiem
-  nad nią; nie widzi lokalnych zmiennych dookoła (komunikat mówi to wprost) - domknięcia przyjdą osobno.
+  nad nią; wtedy nie widziała lokalnych zmiennych dookoła - domknięcia przyszły później (niżej).
 - **Operatory (decyzja 2026-10-20):** operatory to tylko arytmetyka i porównania (`+ - * / % < <= > >= = !=`); reszta
   ma słowne nazwy. Logika: `and`, `or`, `not`, `nand`, `nor` (krótkie spięcie), `xor`, `xnor`. Bity intów:
   `bit-and`, `bit-or`, `bit-xor`, `bit-not`, `shl`, `shr` (licznik od 0 do liczby bitów - 1, inaczej błąd czasu
@@ -384,8 +384,19 @@ Potem: makra i moduły (0.2), manifest i resolver gemów (0.3), bufor i okno (0.
   użyć aż do ponownego `enable`; kod skompilowany wcześniej działa dalej. Jeszcze nie: zakresy wersji w wymaganiach
   (`:version` jest zapisywana), `:depends` (opcjonalne), wyładowanie kodu, zamiana jednej implementacji na drugą w
   trakcie (nazwy wyłączonego gemu są dalej zajęte), gemy natywne i procesowe, prywatne nazwy gemu.
-- **Następne, po kolei:** domknięcia (fn łapiące lokalne), mapy stosu (anulowanie zadań), traits, tryb wydania aren
-  (po pomiarze), bufor i okno. Numery wersji przesuwają się względem planu wyżej.
+- **Domknięcia (2026-10-20):** `(fn ...)` może używać lokalnych kodu dookoła: trzyma kopię każdej, której używa,
+  zrobioną w chwili tworzenia (jak lambda w GDScripcie). `set` w środku zmienia własną kopię fn, która zostaje między
+  wywołaniami (licznik działa), a `vec`, `map` i `pool` są referencjami, więc ich zawartość jest wspólna; fn zrobiony w
+  pętli trzyma wartości swojej tury (bez pułapki z JavaScriptu). Fn w fn dostaje wartość przez fn pośrodku. W VM:
+  wartość funkcji to jedna komórka - minus (numer + 1) dla zwykłej funkcji, uchwyt obiektu domknięcia (numer funkcji i
+  trzymane wartości, opisane typem-strukturą, żeby refcount wiedział, co zwolnić) albo 0; fn z `(fn ...)` dostaje swoje
+  domknięcie (albo 0) w slocie 0, a lokalne z zewnątrz czyta i ustawia przez offsety (`ENV_LOAD`, `ENV_STORE`).
+  Wartości funkcji są teraz liczone jak inne uchwyty (wywołanie przez wartość ją bierze, wywołanie ogonowe kopiuje ją
+  przed zwolnieniem lokalnych). Szybka ścieżka dla typów z jednym uchwytem (string, vec, map, pool, task, fn) w
+  `RETAIN`, `DROP` i `RELEASE`: pętla 200 tys. wywołań przez wartość +0,4% instrukcji wobec stanu sprzed domknięć,
+  `fib 24` -6,5%.
+- **Następne, po kolei:** mapy stosu (anulowanie zadań), traits, tryb wydania aren (po pomiarze), bufor i okno. Numery
+  wersji przesuwają się względem planu wyżej.
 
 ## Notatki → stan
 
@@ -409,7 +420,7 @@ Każdy punkt z notatek o godot-rs i gaelu, z tym, co się z nim stało. ✓ zrob
   uchwytami z generacją; ✓ arena per klatka, poziom i żądanie z kontrolą ucieczek; → tryb wydania bez liczenia;
   ○ persistent arena pod snapshoty.
 - ✓ Scheme jako wzór: jedna przestrzeń nazw, funkcje jako wartości, wywołania ogonowe, makra higieniczne
-  (`defmacro` w stylu `syntax-rules`); ○ named let, `cond` i `case` w bibliotece standardowej (makra), domknięcia.
+  (`defmacro` w stylu `syntax-rules`), domknięcia; ○ named let, `cond` i `case` w bibliotece standardowej (makra).
 - ✓ makra; ○ makra gemu ecs (`ecs-query`), traits, abstrakcje bez boilerplate i bez pułapek C++.
 - ✓ zasada nazw: typy i formy gemu z prefiksem systemu (`ECSEntity`, `(ecs-query ...)`, `DBQuery`).
 - ✓ x-macro dla opkodów (`src/ops.h`).

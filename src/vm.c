@@ -235,7 +235,13 @@ static o vm_init(int check)
 /* every object starts with its count and its kind; the kind cell holds the type above the low 8 bits (the vec or
  * map type) or, for a string, its length */
 enum { OB_RC, OB_KIND };
-enum { KIND_STR = 1, KIND_VEC, KIND_MAP, KIND_POOL, KIND_TASK };
+enum { KIND_STR = 1, KIND_VEC, KIND_MAP, KIND_POOL, KIND_TASK, KIND_CLOSURE };
+
+/* A function value is one cell: 0 none yet, minus (a function's number + 1), or a closure - an object that keeps the
+ * values of the locals a (fn ...) used from the code around it: [count][kind and the type of those values][the
+ * function's number][the values]. A fn made by (fn ...) takes its closure, or 0, in slot 0, before its arguments. */
+enum { CL_FN = 2, CL_DATA };
+#define UNSET_FN "this function value was never set: a global read before its def ran"
 
 /* Tasks. (async (f x)) runs f in a task: a stackful coroutine with a value stack and frames of its own, heap blocks
  * that grow when a call needs more. The VM switches between the main program and a task by saving the registers of
@@ -313,6 +319,10 @@ static o obj_release(i64 h)
 
 /* refs V STRIDE TYPE RETAIN: every object inside a value of TYPE, whose cell C is at V + C * STRIDE, gets one owner
  * more (RETAIN) or one less. An object inside a none is not there */
+/* ONE_HANDLE(T): a value of type T is one cell, a handle (a string, a vec, a map, a pool, a task, a function): its
+ * leaves are the shared leaf 0 */
+#define ONE_HANDLE(t) (g_tys[t].leaf_first == 0 && g_tys[t].nleaf == 1)
+
 static o refs(const Cell *v, i64 stride, Ty t, int retain)
 {
 	i32 k, j, n = g_tys[t].nleaf, first = g_tys[t].leaf_first;
@@ -414,6 +424,10 @@ static o obj_free(i64 h)
 		part_free(h, MH_CELLS);
 		break;
 	}
+	case KIND_CLOSURE:
+		refs(hd + CL_DATA, 1, obj_type(h), 0);
+		heap_free(h, CL_DATA + cells(obj_type(h)));
+		break;
 	case KIND_TASK: {
 		Ty rt = g_tys[obj_type(h)].elem;
 		if (hd[TK_STATE].i == TS_DONE) refs(hd + TK_RESULT, 1, rt, 0);
@@ -676,7 +690,7 @@ static o print_value(Ty type, const Cell *c)
 			out_s(g_variants[ti->first + v->i]);
 		} else if (ti->kind == K_FN) {
 			out_s("(fn ");
-			out_s(v->i > 0 ? g_fns[v->i - 1].name : "none");
+			out_s(v->i < 0 ? g_fns[-v->i - 1].name : v->i > 0 ? g_fns[g_heap[v->i + CL_FN].i].name : "none");
 			out_s(")");
 		} else if (ti->kind == K_TASK) {
 			i64 state = g_heap[v->i + TK_STATE].i;
@@ -1459,10 +1473,23 @@ static int vm_run(i32 pc)
 		case OP_STOREN_L: sp -= in->b; memcpy(s + fp + in->a, s + sp, (size_t)in->b * sizeof(Cell)); break;
 		case OP_LOADN_G: memcpy(s + sp, g_global_cells + in->a, (size_t)in->b * sizeof(Cell)); sp += in->b; break;
 		case OP_STOREN_G: sp -= in->b; memcpy(g_global_cells + in->a, s + sp, (size_t)in->b * sizeof(Cell)); break;
-		case OP_RETAIN: refs(s + sp - cells((Ty)in->a), 1, (Ty)in->a, 1); break;
-		case OP_DROP: sp -= cells((Ty)in->a); refs(s + sp, 1, (Ty)in->a, 0); break;
-		case OP_RELEASE_L: refs(s + fp + in->a, 1, (Ty)in->b, 0); break;
-		case OP_RELEASE_G: refs(g_global_cells + in->a, 1, (Ty)in->b, 0); break;
+		case OP_RETAIN:
+			if (ONE_HANDLE(in->a)) obj_retain(s[sp - 1].i);
+			else refs(s + sp - cells((Ty)in->a), 1, (Ty)in->a, 1);
+			break;
+		case OP_DROP:
+			sp -= cells((Ty)in->a);
+			if (ONE_HANDLE(in->a)) obj_release(s[sp].i);
+			else refs(s + sp, 1, (Ty)in->a, 0);
+			break;
+		case OP_RELEASE_L:
+			if (ONE_HANDLE(in->b)) obj_release(s[fp + in->a].i);
+			else refs(s + fp + in->a, 1, (Ty)in->b, 0);
+			break;
+		case OP_RELEASE_G:
+			if (ONE_HANDLE(in->b)) obj_release(g_global_cells[in->a].i);
+			else refs(g_global_cells + in->a, 1, (Ty)in->b, 0);
+			break;
 
 		case OP_ADD_I: sp--; s[sp - 1].i = (i64)((u64)s[sp - 1].i + (u64)s[sp].i); break;
 		case OP_SUB_I: sp--; s[sp - 1].i = (i64)((u64)s[sp - 1].i - (u64)s[sp].i); break;
@@ -1581,18 +1608,24 @@ static int vm_run(i32 pc)
 		case OP_CALL_V: {
 			const Fn *fn;
 			i32 nfp;
+			i64 fv = 0;
 			if (in->op == OP_CALL_V) {
-				i64 fv = s[--sp].i;
-				if (fv <= 0) return vm_error(in->line, "this function value was never set: a global read before its def ran");
-				fn = &g_fns[fv - 1];
+				fv = s[--sp].i;
+				if (!fv) return vm_error(in->line, UNSET_FN);
+				fn = &g_fns[fv < 0 ? -fv - 1 : g_heap[fv + CL_FN].i];
 			} else {
 				fn = &g_fns[in->a];
 			}
-			nfp = sp - fn->pcells;
+			nfp = sp + fn->env - fn->pcells;
 			if (nf == fcap || nfp + fn->nslots + fn->maxdepth > cap) {
 				if (!g_cur || !task_grow(nfp + fn->nslots + fn->maxdepth, nf + 1))
 					return vm_error(in->line, "stack overflow (recursion too deep?)");
 				LOAD_STACK(); /* the task's stack moved */
+			}
+			if (fn->env) { /* its closure (or 0) goes under the arguments, into slot 0; the call owns it now */
+				memmove(s + nfp + 1, s + nfp, (size_t)(sp - nfp) * sizeof(Cell));
+				s[nfp].i = fv > 0 ? fv : 0;
+				sp++;
 			}
 			fr[nf].i = FRAME(pc, fp);
 			nf++;
@@ -1604,16 +1637,23 @@ static int vm_run(i32 pc)
 		case OP_TAILCALL:
 		case OP_TAILCALL_V: { /* the arguments move down to this frame's start, and the callee runs in it */
 			const Fn *fn;
+			i64 fv = 0;
 			if (in->op == OP_TAILCALL_V) {
-				i64 fv = s[--sp].i;
-				if (fv <= 0) return vm_error(in->line, "this function value was never set: a global read before its def ran");
-				fn = &g_fns[fv - 1];
+				fv = s[--sp].i;
+				if (!fv) return vm_error(in->line, UNSET_FN);
+				fn = &g_fns[fv < 0 ? -fv - 1 : g_heap[fv + CL_FN].i];
 			} else {
 				fn = &g_fns[in->a];
 			}
 			if (fp + fn->nslots + fn->maxdepth > cap) {
 				if (!g_cur || !task_grow(fp + fn->nslots + fn->maxdepth, nf)) return vm_error(in->line, "stack overflow");
 				LOAD_STACK();
+			}
+			if (fn->env) {
+				i32 at = sp + 1 - fn->pcells;
+				memmove(s + at + 1, s + at, (size_t)(sp - at) * sizeof(Cell));
+				s[at].i = fv > 0 ? fv : 0;
+				sp++;
 			}
 			memmove(s + fp, s + sp - fn->pcells, (size_t)fn->pcells * sizeof(Cell));
 			sp = fp + fn->pcells;
@@ -2154,6 +2194,26 @@ static int vm_run(i32 pc)
 		case OP_KEEP:
 			if (!keep(s + sp - cells((Ty)in->a), (Ty)in->a)) return vm_error(in->line, "keep: out of memory (the heap or the text arena is full)");
 			break;
+		case OP_CLOSURE: { /* a: the fn, b: the type of the values it keeps, which are on the stack and move in */
+			i32 n = cells((Ty)in->b);
+			i64 h = heap_alloc(CL_DATA + n);
+			if (h < 0) return vm_error(in->line, HEAP_FULL);
+			obj_born(h, KIND_CLOSURE, (u64)in->b);
+			g_heap[h + CL_FN].i = in->a;
+			sp -= n;
+			memcpy(g_heap + h + CL_DATA, s + sp, (size_t)n * sizeof(Cell));
+			s[sp++].i = h;
+			break;
+		}
+		case OP_ENV_LOAD:
+			memcpy(s + sp, g_heap + s[fp].i + CL_DATA + in->a, (size_t)in->b * sizeof(Cell));
+			sp += in->b;
+			break;
+		case OP_ENV_STORE:
+			sp -= in->b;
+			memcpy(g_heap + s[fp].i + CL_DATA + in->a, s + sp, (size_t)in->b * sizeof(Cell));
+			break;
+		case OP_ENV_RELEASE: refs(g_heap + s[fp].i + CL_DATA + in->a, 1, (Ty)in->b, 0); break;
 		case OP_ASYNC: { /* the new task runs at once, until it first waits or ends */
 			const Fn *fn = &g_fns[in->a];
 			i64 t = task_new(fn, (Ty)in->b, in->line);
@@ -2294,7 +2354,7 @@ static o disassemble(i32 from, i32 to)
 		if (in->op == OP_PUSH_F) { g_sink = stdout; fputs("\t(", stdout); print_float(g_floats[in->a]); putchar(')'); }
 		if (in->op == OP_PUSH_S) printf("\t(\"%.40s\")", g_strs[in->a].p);
 		if (in->op == OP_PRINT || in->op == OP_PRINTLN || in->op == OP_FORMAT) printf("\t(\"%.40s\")", g_strs[g_fmts[in->a].str].p);
-		if (in->op == OP_CALL || in->op == OP_TAILCALL || in->op == OP_ASYNC) printf("\t(%.40s)", g_fns[in->a].name);
+		if (in->op == OP_CALL || in->op == OP_TAILCALL || in->op == OP_ASYNC || in->op == OP_CLOSURE) printf("\t(%.40s)", g_fns[in->a].name);
 		if (in->op == OP_SHOW || in->op == OP_RETAIN || in->op == OP_DROP || in->op == OP_MAP_KEYS || in->op == OP_MAP_VALUES ||
 		    in->op == OP_KEEP || in->op == OP_WRAP || in->op == OP_F2I || in->op == OP_CALL_V || in->op == OP_TAILCALL_V ||
 		    in->op == OP_AWAIT)

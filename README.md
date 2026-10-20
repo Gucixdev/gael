@@ -186,7 +186,7 @@ starts with `;`.
 | `(use "lib/geometry.gael")` | compile that file first, its path relative to this one; a file used by several others is compiled once, and a file that ends up using itself is an error |
 | `(def hp : int 100)`, `(def hp 100)` | a global; without `: type` the type is the value's |
 | `(defn name ((x : int) (y : float)) : int body...)` | a function, `()` when it takes nothing; without `: type` it returns unit. A function can be called above its definition |
-| `inc`, `(fn ((x : int)) : int (* x x))`, `(f 3)` | one namespace, as in Scheme: a function's name is a value of type `(fn (int) int)`, `fn` makes one without a name (it cannot use the locals around it yet), and a variable, a field or an expression of that type is called like a function; a local of the same name hides a function |
+| `inc`, `(fn ((x : int)) : int (* x x))`, `(f 3)` | one namespace, as in Scheme: a function's name is a value of type `(fn (int) int)`, `fn` makes one without a name, and a variable, a field or an expression of that type is called like a function; a local of the same name hides a function |
 | `(let ((x 1) (y : float 2.0)) body...)` | locals for the body |
 | `(set x 5)`, `(set b.pos.x 3.0)` | assign to a variable or a field of one; the value must have its type |
 | `(if c then else)`, `(when c body...)`, `(while c body...)`, `(do body...)` | a condition must be a bool; `if` without `else` is unit |
@@ -283,6 +283,11 @@ level, even where the use has a local of that name. A macro can be used anywhere
 use that file; at the top level it can make globals, functions and types, several at once with `(do ...)`.
 `examples/macros.gael` has more.
 
+A `fn` can use the locals of the code around it, a closure: it keeps a copy of each one it uses, made when the `fn`
+is made (as a GDScript lambda does). Setting one inside changes the fn's own copy, which stays from call to call, so
+`(let ((n 0)) (fn () : int (set n (+ n 1)) n))` counts; a vec, a map or a pool is a reference, so what is in it is
+shared. A `fn` made in a loop keeps that turn's values. `examples/closures.gael` has more.
+
 A task is a function running on a stack of its own (a stackful coroutine): it can wait anywhere, also deep in the
 functions it calls, and they need no mark for it - no async colouring as in Rust or C#. `(await t)` has the type of
 what the task's function returns, checked when compiling. A game's loop gives the tasks a step each frame:
@@ -350,6 +355,9 @@ tests/errors/div-zero.gael:1: runtime error: division by zero
   checking and code generation happen in the same pass), and the VM keeps its own call stack, so deep recursion in a
   gael program is a gael runtime error, not a crash. A tail call (`TAILCALL`) moves its arguments down over its own
   frame and jumps, after the compiler has let go of the frame's locals, so it adds no frame.
+- A function value is one cell: minus the function's number plus one, or a closure - an object with the function's
+  number and the values it keeps, which a `fn` reads and sets at offsets in it (its handle comes in slot 0). An
+  indirect call puts a closure there, or 0 for a plain function made by `fn`.
 - A task has its own value stack and frames, blocks on the heap that double when a call needs more; switching to a
   task or back saves one set of registers (stack, frames, pc, sp, fp) and loads the other. A task's function returns
   to a `TASK_END` instruction that keeps the result in the task object. The main program's waits re-run their own
@@ -380,7 +388,7 @@ tests/errors/div-zero.gael:1: runtime error: division by zero
 
 ## Status
 
-Version 0.3, tested on Linux x86-64 with gcc 13.3 and clang 18.1. `./test` passes 112 checks per build (32 examples,
+Version 0.3, tested on Linux x86-64 with gcc 13.3 and clang 18.1. `./test` passes 113 checks per build (33 examples,
 71 compile and runtime error cases, three REPL sessions, six README examples) with gcc, clang and gcc with both
 sanitizers, every run with `GAEL_CHECK=1`. GitHub Actions runs shellcheck on the scripts and `./test` on every push
 (`.github/workflows/test.yml`, ubuntu-24.04).

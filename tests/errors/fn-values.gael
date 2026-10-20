@@ -4,7 +4,7 @@
 (f "a")
 (f 1 2)
 (let ((n 5)) (n 3))
-(let ((k 10)) (fn ((x : int)) : int (+ x k)))
+(let ((k 10)) (fn ((x : int)) : int (k x)))
 ((get (vec 1 2) 0) 3)
 (fn ((x : int)) : string x)
 (def h : (fn (int)) inc)

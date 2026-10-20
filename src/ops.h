@@ -110,6 +110,10 @@
 	X(ARENA_BEGIN, 0) /* --        an arena starts: new strings, vecs, maps and pools go into it */ \
 	X(ARENA_END, 0) /* --          it ends: its cells come back at once; anything made in it and still held is an error */ \
 	X(KEEP, 1)     /* x -- x       a: the type; what the value holds from the innermost arena is copied onto the heap */ \
+	X(CLOSURE, 2)  /* v... -- f    a closure of fn a keeping the values (b: their type, a struct) */ \
+	X(ENV_LOAD, 2) /* -- x...      a value the running fn keeps in its closure (slot 0): a: its offset, b: its cells */ \
+	X(ENV_STORE, 2) /* x... --     a new value for it */ \
+	X(ENV_RELEASE, 2) /* --        it dies: b is its type */ \
 	X(ASYNC, 2)    /* args -- t    a task runs function a (b: the task type) until it first waits; then this goes on */ \
 	X(AWAIT, 1)    /* t -- r       the task's result once it has ended (a: the task type); a task waits, the main program runs tasks */ \
 	X(SLEEP, 0)    /* f --         wait f seconds of task time; the main program runs tasks meanwhile */ \

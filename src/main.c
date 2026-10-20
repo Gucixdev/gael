@@ -441,12 +441,12 @@ static long balance(const char *s)
  * the heap. What is left was kept alive by a cycle (a vec, map or pool that holds itself) or lost by a counting bug */
 static int leaks(void)
 {
-	static const char *const kinds[] = { "?", "string", "vec", "map", "pool", "task" };
+	static const char *const kinds[] = { "?", "string", "vec", "map", "pool", "task", "closure" };
 	int k, any = 0;
 	if (!g_check || !leak_check()) return 0;
 	fflush(stdout);
 	fputs("gael: GAEL_CHECK: never freed:", stderr);
-	for (k = 1; k < 6; k++) {
+	for (k = 1; k < 7; k++) {
 		if (!g_objects[k]) continue;
 		fprintf(stderr, "%s %ld %s%s", any ? "," : "", (long)g_objects[k], kinds[k], g_objects[k] == 1 ? "" : "s");
 		any = 1;

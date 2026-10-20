@@ -1,6 +1,6 @@
 ; One namespace, as in Scheme: a function is a value of a type like (fn (int) int). It can be passed, kept in a
 ; variable, a vec or a struct field, and called from there; a local of the same name hides it. (fn (params) : type
-; body...) makes one without a name; it cannot use the locals around it yet (no closures), only its parameters.
+; body...) makes one without a name; closures.gael shows one that uses the locals around it.
 (struct Button (label : string) (on-click : (fn (int) string)))
 (defn twice ((f : (fn (int) int)) (x : int)) : int (f (f x)))
 (defn inc ((x : int)) : int (+ x 1))
