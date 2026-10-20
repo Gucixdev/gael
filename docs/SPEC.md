@@ -146,6 +146,11 @@ odwołania do nodów i komponentów w zapytaniach ECS - wszystko przed uruchomie
   cache jeszcze niepotrzebny. Ten plik to ~46 tys. instrukcji, a tablica kodu ma dziś 2^18 (razem ~34 tys. linii
   gaela), funkcji 4096: przed ładowaniem gemów w trakcie te tablice przejdą na rezerwację przestrzeni adresowej jak
   sterta.
+- **Start (decyzja 2026-10-20):** program ma się odpalać błyskawicznie, w ułamku sekundy. Dziś `gael -e` startuje w
+  ~1,5 ms, tyle co `/bin/true` w tym samym pomiarze (`python3 -c pass`: ~15 ms; 200 uruchomień, statyczna binarka,
+  rezerwacje mmap nic nie kosztują, dopóki nic nie jest zapisane). Koszt rośnie tylko z gemami włączonymi na starcie:
+  ~2,5 ms kompilacji na 1000 linii. Gdy to przekroczy kilkadziesiąt milisekund, przyjdzie obraz skompilowanego stanu
+  (jak pdumper w Emacsie): zapisany po kompilacji, przy starcie mapowany z pliku, więc czas nie zależy od rozmiaru.
 - **Nowy projekt:** wybór gemów (2d, 3d, sdf, aabb, noise...). **Ustawienia:** globalne i per projekt, warstwami
   (domyślne gemu, globalne, projekt).
 - **Rejestr:** wszystkie gemy na Twoim GitHubie, Ty decydujesz o merge'ach; gałąź `experimental` dla chętnych. Prosty
