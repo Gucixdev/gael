@@ -1,0 +1,8 @@
+; two tasks that wait for each other: tasks-run sees that none can go on
+(def ts : (vec (task int)) (vec))
+(defn a-side () : int (sleep 0.01) (await (get ts 1)))
+(defn b-side () : int (await (get ts 0)))
+(push ts (async (a-side)))
+(push ts (async (b-side)))
+(tasks-run)
+(println "not reached")

@@ -1,0 +1,4 @@
+(def ts : (vec (task int)) (vec))
+(defn selfish () : int (yield) (await (get ts 0)))
+(push ts (async (selfish)))
+(tasks-step 0.0)

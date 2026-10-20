@@ -16,7 +16,7 @@
 typedef u16 Ty;
 enum { T_ERR, T_UNIT, T_INT, T_FLOAT, T_BOOL, T_STR, T_NONE, T_ANY, T_I8, T_I16, T_I32, T_U8, T_U16, T_U32, T_U64, T_F32, T_PATH,
 	T_USER };
-typedef enum { K_PRIM, K_STRUCT, K_ENUM, K_OPTION, K_VEC, K_MAP, K_POOL, K_HANDLE, K_FN } TyKind;
+typedef enum { K_PRIM, K_STRUCT, K_ENUM, K_OPTION, K_VEC, K_MAP, K_POOL, K_HANDLE, K_FN, K_TASK } TyKind;
 
 typedef struct {
 	const char *name;
@@ -186,7 +186,7 @@ static i32 g_npatches;
 static u8 g_seen[MAX_VARIANTS];      /* match: the variants an arm already covers */
 
 typedef enum {
-	F_START, F_CALL, F_IF, F_WHEN, F_WHILE, F_DO, F_LET, F_SET, F_AND, F_OR, F_NOT, F_ARITH, F_CMP, F_PRINT,
+	F_START, F_CALL, F_TASK, F_IF, F_WHEN, F_WHILE, F_DO, F_LET, F_SET, F_AND, F_OR, F_NOT, F_ARITH, F_CMP, F_PRINT,
 	F_CONV, F_BUILTIN, F_NEW, F_SOME, F_MATCH, F_VEC, F_VECOP, F_FOR, F_DOT, F_MAP, F_MAPOP, F_SHPIPE, F_POOL, F_ARENA,
 	F_KEEP, F_CALLV, F_LAMBDA, F_XOR, F_BITS
 } Form;
@@ -243,6 +243,7 @@ static int is_map(Ty t) { return t < g_ntys && g_tys[t].kind == K_MAP; }
 static int is_pool(Ty t) { return t < g_ntys && g_tys[t].kind == K_POOL; }
 static int is_handle(Ty t) { return t < g_ntys && g_tys[t].kind == K_HANDLE; }
 static int is_fn(Ty t) { return t < g_ntys && g_tys[t].kind == K_FN; }
+static int is_task(Ty t) { return t < g_ntys && g_tys[t].kind == K_TASK; }
 static Ty elem_of(Ty t) { return t < g_ntys && g_tys[t].kind >= K_OPTION ? g_tys[t].elem : (Ty)T_ERR; }
 static Ty key_of(Ty t) { return is_map(t) ? g_tys[t].key : (Ty)T_ERR; }
 static int has_refs(Ty t) { return t < g_ntys && g_tys[t].nleaf > 0; }
@@ -308,6 +309,11 @@ static i32 effect(Op op, i32 a, i32 b)
 	case OP_POOL_NEW: case OP_POOL_LEN: case OP_POOL_NEXT: return 0;
 	case OP_ARENA_BEGIN: case OP_ARENA_END: case OP_KEEP: return 0;
 	case OP_SHPIPE: return 1 - a;
+	case OP_ASYNC: return 1 - g_fns[a].pcells;
+	case OP_AWAIT: return cells(elem_of((Ty)a)) - 1;
+	case OP_SLEEP: return -1;
+	case OP_YIELD: case OP_TASKS_STEP: case OP_TASKS_RUN: case OP_TASK_DONE: case OP_TASK_END: return 0;
+	case OP_TASK_TIME: return 1;
 	case OP_SHOW: return -cells((Ty)a);
 	default: return builtin_effect(op);
 	}
@@ -435,9 +441,13 @@ static const char *const g_reserved[] = {
 	"pop", "for", "use", ".", "map", "insert", "lookup", "has", "remove", "keys", "values", "chain", "pipe", "pipe-in",
 	"nand", "nor", "xor", "xnor", "bit-and", "bit-or", "bit-xor", "bit-not", "shl", "shr",
 	"pool", "spawn", "handle", "arena", "keep", "fn", "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64",
-	"defmacro", "..."
+	"defmacro", "...", "task", "async", "await", "sleep", "yield", "tasks-step", "tasks-run", "done?", "task-time"
 };
 
+
+/* the forms on tasks, in the order of F_TASK's op */
+static const char *const g_task_names[] = { "await", "sleep", "yield", "tasks-step", "tasks-run", "done?", "task-time" };
+static const char *const g_task_usage[] = { "(await t)", "(sleep 0.5)", "(yield)", "(tasks-step dt)", "(tasks-run)", "(done? t)", "(task-time)" };
 
 static int is_reserved(const char *s)
 {
@@ -474,7 +484,7 @@ static o set_leaves(Ty t)
 {
 	TyInfo *ti = &g_tys[t];
 	i32 first = g_nleaves, i, k;
-	if (ti->kind == K_VEC || ti->kind == K_MAP || ti->kind == K_POOL) {
+	if (ti->kind == K_VEC || ti->kind == K_MAP || ti->kind == K_POOL || ti->kind == K_TASK) {
 		ti->leaf_first = 0;
 		ti->nleaf = 1;
 		return;
@@ -504,7 +514,8 @@ static Ty intern_wrap(u8 kind, Ty elem)
 		if (g_tys[i].kind == kind && g_tys[i].elem == elem) return (Ty)i;
 	}
 	if (g_ntys == MAX_TYS) die("too many types");
-	sprintf(name, "(%s %.140s)", kind == K_VEC ? "vec" : kind == K_POOL ? "pool" : kind == K_HANDLE ? "handle" : "option", tn(elem));
+	sprintf(name, "(%s %.140s)", kind == K_VEC ? "vec" : kind == K_POOL ? "pool" : kind == K_HANDLE ? "handle" : kind == K_TASK ? "task" : "option",
+	        tn(elem));
 	t = &g_tys[g_ntys];
 	memset(t, 0, sizeof(*t));
 	t->name = arena_strndup(&g_perm, name, strlen(name));
@@ -579,9 +590,12 @@ static Ty intern_fn(const Ty *params, i32 n, Ty ret)
 /* compile_init: what every program starts with */
 static o names_rebuild(void);
 
+static i32 g_task_end; /* the instruction a task's function returns to: TASK_END */
+
 static o compile_init(void)
 {
 	text_init();
+	g_task_end = emit(OP_TASK_END, 0, 0, 0);
 	g_vec_str = intern_wrap(K_VEC, T_STR);
 	names_rebuild();
 }
@@ -703,9 +717,10 @@ static Ty parse_type(i32 root)
 		}
 		a1 = next_of(first_of(n));
 		a2 = next_of(a1);
-		if (head_is(n, "option") || head_is(n, "vec") || head_is(n, "pool") || head_is(n, "handle")) {
+		if (head_is(n, "option") || head_is(n, "vec") || head_is(n, "pool") || head_is(n, "handle") || head_is(n, "task")) {
 			const char *what = g_nodes[first_of(n)].text;
-			u8 kind = head_is(n, "vec") ? K_VEC : head_is(n, "pool") ? K_POOL : head_is(n, "handle") ? K_HANDLE : K_OPTION;
+			u8 kind = head_is(n, "vec") ? K_VEC : head_is(n, "pool") ? K_POOL : head_is(n, "handle") ? K_HANDLE :
+			          head_is(n, "task") ? K_TASK : K_OPTION;
 			if (a1 < 0 || a2 >= 0) {
 				err_node(n, "%s %s type is (%s type), like (%s int)", kind == K_OPTION ? "an" : "a", what, what, what);
 				return T_ERR;
@@ -717,7 +732,7 @@ static Ty parse_type(i32 root)
 				continue;
 			}
 			t = res[--nr];
-			if (t == T_UNIT) {
+			if (t == T_UNIT && kind != K_TASK) {
 				err_node(a1, kind == K_OPTION ? "(option unit) holds nothing; use bool" : "(%s unit) holds nothing; count with an int", what);
 				return T_ERR;
 			}
@@ -1392,6 +1407,22 @@ static o start_list(Frame *f)
 		f->k = 0;
 		return;
 	}
+	else if (!strcmp(s, "async")) { /* (async (f args...)): the call, compiled to run in a task */
+		i32 call = f->cur, h = call >= 0 && g_nodes[call].kind == N_LIST ? first_of(call) : -1;
+		if (f->k != 1 || !is_sym(h) || (fi = find_fn(g_nodes[h].text)) < 0 || find_local(g_nodes[h].text, g_nodes[h].stamp) >= 0) {
+			err_node(call >= 0 ? call : f->node, "async takes a call of a function by its name: (async (patrol goblin))");
+			finish(T_ERR);
+			return;
+		}
+		f->node = call;
+		f->form = F_CALL;
+		f->a = fi;
+		f->op = 1;
+		f->tail = 0;
+		f->cur = next_of(h);
+		f->k = count_from(f->cur);
+		return;
+	}
 	else if (!strcmp(s, "not")) f->form = F_NOT;
 	else if (s[1] == 0 && strchr("+-*/%", s[0])) { f->form = F_ARITH; f->op = (u8)s[0]; }
 
@@ -1426,6 +1457,9 @@ static o start_list(Frame *f)
 		}
 		for (k = 0; k < GAEL_COUNT(g_vecop_names); k++) {
 			if (!strcmp(s, g_vecop_names[k])) { f->form = F_VECOP; f->op = (u8)k; break; }
+		}
+		for (k = 0; k < GAEL_COUNT(g_task_names); k++) {
+			if (!strcmp(s, g_task_names[k])) { f->form = F_TASK; f->op = (u8)k; break; }
 		}
 		for (k = 0; k < GAEL_COUNT(g_mapop_names); k++) {
 			if (!strcmp(s, g_mapop_names[k])) { f->form = F_MAPOP; f->op = (u8)k; break; }
@@ -2405,6 +2439,12 @@ static o run_work(i32 base)
 					break;
 				}
 				f->k = 0;
+				if (f->cur < 0 && f->op) { /* async: a task runs it */
+					Ty tt = intern_wrap(K_TASK, fn->ret);
+					emit(OP_ASYNC, f->a, tt, line);
+					finish(tt);
+					break;
+				}
 				if (f->cur < 0) {
 					if (tail_ok(f, fn->ret)) emit_tail_releases(line);
 					emit(tail_ok(f, fn->ret) ? OP_TAILCALL : OP_CALL, f->a, 0, line);
@@ -2421,9 +2461,48 @@ static o run_work(i32 base)
 			f->k++;
 			f->cur = next_of(f->cur);
 			if (f->cur >= 0) { push_child(f->cur, fn->params[f->k]); break; }
+			if (f->op) { /* async: a task runs it */
+				Ty tt = intern_wrap(K_TASK, fn->ret);
+				emit(OP_ASYNC, f->a, tt, line);
+				finish(tt);
+				break;
+			}
 			if (tail_ok(f, fn->ret)) emit_tail_releases(line); /* the arguments are on the stack: the locals can go */
 			emit(tail_ok(f, fn->ret) ? OP_TAILCALL : OP_CALL, f->a, 0, line);
 			finish(fn->ret);
+			break;
+		}
+
+		case F_TASK: { /* await, sleep, yield, tasks-step, tasks-run, done?, task-time - in g_task_names' order */
+			static const Op ops[] = { OP_AWAIT, OP_SLEEP, OP_YIELD, OP_TASKS_STEP, OP_TASKS_RUN, OP_TASK_DONE, OP_TASK_TIME };
+			static const u8 nargs[] = { 1, 1, 0, 1, 0, 1, 0 };
+			int secs = f->op == 1 || f->op == 3, task = f->op == 0 || f->op == 5;
+			t = T_NONE;
+			if (f->phase == 0) {
+				if (f->k != nargs[f->op]) {
+					err_node(f->node, "%s takes %s: %s", g_task_names[f->op], nargs[f->op] ? "one value" : "nothing", g_task_usage[f->op]);
+					finish(T_ERR);
+					break;
+				}
+				if (nargs[f->op]) {
+					f->phase = 1;
+					push_child(f->cur, secs ? (Ty)T_FLOAT : (Ty)T_NONE);
+					break;
+				}
+			} else {
+				t = pop_type();
+				if (secs && t != T_FLOAT && t != T_ERR) {
+					err_node(f->cur, "%s takes seconds as a float, like %s; this is %s", g_task_names[f->op], g_task_usage[f->op], tn(t));
+					t = T_ERR;
+				}
+				if (task && !is_task(t) && t != T_ERR) {
+					err_node(f->cur, "%s takes a task, which (async (f ...)) makes; this is %s", g_task_names[f->op], tn(t));
+					t = T_ERR;
+				}
+				if (t == T_ERR) { finish(T_ERR); break; }
+			}
+			emit(ops[f->op], f->op == 0 ? (i32)t : 0, 0, line);
+			finish(f->op == 0 ? elem_of(t) : f->op == 3 ? (Ty)T_INT : f->op == 5 ? (Ty)T_BOOL : f->op == 6 ? (Ty)T_FLOAT : (Ty)T_UNIT);
 			break;
 		}
 

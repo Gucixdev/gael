@@ -1,0 +1,9 @@
+tests/errors/tasks.gael:2:8: error: await takes a task, which (async (f ...)) makes; this is int
+tests/errors/tasks.gael:3:8: error: sleep takes seconds as a float, like (sleep 0.5); this is int
+tests/errors/tasks.gael:4:8: error: async takes a call of a function by its name: (async (patrol goblin))
+tests/errors/tasks.gael:5:8: error: async takes a call of a function by its name: (async (patrol goblin))
+tests/errors/tasks.gael:6:11: error: f: argument 1 is string, it must be int
+tests/errors/tasks.gael:7:1: error: yield takes nothing: (yield)
+tests/errors/tasks.gael:8:8: error: done? takes a task, which (async (f ...)) makes; this is (vec int)
+tests/errors/tasks.gael:9:52: error: +: int and float do not mix; convert one, like (int x) or (float x)
+tests/errors/tasks.gael:10:6: error: u is declared (task unit), its value is (task int)

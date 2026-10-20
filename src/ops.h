@@ -110,6 +110,15 @@
 	X(ARENA_BEGIN, 0) /* --        an arena starts: new strings, vecs, maps and pools go into it */ \
 	X(ARENA_END, 0) /* --          it ends: its cells come back at once; anything made in it and still held is an error */ \
 	X(KEEP, 1)     /* x -- x       a: the type; what the value holds from the innermost arena is copied onto the heap */ \
+	X(ASYNC, 2)    /* args -- t    a task runs function a (b: the task type) until it first waits; then this goes on */ \
+	X(AWAIT, 1)    /* t -- r       the task's result once it has ended (a: the task type); a task waits, the main program runs tasks */ \
+	X(SLEEP, 0)    /* f --         wait f seconds of task time; the main program runs tasks meanwhile */ \
+	X(YIELD, 0)    /* --           a task waits for the next pass of the scheduler */ \
+	X(TASKS_STEP, 0) /* f -- i     task time goes f seconds on; every task that can go on runs until it waits again */ \
+	X(TASKS_RUN, 0) /* --          run the tasks until there are none, waiting in real time when they all sleep */ \
+	X(TASK_DONE, 0) /* t -- b      the task has ended */ \
+	X(TASK_TIME, 0) /* -- f        the task time in seconds */ \
+	X(TASK_END, 0) /* r... --      where a task's function returns to: the result goes into the task, which ends */ \
 	X(SHOW, 1)     /* x... --      the REPL's "=> value : type"; a: the type */
 
 #define GAEL_OP_ENUM_(name, n) OP_##name,

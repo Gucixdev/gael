@@ -350,8 +350,26 @@ Potem: makra i moduły (0.2), manifest i resolver gemów (0.3), bufor i okno (0.
   nazw. Wcześniej każde szukanie szło po całej tabeli i kompilacja rosła z kwadratem liczby funkcji: 1000/2000/4000
   funkcji kompilowało się w ~11/24/78 ms, teraz ~7/11/17 ms (z ~2 ms startu procesu; callgrind: 689 mln instrukcji
   → 100 mln). Nieudana jednostka REPL-a, która zabiera nazwy, odbudowuje indeks z tabel.
-- **Następne, po kolei:** traits, tryb wydania aren (po pomiarze), domknięcia, manifest gemów (ładowanie tylko
-  włączonych), bufor i okno. Numery wersji przesuwają się względem planu wyżej.
+- **Zadania, czyli korutyny i async (2026-10-20):** `(async (f x))` uruchamia `f` jako zadanie - korutynę ze
+  stosem (stackful) - od razu, do pierwszego czekania, i daje `(task T)`, gdzie T to wynik `f`. Czekanie: `(sleep s)`
+  (sekundy czasu zadań), `(yield)` (do następnego kroku), `(await t)` (wynik innego zadania, typ T sprawdzony w
+  kompilacji). Bez kolorowania funkcji (jak w Lua, Go, GDScripcie): czekać można głęboko w wywołaniach, funkcje po
+  drodze nic nie deklarują. Pętla gry woła `(tasks-step dt)` (czas zadań rośnie o dt, każde gotowe zadanie biegnie do
+  następnego czekania, wynik: ile zadań zostało), skrypt albo serwer `(tasks-run)` (do końca wszystkich, w prawdziwym
+  czasie, proces śpi, gdy wszystkie śpią); `await` i `sleep` w programie głównym też puszczają zadania. Wykrywane:
+  wzajemne czekanie (deadlock), `await` na sobie, `yield` poza zadaniem, `tasks-step` z zadania, czekanie wewnątrz
+  `arena` (arena skończyłaby się poza kolejnością). Zadanie nie używa aren kodu, który je wznowił (to, co robi, idzie
+  na stertę), więc `(arena (tasks-step dt))` w pętli klatki działa. W VM: zadanie ma własny stos wartości i ramek
+  (bloki sterty, podwajane przy głębokich wywołaniach), przełączenie to zapis i odczyt rejestrów, funkcja zadania
+  wraca do instrukcji `TASK_END`; czekanie programu głównego to instrukcja wykonywana ponownie po każdym puszczonym
+  zadaniu, więc w C nie ma pętli wokół interpretera. Koszt dla zwykłych wywołań: +0,9% instrukcji (callgrind, `fib 24`).
+  Jeszcze nie: anulowanie zadania z zewnątrz (`cancel`) i porzucenie czekającego zadania - do tego trzeba map stosu
+  (które sloty i wartości na stosie trzymają referencje w każdym miejscu wywołania), żeby refcount mógł zwolnić to,
+  co zadanie trzyma. Na razie zadanie kończy się samo (pętla sprawdza warunek), a z `GAEL_CHECK=1` to, co trzymają
+  zadania czekające do końca programu, liczy się jako niezwolnione.
+- **Następne, po kolei:** manifest gemów (`:requires`, `:provides`, `:excludes`, wywołania między gemami sprawdzane
+  w kompilacji, ładowanie tylko włączonych), mapy stosu (anulowanie zadań), traits, tryb wydania aren (po pomiarze),
+  domknięcia, bufor i okno. Numery wersji przesuwają się względem planu wyżej.
 
 ## Notatki → stan
 
@@ -379,7 +397,8 @@ Każdy punkt z notatek o godot-rs i gaelu, z tym, co się z nim stało. ✓ zrob
 - ✓ makra; ○ makra gemu ecs (`ecs-query`), traits, abstrakcje bez boilerplate i bez pułapek C++.
 - ✓ zasada nazw: typy i formy gemu z prefiksem systemu (`ECSEntity`, `(ecs-query ...)`, `DBQuery`).
 - ✓ x-macro dla opkodów (`src/ops.h`).
-- ○ async/await, korutyny, fibery, joby (fine-grained, master/slave) - gemy.
+- ✓ async/await, korutyny (zadania ze stosem: `async`, `await`, `sleep`, `yield`, `tasks-step`, `tasks-run`);
+  ○ anulowanie zadań (mapy stosu), joby (fine-grained, master/slave) na wątkach - gemy.
 - ○ typy deltatime, tick, tag, uuid; ○ typy SIMD i cache-friendly; ○ kluczowa matematyka z czasem do rdzenia w C.
 - ✓ `@export` przed `def` jak w GDScripcie, `gael -x` jako tekstowy inspektor; ○ „lazy export” (eksport bez pisania typu), adnotacje na polach i nodach.
 - ✓ moduły (`use`); ○ gemy rozszerzają typy i pętle, rdzeń daje podstawy.

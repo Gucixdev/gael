@@ -23,13 +23,14 @@ typedef union {
 #define VM_STACK (1 << 16)
 #define VM_FRAMES (1 << 12)
 
-typedef struct {
-	i32 ret_pc, fp;
-} VFrame;
+/* a call frame is one cell: where to return and the caller's frame start */
+#define FRAME(ret_pc, fp) ((i64)(ret_pc) << 32 | (i64)(u32)(fp))
+#define FRAME_PC(c) ((i32)((c).i >> 32))
+#define FRAME_FP(c) ((i32)(u32)(c).i)
 
 static Cell g_global_cells[MAX_GLOBAL_CELLS];
 static Cell g_vstack[VM_STACK];
-static VFrame g_vframes[VM_FRAMES];
+static Cell g_vframes[VM_FRAMES];
 
 /* The heap: one array of 2^g_heap_order cells, reserved as address space when the VM starts (the system gives it
  * pages only where something is written), like holyc's flat arena. Blocks of 2^k cells, each starting at a multiple
@@ -138,6 +139,7 @@ typedef struct {
 } ArenaLevel;
 static ArenaLevel g_arenas[MAX_ARENAS];
 static i32 g_narenas;
+static i32 g_arena_floor; /* the arenas below it belong to whoever resumed the running task: the task makes nothing in them */
 static i64 g_arena_lo, g_arena_top; /* the area's first cell; the innermost arena's next free one */
 
 static i64 arena_take(i64 n)
@@ -150,10 +152,10 @@ static i64 arena_take(i64 n)
 }
 
 /* in_inner H: H was made in the innermost arena */
-static int in_inner(i64 h) { return g_narenas && h >= g_arenas[g_narenas - 1].start && h < g_arena_top; }
+static int in_inner(i64 h) { return g_narenas > g_arena_floor && h >= g_arenas[g_narenas - 1].start && h < g_arena_top; }
 
 /* obj_alloc N: the cells of a new object: from the innermost arena when one runs, else from the heap */
-static i64 obj_alloc(i64 n) { return g_narenas ? arena_take(n) : heap_alloc(n); }
+static i64 obj_alloc(i64 n) { return g_narenas > g_arena_floor ? arena_take(n) : heap_alloc(n); }
 
 /* part_alloc OBJ N: a new block for a part of OBJ: where OBJ is when that is the innermost arena, else on the heap */
 static i64 part_alloc(i64 obj, i64 n) { return in_inner(obj) ? arena_take(n) : heap_alloc(n); }
@@ -238,7 +240,28 @@ static o vm_init(int check)
 /* every object starts with its count and its kind; the kind cell holds the type above the low 8 bits (the vec or
  * map type) or, for a string, its length */
 enum { OB_RC, OB_KIND };
-enum { KIND_STR = 1, KIND_VEC, KIND_MAP, KIND_POOL };
+enum { KIND_STR = 1, KIND_VEC, KIND_MAP, KIND_POOL, KIND_TASK };
+
+/* Tasks. (async (f x)) runs f in a task: a stackful coroutine with a value stack and frames of its own, heap blocks
+ * that grow when a call needs more. The VM switches between the main program and a task by saving the registers of
+ * one (into g_main, or into the task) and loading the other's. A task that waits (sleep, yield, await) goes back to
+ * whoever ran it - the code that started it the first time, the main program's scheduler after that - and from its
+ * first wait on it is in g_tasks, which holds a count on it until it ends. A task object: */
+enum { TK_STATE = 2, TK_STACK, TK_CAP, TK_FRAMES, TK_FCAP, TK_SP, TK_FP, TK_NF, TK_PC, TK_UNTIL, TK_WAIT, TK_RESUMER,
+       TK_STEP, TK_FLOOR, TK_LINE, TK_LISTED, TK_RESULT };
+enum { TS_READY, TS_SLEEPING, TS_WAITING, TS_RUNNING, TS_DONE, TS_DEAD };
+enum { MW_STEP = 1, MW_RUN, MW_AWAIT, MW_SLEEP };
+#define MAX_TASKS (1 << 16)
+#define TASK_STACK0 256 /* the cells a task starts with, doubled when a call needs more */
+#define TASK_FRAMES0 16
+
+static i64 g_tasks[MAX_TASKS]; /* the tasks that wait, in the order they first did */
+static i32 g_ntasks;
+static i64 g_cur;              /* the task running; 0: the main program */
+static f64 g_task_time;        /* seconds: tasks-step adds its dt, the main program's waits the real time */
+static i64 g_step;             /* passes of the scheduler: a task that yields waits for the next one */
+static struct { i32 sp, fp, nf, pc; } g_main;                     /* its registers while a task runs */
+static struct { i32 kind, at, last; i64 task; f64 until, wall; } g_mwait; /* what the main program waits for; kind 0: nothing */
 
 static Ty obj_type(i64 h) { return (Ty)((u64)g_heap[h + OB_KIND].i >> 8); }
 
@@ -394,6 +417,16 @@ static o obj_free(i64 h)
 		part_free(hd[MH_ENT].i, hd[MH_CAP].i * esize);
 		part_free(hd[MH_IDX].i, hd[MH_SLOTS].i);
 		part_free(h, MH_CELLS);
+		break;
+	}
+	case KIND_TASK: {
+		Ty rt = g_tys[obj_type(h)].elem;
+		if (hd[TK_STATE].i == TS_DONE) refs(hd + TK_RESULT, 1, rt, 0);
+		if (hd[TK_STACK].i) { /* a task a runtime error stopped (REPL): what its stack holds cannot be known */
+			heap_free(hd[TK_STACK].i, hd[TK_CAP].i);
+			heap_free(hd[TK_FRAMES].i, hd[TK_FCAP].i);
+		}
+		heap_free(h, TK_RESULT + cells(rt));
 		break;
 	}
 	default:
@@ -650,6 +683,9 @@ static o print_value(Ty type, const Cell *c)
 			out_s("(fn ");
 			out_s(v->i > 0 ? g_fns[v->i - 1].name : "none");
 			out_s(")");
+		} else if (ti->kind == K_TASK) {
+			i64 state = g_heap[v->i + TK_STATE].i;
+			out_s(state == TS_DONE ? "(task done)" : state == TS_DEAD ? "(task stopped)" : "(task waiting)");
 		} else if (ti->kind == K_POOL || ti->kind == K_HANDLE) {
 			char buf[64];
 			if (ti->kind == K_POOL) sprintf(buf, "(pool %ld/%ld)", (long)g_heap[v->i + PH_COUNT].i, (long)g_heap[v->i + PH_CAP].i);
@@ -1097,7 +1133,7 @@ static int keep(Cell *val, Ty t)
 	size_t off = (g_text.used + 7) & ~(size_t)7;
 	i64 *olds, nolds = 0, k, room = (i64)((g_text.cap - off) / sizeof(i64));
 	const TyInfo *ti = &g_tys[t];
-	if (!g_narenas || !ti->nleaf) return 1;
+	if (g_narenas <= g_arena_floor || !ti->nleaf) return 1;
 	olds = (i64 *)(o *)(g_text.base + off);    /* the value's own objects of the arena, released at the end */
 	g_kcap = (room - ti->nleaf) / 3;
 	g_kept = olds + ti->nleaf;
@@ -1179,18 +1215,238 @@ static o args_init(int argc, char **argv)
 }
 
 /* vm_run PC: run from PC until HALT; 0 when it finished, 1 after a runtime error */
+static i64 task_state(i64 t) { return g_heap[t + TK_STATE].i; }
+
+/* task_ready T: the waiting task T can go on now */
+static int task_ready(i64 t)
+{
+	const Cell *tk = g_heap + t;
+	switch (tk[TK_STATE].i) {
+	case TS_READY: return tk[TK_STEP].i != g_step;
+	case TS_SLEEPING: return tk[TK_UNTIL].f <= g_task_time;
+	case TS_WAITING: return task_state(tk[TK_WAIT].i) >= TS_DONE;
+	default: return 0;
+	}
+}
+
+/* task_unlist I: the task at I in g_tasks has ended: out of the list, which lets go of its count */
+static o task_unlist(i32 i)
+{
+	i64 t = g_tasks[i];
+	memmove(g_tasks + i, g_tasks + i + 1, (size_t)(g_ntasks - i - 1) * sizeof(i64));
+	g_ntasks--;
+	g_heap[t + TK_LISTED].i = 0;
+	obj_release(t);
+}
+
+static f64 wall_time(void)
+{
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (f64)ts.tv_sec + (f64)ts.tv_nsec / 1e9;
+}
+
+static o wall_sleep(f64 secs)
+{
+	struct timespec ts;
+	if (secs <= 0) return;
+	ts.tv_sec = (time_t)secs;
+	ts.tv_nsec = (long)((secs - (f64)ts.tv_sec) * 1e9);
+	while (nanosleep(&ts, &ts) && errno == EINTR) {}
+}
+
+/* main_wait: the main program waits for what g_mwait says, and runs the tasks meanwhile, in passes over g_tasks.
+ * 1: g_tasks[g_mwait.last] goes on now (the caller switches to it; when it waits or ends, the main program is back at
+ * the same instruction, which calls this again); 0: the wait is over; -1: nothing can ever go on - every task waits
+ * for another one. Between passes the task time follows the real time, and when every task sleeps the process
+ * sleeps until the first one wakes. */
+static int main_wait(void)
+{
+	for (;;) {
+		f64 next = -1, now;
+		i32 i;
+		if (g_mwait.last >= 0) {
+			if (task_state(g_tasks[g_mwait.last]) >= TS_DONE) {
+				task_unlist(g_mwait.last);
+				if (g_mwait.at > g_mwait.last) g_mwait.at--;
+			}
+			g_mwait.last = -1;
+		}
+		if (g_mwait.kind == MW_AWAIT && task_state(g_mwait.task) >= TS_DONE) return 0;
+		if (g_mwait.kind == MW_RUN && !g_ntasks) return 0;
+		if (g_mwait.kind == MW_SLEEP && g_task_time >= g_mwait.until) return 0;
+		while (g_mwait.at < g_ntasks && !task_ready(g_tasks[g_mwait.at])) {
+			if (task_state(g_tasks[g_mwait.at]) == TS_DEAD) task_unlist(g_mwait.at);
+			else g_mwait.at++;
+		}
+		if (g_mwait.at < g_ntasks) {
+			g_mwait.last = g_mwait.at++;
+			return 1;
+		}
+		if (g_mwait.kind == MW_STEP) return 0; /* one pass */
+		g_step++;
+		g_mwait.at = 0;
+		now = wall_time();
+		g_task_time += now - g_mwait.wall;
+		g_mwait.wall = now;
+		for (i = 0; i < g_ntasks; i++) {
+			const Cell *tk = g_heap + g_tasks[i];
+			if (task_ready(g_tasks[i])) { next = g_task_time; break; }
+			if (tk[TK_STATE].i == TS_SLEEPING && (next < 0 || tk[TK_UNTIL].f < next)) next = tk[TK_UNTIL].f;
+		}
+		if (g_mwait.kind == MW_SLEEP && (next < 0 || g_mwait.until < next)) next = g_mwait.until;
+		if (next < 0) return -1;
+		if (next > g_task_time) {
+			wall_sleep(next - g_task_time);
+			now = wall_time();
+			g_task_time += now - g_mwait.wall;
+			g_mwait.wall = now;
+			if (g_task_time < next) g_task_time = next; /* it slept at least that long */
+		}
+	}
+}
+
+/* main_wait_start KIND: the main program starts to wait */
+static o main_wait_start(i32 kind)
+{
+	g_mwait.kind = kind;
+	g_mwait.at = 0;
+	g_mwait.last = -1;
+	g_mwait.wall = wall_time();
+	g_step++;
+}
+
+/* task_new FN TYPE LINE: a task that will run FN from its start, with its stack and frames; its parameters are for
+ * the caller to copy in. -1 when the heap is full */
+static i64 task_new(const Fn *fn, Ty type, i32 line)
+{
+	i64 need = fn->nslots + fn->maxdepth, cap = TASK_STACK0, size = TK_RESULT + cells(g_tys[type].elem), t, st, frs, k;
+	Cell *tk;
+	while (cap < need) cap *= 2;
+	if ((t = heap_alloc(size)) < 0) return -1;
+	if ((st = heap_alloc(cap)) < 0) { heap_free(t, size); return -1; }
+	if ((frs = heap_alloc(TASK_FRAMES0)) < 0) { heap_free(st, cap); heap_free(t, size); return -1; }
+	obj_born(t, KIND_TASK, (u64)type);
+	tk = g_heap + t;
+	tk[TK_STATE].i = TS_RUNNING;
+	tk[TK_STACK].i = st;
+	tk[TK_CAP].i = cap;
+	tk[TK_FRAMES].i = frs;
+	tk[TK_FCAP].i = TASK_FRAMES0;
+	tk[TK_SP].i = fn->nslots;
+	tk[TK_FP].i = 0;
+	tk[TK_NF].i = 1;
+	tk[TK_PC].i = fn->entry;
+	tk[TK_UNTIL].f = 0;
+	tk[TK_WAIT].i = 0;
+	tk[TK_RESUMER].i = 0;
+	tk[TK_STEP].i = g_step;
+	tk[TK_FLOOR].i = 0;
+	tk[TK_LINE].i = line;
+	tk[TK_LISTED].i = 0;
+	for (k = fn->pcells; k < fn->nslots; k++) g_heap[st + k].i = 0;
+	g_heap[frs].i = FRAME(g_task_end, 0); /* the function's return lands on TASK_END */
+	return t;
+}
+
+/* task_grow CELLS FRAMES: the running task's stack made big enough for CELLS cells and FRAMES frames (doubling, up to
+ * the main program's limits); 0 when it cannot be */
+static int task_grow(i64 cells_needed, i64 frames_needed)
+{
+	Cell *tk = g_heap + g_cur;
+	i64 cap = tk[TK_CAP].i, fcap = tk[TK_FCAP].i, at;
+	if (cells_needed > VM_STACK || frames_needed > VM_FRAMES) return 0;
+	if (cells_needed > cap) {
+		while (cap < cells_needed) cap *= 2;
+		if ((at = heap_alloc(cap)) < 0) return 0;
+		memcpy(g_heap + at, g_heap + tk[TK_STACK].i, (size_t)tk[TK_CAP].i * sizeof(Cell));
+		heap_free(tk[TK_STACK].i, tk[TK_CAP].i);
+		tk[TK_STACK].i = at;
+		tk[TK_CAP].i = cap;
+	}
+	if (frames_needed > fcap) {
+		while (fcap < frames_needed) fcap *= 2;
+		if ((at = heap_alloc(fcap)) < 0) return 0;
+		memcpy(g_heap + at, g_heap + tk[TK_FRAMES].i, (size_t)tk[TK_FCAP].i * sizeof(Cell));
+		heap_free(tk[TK_FRAMES].i, tk[TK_FCAP].i);
+		tk[TK_FRAMES].i = at;
+		tk[TK_FCAP].i = fcap;
+	}
+	return 1;
+}
+
+#define DEADLOCK "every task waits for another task, so none can go on"
+
+/* The registers of the running context out to where they wait (g_main, or the task), and another context's in */
+#define SAVE_REGS(at_pc) do { \
+	if (g_cur) { \
+		Cell *tk_ = g_heap + g_cur; \
+		tk_[TK_SP].i = sp; tk_[TK_FP].i = fp; tk_[TK_NF].i = nf; tk_[TK_PC].i = (at_pc); \
+	} else { \
+		g_main.sp = sp; g_main.fp = fp; g_main.nf = nf; g_main.pc = (at_pc); \
+	} } while (0)
+#define LOAD_REGS(t) do { \
+	g_cur = (t); \
+	if (g_cur) { \
+		const Cell *tk_ = g_heap + g_cur; \
+		s = g_heap + tk_[TK_STACK].i; fr = g_heap + tk_[TK_FRAMES].i; cap = tk_[TK_CAP].i; fcap = tk_[TK_FCAP].i; \
+		sp = (i32)tk_[TK_SP].i; fp = (i32)tk_[TK_FP].i; nf = (i32)tk_[TK_NF].i; pc = (i32)tk_[TK_PC].i; \
+	} else { \
+		s = g_vstack; fr = g_vframes; cap = VM_STACK; fcap = VM_FRAMES; \
+		sp = g_main.sp; fp = g_main.fp; nf = g_main.nf; pc = g_main.pc; \
+	} } while (0)
+/* the running task's stack and frames, after task_grow moved them */
+#define LOAD_STACK() do { \
+	const Cell *tk_ = g_heap + g_cur; \
+	s = g_heap + tk_[TK_STACK].i; fr = g_heap + tk_[TK_FRAMES].i; cap = tk_[TK_CAP].i; fcap = tk_[TK_FCAP].i; \
+	} while (0)
+/* the running task waits (its state is set): back to whoever ran it; on its first wait it joins g_tasks */
+#define SUSPEND(at_pc) do { \
+	i64 t_ = g_cur; \
+	if (g_narenas != g_arena_floor) return vm_error(in->line, "a task cannot wait inside an arena: the arena would end out of turn"); \
+	SAVE_REGS(at_pc); \
+	if (!g_heap[t_ + TK_LISTED].i) { \
+		if (g_ntasks == MAX_TASKS) return vm_error(in->line, "too many tasks waiting (MAX_TASKS)"); \
+		g_tasks[g_ntasks++] = t_; \
+		g_heap[t_ + TK_LISTED].i = 1; \
+		obj_retain(t_); \
+	} \
+	g_arena_floor = (i32)g_heap[t_ + TK_FLOOR].i; \
+	LOAD_REGS(g_heap[t_ + TK_RESUMER].i); } while (0)
+/* the main program lets task T go on; it comes back to this instruction */
+#define RESUME(t) do { \
+	i64 t_ = (t); \
+	SAVE_REGS(pc - 1); \
+	g_heap[t_ + TK_RESUMER].i = 0; \
+	g_heap[t_ + TK_STATE].i = TS_RUNNING; \
+	g_heap[t_ + TK_STEP].i = g_step; \
+	g_heap[t_ + TK_FLOOR].i = g_arena_floor; \
+	g_arena_floor = g_narenas; \
+	LOAD_REGS(t_); } while (0)
+
 static int vm_run(i32 pc)
 {
 	i32 sp = 0, fp = 0, nf = 0;
-	Cell *s = g_vstack;
+	i64 cap = VM_STACK, fcap = VM_FRAMES;
+	Cell *s = g_vstack, *fr = g_vframes;
 	const Ins *in = 0;
 	g_narenas = 0; /* arenas a runtime error left open (REPL) stay used but take nothing new */
+	g_arena_floor = 0;
+	g_mwait.kind = 0;
+	if (g_cur) { /* a runtime error stopped a task (REPL): it and the tasks that were running it are dead */
+		i64 t = g_cur;
+		while (t) {
+			g_heap[t + TK_STATE].i = TS_DEAD;
+			t = g_heap[t + TK_RESUMER].i;
+		}
+		g_cur = 0;
+	}
 	for (;;) {
 		in = &g_code[pc++];
 		switch ((Op)in->op) {
 		case OP_HALT: return 0;
 		case OP_ENTER:
-			if (fp + in->a + in->b > VM_STACK) return vm_error(in->line, "stack overflow");
+			if (fp + in->a + in->b > cap) return vm_error(in->line, "stack overflow");
 			while (sp < fp + in->a) s[sp++].i = 0;
 			break;
 		case OP_PUSH_I: s[sp++].i = g_ints[in->a]; break;
@@ -1338,10 +1594,12 @@ static int vm_run(i32 pc)
 				fn = &g_fns[in->a];
 			}
 			nfp = sp - fn->pcells;
-			if (nf == VM_FRAMES || nfp + fn->nslots + fn->maxdepth > VM_STACK)
-				return vm_error(in->line, "stack overflow (recursion too deep?)");
-			g_vframes[nf].ret_pc = pc;
-			g_vframes[nf].fp = fp;
+			if (nf == fcap || nfp + fn->nslots + fn->maxdepth > cap) {
+				if (!g_cur || !task_grow(nfp + fn->nslots + fn->maxdepth, nf + 1))
+					return vm_error(in->line, "stack overflow (recursion too deep?)");
+				LOAD_STACK(); /* the task's stack moved */
+			}
+			fr[nf].i = FRAME(pc, fp);
 			nf++;
 			fp = nfp;
 			while (sp < fp + fn->nslots) s[sp++].i = 0;
@@ -1358,7 +1616,10 @@ static int vm_run(i32 pc)
 			} else {
 				fn = &g_fns[in->a];
 			}
-			if (fp + fn->nslots + fn->maxdepth > VM_STACK) return vm_error(in->line, "stack overflow");
+			if (fp + fn->nslots + fn->maxdepth > cap) {
+				if (!g_cur || !task_grow(fp + fn->nslots + fn->maxdepth, nf)) return vm_error(in->line, "stack overflow");
+				LOAD_STACK();
+			}
 			memmove(s + fp, s + sp - fn->pcells, (size_t)fn->pcells * sizeof(Cell));
 			sp = fp + fn->pcells;
 			while (sp < fp + fn->nslots) s[sp++].i = 0;
@@ -1369,8 +1630,8 @@ static int vm_run(i32 pc)
 			Cell r = s[sp - 1];
 			sp = fp;
 			nf--;
-			fp = g_vframes[nf].fp;
-			pc = g_vframes[nf].ret_pc;
+			fp = FRAME_FP(fr[nf]);
+			pc = FRAME_PC(fr[nf]);
 			s[sp++] = r;
 			break;
 		}
@@ -1378,14 +1639,14 @@ static int vm_run(i32 pc)
 			memmove(s + fp, s + sp - in->a, (size_t)in->a * sizeof(Cell));
 			sp = fp + in->a;
 			nf--;
-			fp = g_vframes[nf].fp;
-			pc = g_vframes[nf].ret_pc;
+			fp = FRAME_FP(fr[nf]);
+			pc = FRAME_PC(fr[nf]);
 			break;
 		case OP_RET_U:
 			sp = fp;
 			nf--;
-			fp = g_vframes[nf].fp;
-			pc = g_vframes[nf].ret_pc;
+			fp = FRAME_FP(fr[nf]);
+			pc = FRAME_PC(fr[nf]);
 			break;
 
 		case OP_PRINT:
@@ -1898,6 +2159,105 @@ static int vm_run(i32 pc)
 		case OP_KEEP:
 			if (!keep(s + sp - cells((Ty)in->a), (Ty)in->a)) return vm_error(in->line, "keep: out of memory (the heap or the text arena is full)");
 			break;
+		case OP_ASYNC: { /* the new task runs at once, until it first waits or ends */
+			const Fn *fn = &g_fns[in->a];
+			i64 t = task_new(fn, (Ty)in->b, in->line);
+			if (t < 0) return vm_error(in->line, HEAP_FULL);
+			memcpy(g_heap + g_heap[t + TK_STACK].i, s + sp - fn->pcells, (size_t)fn->pcells * sizeof(Cell));
+			sp -= fn->pcells;
+			s[sp++].i = t; /* the starter's handle: the task's first count */
+			g_heap[t + TK_RESUMER].i = g_cur;
+			g_heap[t + TK_FLOOR].i = g_arena_floor;
+			SAVE_REGS(pc);
+			g_arena_floor = g_narenas;
+			LOAD_REGS(t);
+			break;
+		}
+		case OP_TASK_END: { /* the task's function returned: its result goes into the task, its stack goes */
+			i64 t = g_cur;
+			Cell *tk = g_heap + t;
+			i32 n = cells(g_tys[obj_type(t)].elem);
+			memcpy(tk + TK_RESULT, s + sp - n, (size_t)n * sizeof(Cell));
+			heap_free(tk[TK_STACK].i, tk[TK_CAP].i);
+			heap_free(tk[TK_FRAMES].i, tk[TK_FCAP].i);
+			tk[TK_STACK].i = tk[TK_FRAMES].i = 0;
+			tk[TK_STATE].i = TS_DONE;
+			g_arena_floor = (i32)tk[TK_FLOOR].i;
+			LOAD_REGS(tk[TK_RESUMER].i);
+			break;
+		}
+		case OP_AWAIT: {
+			i64 t = s[sp - 1].i;
+			Ty rt = g_tys[(Ty)in->a].elem;
+			if (t <= 0) return vm_error(in->line, "this task was never started: a global read before its def ran");
+			if (t == g_cur) return vm_error(in->line, "a task cannot await itself");
+			if (g_cur && task_state(t) < TS_DONE) { /* back here when it has ended */
+				g_heap[g_cur + TK_STATE].i = TS_WAITING;
+				g_heap[g_cur + TK_WAIT].i = t;
+				SUSPEND(pc - 1);
+				break;
+			}
+			if (!g_cur && (task_state(t) < TS_DONE || g_mwait.kind)) { /* the main program runs tasks until it has */
+				int r;
+				if (!g_mwait.kind) {
+					main_wait_start(MW_AWAIT);
+					g_mwait.task = t;
+				}
+				if ((r = main_wait()) > 0) { RESUME(g_tasks[g_mwait.last]); break; }
+				g_mwait.kind = 0;
+				if (r < 0) return vm_error(in->line, DEADLOCK);
+			}
+			if (task_state(t) == TS_DEAD) return vm_error(in->line, "this task was stopped by a runtime error");
+			sp--;
+			memcpy(s + sp, g_heap + t + TK_RESULT, (size_t)cells(rt) * sizeof(Cell));
+			refs(s + sp, 1, rt, 1); /* the task keeps its own copy */
+			sp += cells(rt);
+			obj_release(t);
+			break;
+		}
+		case OP_SLEEP:
+			if (g_cur) {
+				g_heap[g_cur + TK_STATE].i = TS_SLEEPING;
+				g_heap[g_cur + TK_UNTIL].f = g_task_time + s[--sp].f;
+				SUSPEND(pc);
+				break;
+			}
+			if (!g_mwait.kind) {
+				main_wait_start(MW_SLEEP);
+				g_mwait.until = g_task_time + s[--sp].f;
+			}
+			{
+				int r = main_wait();
+				if (r > 0) { RESUME(g_tasks[g_mwait.last]); break; }
+				g_mwait.kind = 0;
+			}
+			break;
+		case OP_YIELD:
+			if (!g_cur) return vm_error(in->line, "yield is for a task; the main program runs its tasks with tasks-step");
+			g_heap[g_cur + TK_STATE].i = TS_READY;
+			SUSPEND(pc);
+			break;
+		case OP_TASKS_STEP:
+		case OP_TASKS_RUN: {
+			int r;
+			if (g_cur) return vm_error(in->line, "the main program runs the tasks, not a task: a task waits with sleep, yield or await");
+			if (!g_mwait.kind) {
+				main_wait_start(in->op == OP_TASKS_STEP ? MW_STEP : MW_RUN);
+				if (in->op == OP_TASKS_STEP) g_task_time += s[--sp].f;
+			}
+			if ((r = main_wait()) > 0) { RESUME(g_tasks[g_mwait.last]); break; }
+			g_mwait.kind = 0;
+			if (r < 0) return vm_error(in->line, DEADLOCK);
+			if (in->op == OP_TASKS_STEP) s[sp++].i = g_ntasks;
+			break;
+		}
+		case OP_TASK_DONE: {
+			i64 t = s[sp - 1].i;
+			s[sp - 1].i = t > 0 && task_state(t) >= TS_DONE;
+			obj_release(t);
+			break;
+		}
+		case OP_TASK_TIME: s[sp++].f = g_task_time; break;
 		case OP_SHOW:
 			sp -= cells((Ty)in->a);
 			g_sink = stdout;
@@ -1939,9 +2299,10 @@ static o disassemble(i32 from, i32 to)
 		if (in->op == OP_PUSH_F) { g_sink = stdout; fputs("\t(", stdout); print_float(g_floats[in->a]); putchar(')'); }
 		if (in->op == OP_PUSH_S) printf("\t(\"%.40s\")", g_strs[in->a].p);
 		if (in->op == OP_PRINT || in->op == OP_PRINTLN || in->op == OP_FORMAT) printf("\t(\"%.40s\")", g_strs[g_fmts[in->a].str].p);
-		if (in->op == OP_CALL || in->op == OP_TAILCALL) printf("\t(%.40s)", g_fns[in->a].name);
+		if (in->op == OP_CALL || in->op == OP_TAILCALL || in->op == OP_ASYNC) printf("\t(%.40s)", g_fns[in->a].name);
 		if (in->op == OP_SHOW || in->op == OP_RETAIN || in->op == OP_DROP || in->op == OP_MAP_KEYS || in->op == OP_MAP_VALUES ||
-		    in->op == OP_KEEP || in->op == OP_WRAP || in->op == OP_F2I || in->op == OP_CALL_V || in->op == OP_TAILCALL_V)
+		    in->op == OP_KEEP || in->op == OP_WRAP || in->op == OP_F2I || in->op == OP_CALL_V || in->op == OP_TAILCALL_V ||
+		    in->op == OP_AWAIT)
 			printf("\t(%.40s)", tn((Ty)in->a));
 		if (in->op == OP_RELEASE_L || in->op == OP_RELEASE_G || in->op == OP_VEC_NEW || in->op == OP_MAP_NEW || in->op == OP_POOL_NEW)
 			printf("\t(%.40s)", tn((Ty)in->b));

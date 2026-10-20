@@ -1,0 +1,1 @@
+tests/errors/task-arena.gael:3: runtime error: a task cannot wait inside an arena: the arena would end out of turn
