@@ -332,7 +332,7 @@ static o vec_store(const Cell *hd, i64 i, i64 size, const Cell *from)
 enum { MH_COUNT = 2, MH_USED, MH_CAP, MH_ENT, MH_SLOTS, MH_IDX, MH_CELLS };
 
 static i64 map_vsize(i64 m) { return cells(g_tys[obj_type(m)].elem); }
-static int map_strkeys(i64 m) { return g_tys[obj_type(m)].key == T_STR; }
+static int map_strkeys(i64 m) { return g_tys[obj_type(m)].key == T_STR || g_tys[obj_type(m)].key == T_PATH; }
 
 /* A pool: [count][kind][cap][elements][free][data][gens]; a fixed number of slots, the elements as columns like a
  * vec's (cell C of slot I at data + C * cap + I). gens holds each slot's generation, odd while the slot holds an
@@ -666,6 +666,9 @@ static o print_value(Ty type, const Cell *c)
 			print_float(v->f);
 		} else if (st[n - 1].t == T_BOOL) {
 			out_s(v->i ? "true" : "false");
+		} else if (st[n - 1].t == T_PATH) {
+			out_s("$");
+			out(STR_P(v->i), STR_LEN(v->i));
 		} else if (st[n - 1].t == T_STR && n > 1) {
 			print_quoted(v->i);
 		} else if (st[n - 1].t == T_STR) {
@@ -1230,6 +1233,31 @@ static int vm_run(i32 pc)
 			if (s[sp].i == 0) return vm_error(in->line, "division by zero");
 			s[sp - 1].i = (i64)(in->op == OP_DIV_U ? (u64)s[sp - 1].i / (u64)s[sp].i : (u64)s[sp - 1].i % (u64)s[sp].i);
 			break;
+		case OP_BAND: sp--; s[sp - 1].i = (i64)((u64)s[sp - 1].i & (u64)s[sp].i); break;
+		case OP_BOR: sp--; s[sp - 1].i = (i64)((u64)s[sp - 1].i | (u64)s[sp].i); break;
+		case OP_BXOR: sp--; s[sp - 1].i = (i64)((u64)s[sp - 1].i ^ (u64)s[sp].i); break;
+		case OP_BNOT: s[sp - 1].i = (i64)~(u64)s[sp - 1].i; break;
+		case OP_SHL:
+		case OP_SHR: { /* a: the int type */
+			Ty t = (Ty)in->a;
+			i64 n = s[sp - 1].i, bits = int_bits(t);
+			u64 v = (u64)s[sp - 2].i;
+			if (n < 0 || n >= bits) {
+				char msg[96];
+				sprintf(msg, "a shift by %ld does not fit a %ld-bit int", (long)n, (long)bits);
+				return vm_error(in->line, msg);
+			}
+			sp--;
+			if (in->op == OP_SHR && !is_unsigned(t) && s[sp - 1].i < 0) v = ~(~v >> n); /* the sign comes in from the left */
+			else v = in->op == OP_SHR ? v >> n : v << n;
+			s[sp - 1].i = (i64)v;
+			if (bits < 64) { /* back into the type, as WRAP does */
+				u64 mask = ((u64)1 << bits) - 1, sign = (mask >> 1) + 1;
+				v &= mask;
+				s[sp - 1].i = is_unsigned(t) || !(v & sign) ? (i64)v : -(i64)(mask - v) - 1;
+			}
+			break;
+		}
 		case OP_WRAP: { /* keep the low bits; a signed type gets its sign back */
 			u64 v = (u64)s[sp - 1].i, mask = ((u64)1 << int_bits((Ty)in->a)) - 1, sign = (mask >> 1) + 1;
 			v &= mask;
@@ -1392,7 +1420,8 @@ static int vm_run(i32 pc)
 			s[sp - 1].i = h;
 			break;
 		}
-		case OP_SYSTEM: {
+		case OP_SYSTEM:
+		case OP_RUN: {
 			i64 cmd = s[sp - 1].i;
 			const char *c = c_str(cmd);
 			int st;
@@ -1400,7 +1429,8 @@ static int vm_run(i32 pc)
 			fflush(stdout);
 			st = system(c);
 			obj_release(cmd);
-			s[sp - 1].i = st == -1 ? -1 : (st >> 8) & 0xff; /* the exit status as the shell reports it (Linux) */
+			st = st == -1 ? -1 : (st >> 8) & 0xff; /* the exit status as the shell reports it (Linux) */
+			s[sp - 1].i = in->op == OP_RUN ? st == 0 : st;
 			break;
 		}
 		case OP_PARSE_I: {

@@ -1,8 +1,0 @@
-tests/errors/bash-ops.gael:1:4: error: |: a command is int, it must be a string
-tests/errors/bash-ops.gael:2:1: error: <<< takes the text and at least one command: (<<< text "sort")
-tests/errors/bash-ops.gael:3:1: error: |> takes a value and at least one step: (|> x (f a) g)
-tests/errors/bash-ops.gael:4:7: error: a step of |> is a function name or a call without its first value, like (split "\n")
-tests/errors/bash-ops.gael:5:5: error: && takes bools and commands (strings), this one is int
-tests/errors/bash-ops.gael:6:8: error: > compares string with int; both sides need the same type
-tests/errors/bash-ops.gael:7:1: error: >> takes 2 values: (>> text path)
-tests/errors/bash-ops.gael:8:6: error: and takes bool values, this one is string

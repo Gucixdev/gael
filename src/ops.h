@@ -35,6 +35,8 @@
 	X(RELEASE_G, 2) /* --          a: first global cell, b: the type */ \
 	X(ADD_I, 0) X(SUB_I, 0) X(MUL_I, 0) X(DIV_I, 0) X(MOD_I, 0) X(NEG_I, 0) \
 	X(DIV_U, 0) X(MOD_U, 0) /* u64 */ \
+	X(BAND, 0) X(BOR, 0) X(BXOR, 0) X(BNOT, 0) /* the bits of ints */ \
+	X(SHL, 1) X(SHR, 1) /* i n -- i  a: the int type; n from 0 to its bits - 1; shr keeps the sign of a signed type */ \
 	X(WRAP, 1)     /* i -- i       a: an int type narrower than 64 bits; the value wraps around into it */ \
 	X(F32, 0)      /* f -- f       round to f32 (too big for it: infinity) */ \
 	X(ADD_F, 0) X(SUB_F, 0) X(MUL_F, 0) X(DIV_F, 0) X(NEG_F, 0) \
@@ -60,6 +62,7 @@
 	X(FORMAT, 1)   /* args -- s    the same, into a new string */ \
 	X(SH, 0)       /* s -- s       run a shell command, its output without the newlines at the end */ \
 	X(SYSTEM, 0)   /* s -- i       run a shell command, its exit status */ \
+	X(RUN, 0)      /* s -- b       run a shell command; true when it exits with 0 */ \
 	X(PARSE_I, 0)  /* s -- o       (option int): the string as an int, or none */ \
 	X(PARSE_F, 0)  /* s -- o       (option float) */ \
 	X(SUBSTR, 0)   /* s i i -- s   the bytes from the first index up to the second (a copy; of the program's text, a view) */ \

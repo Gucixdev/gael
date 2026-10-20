@@ -87,11 +87,35 @@ static int is_delim(int c)
 	return c == 0 || c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '(' || c == ')' || c == '"' || c == ';';
 }
 
-/* atom TEXT LEN: the kind of a token - an int, a float, a :keyword, else a symbol */
+/* digit_value C: the value of a digit in bases up to 16, 99 for anything else */
+static u64 digit_value(char c)
+{
+	if (c >= '0' && c <= '9') return (u64)(c - '0');
+	if (c >= 'a' && c <= 'f') return (u64)(c - 'a' + 10);
+	if (c >= 'A' && c <= 'F') return (u64)(c - 'A' + 10);
+	return 99;
+}
+
+/* int_base TEXT LEN AT: 16 for 0x..., 2 for 0b..., else 10; *AT moves past the prefix */
+static u64 int_base(const char *s, size_t n, size_t *at)
+{
+	if (*at + 1 < n && s[*at] == '0' && (s[*at + 1] == 'x' || s[*at + 1] == 'X' || s[*at + 1] == 'b' || s[*at + 1] == 'B')) {
+		*at += 2;
+		return s[*at - 1] == 'x' || s[*at - 1] == 'X' ? 16 : 2;
+	}
+	return 10;
+}
+
+/* atom TEXT LEN: the kind of a token - an int (42, 0xff, 0b1010), a float, a :keyword, else a symbol */
 static NodeKind atom_kind(const char *s, size_t n)
 {
 	size_t i = 0, digits = 0;
+	u64 base;
 	if (n > 1 && (s[0] == '-' || s[0] == '+')) i = 1;
+	if ((base = int_base(s, n, &i)) != 10) {
+		while (i < n && digit_value(s[i]) < base) i++, digits++;
+		return digits && i == n ? N_INT : N_SYM;
+	}
 	while (i < n && s[i] >= '0' && s[i] <= '9') i++, digits++;
 	if (digits && i == n) return N_INT;
 	if (digits && i < n && s[i] == '.') {
@@ -207,14 +231,15 @@ static i32 read_unit(void)
 			g_nodes[node].text = arena_strndup(&g_unit_arena, s + start, len);
 			g_nodes[node].len = (u32)len;
 			if (kind == N_INT) {
-				u64 v = 0, limit;
+				u64 v = 0, limit, base;
 				int neg = s[start] == '-';
 				size_t j = (s[start] == '-' || s[start] == '+') ? 1 : 0;
+				base = int_base(s + start, len, &j);
 				limit = neg ? (u64)1 << 63 : ~(u64)0;
 				for (; j < len; j++) {
-					u64 dgt = (u64)(s[start + j] - '0');
-					if (v > (limit - dgt) / 10) { error_at(l0, c0, "integer does not fit in 64 bits"); v = 0; break; }
-					v = v * 10 + dgt;
+					u64 dgt = digit_value(s[start + j]);
+					if (v > (limit - dgt) / base) { error_at(l0, c0, "integer does not fit in 64 bits"); v = 0; break; }
+					v = v * base + dgt;
 				}
 				g_nodes[node].ival = neg ? (i64)(0 - v) : (i64)v;
 				g_nodes[node].big = !neg && v > ((u64)1 << 63) - 1;

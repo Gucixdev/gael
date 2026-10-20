@@ -14,7 +14,8 @@
  * frame's operand stack gets, so the VM can check that a whole frame fits before entering it. */
 
 typedef u16 Ty;
-enum { T_ERR, T_UNIT, T_INT, T_FLOAT, T_BOOL, T_STR, T_NONE, T_ANY, T_I8, T_I16, T_I32, T_U8, T_U16, T_U32, T_U64, T_F32, T_USER };
+enum { T_ERR, T_UNIT, T_INT, T_FLOAT, T_BOOL, T_STR, T_NONE, T_ANY, T_I8, T_I16, T_I32, T_U8, T_U16, T_U32, T_U64, T_F32, T_PATH,
+	T_USER };
 typedef enum { K_PRIM, K_STRUCT, K_ENUM, K_OPTION, K_VEC, K_MAP, K_POOL, K_HANDLE, K_FN } TyKind;
 
 typedef struct {
@@ -55,7 +56,8 @@ static TyInfo g_tys[MAX_TYS] = {
 	{ "u16", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0 },
 	{ "u32", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0 },
 	{ "u64", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0 },
-	{ "f32", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0 }
+	{ "f32", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0 },
+	{ "NodePath", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0 } /* $Player/Sprite, the program's own text */
 };
 static i32 g_ntys = T_USER;
 static Field g_fields[MAX_FIELDS];
@@ -182,7 +184,7 @@ static u8 g_seen[MAX_VARIANTS];      /* match: the variants an arm already cover
 typedef enum {
 	F_START, F_CALL, F_IF, F_WHEN, F_WHILE, F_DO, F_LET, F_SET, F_AND, F_OR, F_NOT, F_ARITH, F_CMP, F_PRINT,
 	F_CONV, F_BUILTIN, F_NEW, F_SOME, F_MATCH, F_VEC, F_VECOP, F_FOR, F_DOT, F_MAP, F_MAPOP, F_SHPIPE, F_POOL, F_ARENA,
-	F_KEEP, F_CALLV, F_LAMBDA
+	F_KEEP, F_CALLV, F_LAMBDA, F_XOR, F_BITS
 } Form;
 
 typedef struct {
@@ -246,8 +248,8 @@ static int is_float(Ty t) { return t == T_FLOAT || t == T_F32; }
 static int numeric(Ty t) { return is_int(t) || is_float(t); }
 static int is_unsigned(Ty t) { return t >= T_U8 && t <= T_U64; }
 static i32 int_bits(Ty t) { return t == T_I8 || t == T_U8 ? 8 : t == T_I16 || t == T_U16 ? 16 : t == T_I32 || t == T_U32 ? 32 : 64; }
-static int comparable(Ty t) { return numeric(t) || t == T_BOOL || t == T_STR || is_enum(t) || is_handle(t); }
-static int key_type(Ty t) { return is_int(t) || t == T_BOOL || t == T_STR || is_enum(t) || is_handle(t); }
+static int comparable(Ty t) { return numeric(t) || t == T_BOOL || t == T_STR || t == T_PATH || is_enum(t) || is_handle(t); }
+static int key_type(Ty t) { return is_int(t) || t == T_BOOL || t == T_STR || t == T_PATH || is_enum(t) || is_handle(t); }
 static int matchable(Ty t) { return is_int(t) || t == T_BOOL || t == T_STR || is_enum(t) || is_option(t); }
 
 static o depth_add(i32 d)
@@ -275,6 +277,7 @@ static i32 effect(Op op, i32 a, i32 b)
 	case OP_LT_I: case OP_LE_I: case OP_GT_I: case OP_GE_I: case OP_EQ_I: case OP_NE_I:
 	case OP_LT_F: case OP_LE_F: case OP_GT_F: case OP_GE_F: case OP_EQ_F: case OP_NE_F:
 	case OP_EQ_S: case OP_NE_S: case OP_DIV_U: case OP_MOD_U: case OP_LT_U: case OP_LE_U: case OP_GT_U: case OP_GE_U: return -1;
+	case OP_BAND: case OP_BOR: case OP_BXOR: case OP_SHL: case OP_SHR: return -1;
 	case OP_CALL: return cells(g_fns[a].ret) - g_fns[a].pcells;
 	case OP_CALL_V: {
 		i32 k, d = cells(g_tys[a].elem) - 1;
@@ -423,7 +426,8 @@ static const char *const g_reserved[] = {
 	"if", "when", "while", "do", "let", "set", "and", "or", "not", "+", "-", "*", "/", "%", "<", "<=", ">", ">=", "=",
 	"!=", "print", "println", "int", "float", "bool", "string", "unit", "len", "sh", "defn", "def", "true", "false", ":",
 	"struct", "enum", "match", "some", "none", "option", "_", "format", "eprint", "eprintln", "vec", "push", "get", "put",
-	"pop", "for", "use", ".", "map", "insert", "lookup", "has", "remove", "keys", "values", "&&", "||", "|>", "|", "<<<",
+	"pop", "for", "use", ".", "map", "insert", "lookup", "has", "remove", "keys", "values", "chain", "pipe", "pipe-in",
+	"nand", "nor", "xor", "xnor", "bit-and", "bit-or", "bit-xor", "bit-not", "shl", "shr",
 	"pool", "spawn", "handle", "arena", "keep", "fn", "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64"
 };
 
@@ -593,8 +597,8 @@ typedef struct {
 static const Builtin g_builtins[] = {
 	{ "len", "x", "s", 'i', OP_LEN_S, 0, 0 },
 	{ "sh", "s", "command", 's', OP_SH, 0, 0 },
-	{ "$", "s", "command", 's', OP_SH, 0, 0 },
-	{ "$$", "", "", 'i', OP_PID, 0, 0 },
+	{ "run", "s", "command", 'b', OP_RUN, 0, 0 },
+	{ "pid", "", "", 'i', OP_PID, 0, 0 },
 	{ "env", "s", "name", 's', OP_ENV, 0, 0 },
 	{ "system", "s", "command", 'i', OP_SYSTEM, 0, 0 },
 	{ "parse-int", "s", "s", 'I', OP_PARSE_I, 0, 0 },
@@ -608,7 +612,7 @@ static const Builtin g_builtins[] = {
 	{ "trim", "s", "s", 's', OP_TRIM, 0, 0 },
 	{ "read-file", "s", "path", 'O', OP_READ_FILE, 0, 0 },
 	{ "write-file", "ss", "path text", 'b', OP_WRITE_FILE, 0, 0 },
-	{ ">>", "ss", "text path", 'b', OP_WRITE_FILE, 1, 1 }, /* the bash order: what, then where */
+	{ "append-file", "ss", "path text", 'b', OP_WRITE_FILE, 1, 0 },
 	{ "read-line", "", "", 'O', OP_READ_LINE, 0, 0 },
 	{ "getenv", "s", "name", 'O', OP_GETENV, 0, 0 },
 	{ "args", "", "", 'S', OP_ARGS, 0, 0 },
@@ -1052,7 +1056,7 @@ static Op cmp_op(u8 which, Ty t)
 	static const Op ints[] = { OP_LT_I, OP_LE_I, OP_GT_I, OP_GE_I, OP_EQ_I, OP_NE_I };
 	static const Op floats[] = { OP_LT_F, OP_LE_F, OP_GT_F, OP_GE_F, OP_EQ_F, OP_NE_F };
 	static const Op u64s[] = { OP_LT_U, OP_LE_U, OP_GT_U, OP_GE_U, OP_EQ_I, OP_NE_I };
-	if (t == T_STR) return which == 4 ? OP_EQ_S : OP_NE_S;
+	if (t == T_STR || t == T_PATH) return which == 4 ? OP_EQ_S : OP_NE_S;
 	if (t == T_U64) return u64s[which]; /* narrower unsigned ints sit zero-extended, so they compare as ints */
 	return is_float(t) ? floats[which] : ints[which]; /* bools and enum variants compare as ints */
 }
@@ -1217,15 +1221,14 @@ static o compile_atom(i32 n, Ty want)
 		push_type(T_ERR);
 		return;
 	}
-	if (s[0] == '$' && s[1]) { /* $$ the process id, $NAME an environment variable ("" when it is not set) */
-		if (!strcmp(s, "$$")) {
-			emit(OP_PID, 0, 0, nd->line);
-			push_type(T_INT);
+	if (s[0] == '$') { /* $Player/Sprite: a node path, as in GDScript */
+		if (!s[1] || s[1] == '$') {
+			err_node(n, NAME_FMT " is not a node path, which is $Name or $Name/Child; the process id is (pid)", s);
+			push_type(T_ERR);
 			return;
 		}
 		emit(OP_PUSH_S, add_str(s + 1, nd->len - 1), 0, nd->line);
-		emit(OP_ENV, 0, 0, nd->line);
-		push_type(T_STR);
+		push_type(T_PATH);
 		return;
 	}
 	pl.global = 0;
@@ -1277,13 +1280,13 @@ static o compile_atom(i32 n, Ty want)
 	push_type(T_ERR);
 }
 
-/* thread_steps PIPE: (|> x (f a) g) becomes (g (f x a)) - each step gets the value so far as its first argument, the
+/* thread_steps CHAIN: (chain x (f a) g) becomes (g (f x a)) - each step gets the value so far as its first argument, the
  * way a bash pipe hands its output on. The nodes are relinked in place; returns the call that comes out, or -1 */
 static i32 thread_steps(i32 n)
 {
 	i32 cur = next_of(first_of(n)), step = next_of(cur), next;
 	if (cur < 0 || step < 0) {
-		err_node(n, "|> takes a value and at least one step: (|> x (f a) g)");
+		err_node(n, "chain takes a value and at least one step: (chain x (f a) g)");
 		return -1;
 	}
 	for (; step >= 0; step = next) {
@@ -1300,7 +1303,7 @@ static i32 thread_steps(i32 n)
 			g_nodes[head].next = cur;
 			cur = step;
 		} else {
-			err_node(step, "a step of |> is a function name or a call without its first value, like (split \"\\n\")");
+			err_node(step, "a step of chain is a function name or a call without its first value, like (split \"\\n\")");
 			return -1;
 		}
 	}
@@ -1337,10 +1340,16 @@ static o start_list(Frame *f)
 	else if (!strcmp(s, "do")) { f->form = F_DO; f->keep = 1; }
 	else if (!strcmp(s, "let")) f->form = F_LET;
 	else if (!strcmp(s, "set")) f->form = F_SET;
-	else if (!strcmp(s, "and") || !strcmp(s, "&&")) { f->form = F_AND; f->op = (u8)(s[0] == '&'); }
-	else if (!strcmp(s, "or") || !strcmp(s, "||")) { f->form = F_OR; f->op = (u8)(s[0] == '|'); }
-	else if (!strcmp(s, "|") || !strcmp(s, "<<<")) { f->form = F_SHPIPE; f->op = (u8)(s[0] == '<'); }
-	else if (!strcmp(s, "|>")) {
+	else if (!strcmp(s, "and") || !strcmp(s, "nand")) { f->form = F_AND; f->op = (u8)(s[0] == 'n'); }
+	else if (!strcmp(s, "or") || !strcmp(s, "nor")) { f->form = F_OR; f->op = (u8)(s[0] == 'n'); }
+	else if (!strcmp(s, "xor") || !strcmp(s, "xnor")) { f->form = F_XOR; f->op = (u8)(s[1] == 'n'); }
+	else if (!strncmp(s, "bit-", 4) || !strcmp(s, "shl") || !strcmp(s, "shr")) {
+		static const char *const bits[] = { "bit-and", "bit-or", "bit-xor", "bit-not", "shl", "shr" };
+		for (k = 0; k < GAEL_COUNT(bits) && strcmp(s, bits[k]); k++) {}
+		if (k < GAEL_COUNT(bits)) { f->form = F_BITS; f->op = (u8)k; }
+	}
+	else if (!strcmp(s, "pipe") || !strcmp(s, "pipe-in")) { f->form = F_SHPIPE; f->op = (u8)(s[4] == '-'); }
+	else if (!strcmp(s, "chain")) {
 		i32 n = thread_steps(f->node);
 		if (n < 0) { finish(T_ERR); return; }
 		f->node = n; /* compiled as the call it stands for */
@@ -1586,7 +1595,7 @@ static int check_arms(i32 node, i32 first, Ty t)
  * that object is made in the arena */
 static int fresh(i32 n)
 {
-	static const char *const makers[] = { "format", "sh", "$", "|", "<<<", "vec", "map", "pool", "split", "join",
+	static const char *const makers[] = { "format", "sh", "pipe", "pipe-in", "vec", "map", "pool", "split", "join",
 		"read-file", "read-line", "getenv", "env", "keys", "values", "args" };
 	i32 stack[64], ns = 0, head, x;
 	size_t k;
@@ -1594,7 +1603,6 @@ static int fresh(i32 n)
 	while (ns > 0) {
 		n = stack[--ns];
 		if (n < 0) continue;
-		if (is_sym(n) && g_nodes[n].text[0] == '$' && g_nodes[n].text[1] && strcmp(g_nodes[n].text, "$$")) return 1;
 		if (g_nodes[n].kind != N_LIST || !is_sym(head = first_of(n))) continue;
 		for (k = 0; k < GAEL_COUNT(makers); k++) {
 			if (!strcmp(g_nodes[head].text, makers[k])) return 1;
@@ -2004,7 +2012,7 @@ static o run_work(i32 base)
 		case F_OR:
 			if (f->phase == 0) {
 				if (f->k < 1) {
-					err_node(f->node, "%s takes one or more values", f->form == F_AND ? (f->op ? "&&" : "and") : (f->op ? "||" : "or"));
+					err_node(f->node, "%s takes one or more values", g_nodes[first_of(f->node)].text);
 					finish(T_ERR);
 					break;
 				}
@@ -2015,16 +2023,9 @@ static o run_work(i32 base)
 				break;
 			}
 			t = pop_type();
-			if (f->op && t == T_STR) { /* && and || as in bash: a command is true when it exits with 0 */
-				emit(OP_SYSTEM, 0, 0, line);
-				emit(OP_PUSH_K, 0, 0, line);
-				emit(OP_EQ_I, 0, 0, line);
-				t = T_BOOL;
-			}
-			if (t != T_BOOL && t != T_ERR) {
-				if (f->op) err_node(f->cur, "%s takes bools and commands (strings), this one is %s", f->form == F_AND ? "&&" : "||", tn(t));
-				else err_node(f->cur, "%s takes bool values, this one is %s", f->form == F_AND ? "and" : "or", tn(t));
-			}
+			if (t != T_BOOL && t != T_ERR)
+				err_node(f->cur, "%s takes bool values, this one is %s%s", g_nodes[first_of(f->node)].text, tn(t),
+				         t == T_STR ? "; (run \"cmd\") is true when a command succeeds" : "");
 			if (next_of(f->cur) >= 0) {
 				if (g_npatches == MAX_WORK) die("too many and/or operands");
 				g_patches[g_npatches++] = emit(f->form == F_AND ? OP_JF : OP_JT, -1, 0, line);
@@ -2040,8 +2041,88 @@ static o run_work(i32 base)
 				g_npatches = f->mark;
 			}
 			g_depth = f->depth + 1;
+			if (f->op) emit(OP_NOT, 0, 0, line); /* nand, nor */
 			finish(T_BOOL);
 			break;
+
+		case F_XOR: /* (xor a b...): true when an odd number of them are true; xnor: the opposite. Every one runs */
+			if (f->phase == 0) {
+				if (f->k < 2) {
+					err_node(f->node, "%s takes two or more values", f->op ? "xnor" : "xor");
+					finish(T_ERR);
+					break;
+				}
+				f->phase = 1;
+				push_child(f->cur, T_NONE);
+				break;
+			}
+			t = pop_type();
+			if (t != T_BOOL && t != T_ERR) err_node(f->cur, "%s takes bool values, this one is %s", f->op ? "xnor" : "xor", tn(t));
+			if (f->phase == 2) emit(OP_NE_I, 0, 0, line);
+			f->phase = 2;
+			f->cur = next_of(f->cur);
+			if (f->cur >= 0) {
+				push_child(f->cur, T_NONE);
+				break;
+			}
+			if (f->op) emit(OP_NOT, 0, 0, line);
+			finish(T_BOOL);
+			break;
+
+		case F_BITS: { /* (bit-and a b...) bit-or bit-xor, (bit-not a), (shl a n) (shr a n): on ints of one type */
+			static const char *const names[] = { "bit-and", "bit-or", "bit-xor", "bit-not", "shl", "shr" };
+			static const Op ops[] = { OP_BAND, OP_BOR, OP_BXOR };
+			const char *what = names[f->op];
+			if (f->phase == 0) {
+				if (f->op == 3 ? f->k != 1 : f->op > 3 ? f->k != 2 : f->k < 2) {
+					err_node(f->node, f->op == 3 ? "bit-not takes one int" : f->op > 3 ? "%s takes an int and a count: (%s x 3)"
+					                                                      : "%s takes two or more ints", what, what);
+					finish(T_ERR);
+					break;
+				}
+				f->phase = 1;
+				f->res = numeric(f->want) ? f->want : number_hint(f->cur);
+				push_child(f->cur, f->res);
+				break;
+			}
+			t = pop_type();
+			if (f->phase == 3) { /* the count of a shift */
+				if (t != T_INT && t != T_ERR) err_node(f->cur, "%s: the count is %s, it must be int", what, tn(t));
+				if (f->rt != T_ERR) emit(f->op == 4 ? OP_SHL : OP_SHR, f->rt, 0, line);
+				finish(f->rt);
+				break;
+			}
+			if (t != T_ERR && !is_int(t)) {
+				err_node(f->cur, "%s works on ints, not %s", what, tn(t));
+				t = T_ERR;
+			}
+			if (f->phase == 1) {
+				f->rt = t;
+				if (f->op == 3) { /* bit-not */
+					if (t != T_ERR) emit(OP_BNOT, 0, 0, line);
+					if (t != T_ERR) emit_fit(t, line);
+					finish(t);
+					break;
+				}
+				if (f->op > 3) {
+					f->phase = 3;
+					f->cur = next_of(f->cur);
+					push_child(f->cur, T_INT);
+					break;
+				}
+			} else if (f->rt != T_ERR && t != T_ERR && t != f->rt) {
+				err_node(f->cur, "%s: %s and %s do not mix; convert one, like (%s x) or (%s x)", what, tn(f->rt), tn(t), tn(f->rt), tn(t));
+				f->rt = T_ERR;
+			} else if (f->rt != T_ERR && t != T_ERR) {
+				emit(ops[f->op], 0, 0, line); /* zero- or sign-extended stays so: no wrap needed */
+			} else {
+				f->rt = T_ERR;
+			}
+			f->phase = 2;
+			f->cur = next_of(f->cur);
+			if (f->cur >= 0) push_child(f->cur, f->rt != T_ERR ? f->rt : f->res); else finish(f->rt);
+			break;
+		}
 
 		case F_NOT:
 			if (f->phase == 0) {
@@ -2119,8 +2200,6 @@ static o run_work(i32 base)
 			if (t != T_ERR && t2 != T_ERR) {
 				if (t != t2)
 					err_node(f->cur, "%s compares %s with %s; both sides need the same type", g_cmp_names[f->op], tn(t), tn(t2));
-				else if (f->op == 2 && t == T_STR) /* (> text path): bash's redirection, true when it was written */
-					emit(OP_WRITE_FILE, 0, 1, line);
 				else if (f->op < 4 && !numeric(t))
 					err_node(f->cur, "%s orders numbers, not %s", g_cmp_names[f->op], tn(t));
 				else if (t == T_UNIT)
@@ -2245,7 +2324,7 @@ static o run_work(i32 base)
 					break;
 				}
 				f->phase = 1;
-				push_child(f->cur, T_NONE);
+				push_child(f->cur, g_nodes[f->cur].kind == N_INT && g_nodes[f->cur].big ? (Ty)f->a : (Ty)T_NONE); /* (u64 0xff...ff) */
 				break;
 			}
 			t = pop_type();
@@ -2626,11 +2705,11 @@ static o run_work(i32 base)
 			}
 			break;
 
-		case F_SHPIPE: /* (| cmd...) a pipeline, its output; (<<< text cmd...) the same with text on its stdin */
+		case F_SHPIPE: /* (pipe cmd...) a pipeline, its output; (pipe-in text cmd...) the same with text on its stdin */
 			if (f->phase == 0) {
 				if (f->k < 1 + f->op) {
-					err_node(f->node, f->op ? "<<< takes the text and at least one command: (<<< text \"sort\")"
-					                        : "| takes at least one command: (| \"ls\" \"wc -l\")");
+					err_node(f->node, f->op ? "pipe-in takes the text and at least one command: (pipe-in text \"sort\")"
+					                        : "pipe takes at least one command: (pipe \"ls\" \"wc -l\")");
 					finish(T_ERR);
 					break;
 				}
@@ -2642,7 +2721,7 @@ static o run_work(i32 base)
 			}
 			t = pop_type();
 			if (t != T_STR && t != T_ERR)
-				err_node(f->cur, "%s: %s is %s, it must be a string", f->op ? "<<<" : "|", f->op && !f->k ? "the text" : "a command", tn(t));
+				err_node(f->cur, "%s: %s is %s, it must be a string", f->op ? "pipe-in" : "pipe", f->op && !f->k ? "the text" : "a command", tn(t));
 			f->k++;
 			f->cur = next_of(f->cur);
 			if (f->cur >= 0) { push_child(f->cur, T_STR); break; }

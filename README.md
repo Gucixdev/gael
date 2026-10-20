@@ -189,11 +189,13 @@ starts with `;`.
 | `(let ((x 1) (y : float 2.0)) body...)` | locals for the body |
 | `(set x 5)`, `(set b.pos.x 3.0)` | assign to a variable or a field of one; the value must have its type |
 | `(if c then else)`, `(when c body...)`, `(while c body...)`, `(do body...)` | a condition must be a bool; `if` without `else` is unit |
-| `(and a b...)`, `(or a b...)`, `(not a)` | on bools; `and` and `or` stop at the first answer |
-| `(&& a b...)`, `(\|\| a b...)` | the same, but an argument may also be a command, true when it exits with 0, as in bash: `(&& "make" "make install")` |
-| `(+ a b...)`, `-`, `*`, `/` | int with int or float with float; `(- x)` negates |
+| `(and a b...)`, `(or a b...)`, `(not a)`, `(nand a b...)`, `(nor a b...)` | on bools; all but `not` stop at the first answer |
+| `(xor a b...)`, `(xnor a b...)` | true when an odd number of the bools are true, and the opposite; every one is evaluated |
+| `(+ a b...)`, `-`, `*`, `/` | numbers of one type; `(- x)` negates |
 | `(% a b)` | the remainder of two ints |
-| `<`, `<=`, `>`, `>=`, `=`, `!=` | compare two ints or two floats; `=` and `!=` also take bools, strings, enum values and handles |
+| `<`, `<=`, `>`, `>=`, `=`, `!=` | compare two numbers of one type; `=` and `!=` also take bools, strings, enum values, handles and node paths |
+| `(bit-and a b...)`, `bit-or`, `bit-xor`, `(bit-not a)`, `(shl a n)`, `(shr a n)` | the bits of ints of one type; a shift count runs from 0 to the type's bits - 1 (anything else is a runtime error), and `shr` keeps the sign of a signed type. Ints can also be written `0xff` and `0b1010` |
+| `$Player`, `$Enemies/Goblin` | a node path, as in GDScript: a value of type `NodePath`; what it points at comes with the scene tree |
 | `(struct Vec2 (x : float) (y : float))` | a struct; a field can have any type declared above it, other structs and options included |
 | `(Vec2 1.0 2.0)`, `(Vec2 :y 2.0 :x 1.0)` | a struct value, with the fields in order or named; every field must be given |
 | `v.x`, `b.pos.x`, `(get bodies 0).pos.x` | a field of a variable, or of any expression's value: `(expr).name` right after the parenthesis reads as `(. expr name)` |
@@ -216,16 +218,16 @@ starts with `;`.
 | `(len s)` | the length of a string in bytes |
 | `(sh "command")` | run a command with `/bin/sh`, get what it printed, without the newlines at the end |
 | `(system "command")` | run a command, its output goes where gael's goes; get its exit status |
-| `(\|> x (f a) g)` | bash's pipe for values: each step gets the value so far as its first argument, so this is `(g (f x a))` |
-| `(\| "cmd" "cmd"...)`, `(<<< text "cmd"...)` | a pipeline of commands and its output; `<<<` gives the first command `text` on stdin |
-| `(> text path)`, `(>> text path)` | write or append, in bash's order, `true` when it worked; `>` on numbers still compares |
-| `($ "cmd")`, `$$`, `$HOME` | like bash's `$(cmd)`, the process id, an environment variable (`""` when it is not set) |
+| `(run "command")` | run a command; `true` when it exits with 0, so `(and (run "make") (run "make install"))` stops at the first failure |
+| `(chain x (f a) g)` | hand a value on: each step gets the value so far as its first argument, so this is `(g (f x a))` |
+| `(pipe "cmd" "cmd"...)`, `(pipe-in text "cmd"...)` | commands joined like bash's `\|`, and their output; `pipe-in` gives the first command `text` on stdin |
+| `(env "HOME")`, `(pid)` | an environment variable (`""` when it is not set), the process id |
 | `(parse-int s)`, `(parse-float s)` | `(some n)` when the whole string, spaces around it aside, is a number; otherwise `none` |
 | `(substr s from to)`, `(byte s i)`, `(trim s)` | the bytes from `from` up to `to`, one byte as an int, the string without spaces, tabs and newlines around it; the indexes are checked at run time |
 | `(find s part)` | where `part` first starts in `s`, as an `(option int)` |
 | `(split s sep)`, `(join v sep)` | the pieces between the separators as a `(vec string)`, and the pieces put back together |
 | `(char n)` | the one-byte string of a byte, 0 to 255 |
-| `(read-file path)`, `(write-file path text)` | the whole file as an `(option string)`; write a string to a file, `true` when it worked |
+| `(read-file path)`, `(write-file path text)`, `(append-file path text)` | the whole file as an `(option string)`; write or append a string, `true` when it worked |
 | `(read-line)` | the next line of standard input without its newline, as an `(option string)`; `none` at the end |
 | `(args)`, `(getenv name)` | the arguments after the file name as a `(vec string)`; an environment variable as an `(option string)` |
 | `(exit status)` | end the program with this exit status |
@@ -290,8 +292,8 @@ tests/errors/div-zero.gael:1: runtime error: division by zero
 
 ## Status
 
-Version 0.3, tested on Linux x86-64 with gcc 13.3 and clang 18.1. `./test` passes 84 checks per build (25 examples,
-52 compile and runtime error cases, two REPL sessions, five README examples) with gcc, clang and gcc with both
+Version 0.3, tested on Linux x86-64 with gcc 13.3 and clang 18.1. `./test` passes 88 checks per build (27 examples,
+54 compile and runtime error cases, two REPL sessions, five README examples) with gcc, clang and gcc with both
 sanitizers, every run with `GAEL_CHECK=1`. GitHub Actions runs shellcheck on the scripts and `./test` on every push
 (`.github/workflows/test.yml`, ubuntu-24.04).
 

@@ -83,7 +83,7 @@
 (let ((line (format "  %s  " (named 60))))
   (println "[%s] [%s] %v" (trim line) (substr (trim line) 0 3) (find line "60"))
   (println "%s" (join (split (format "%s,%s" (named 61) (named 62)) ",") "+"))
-  (println "%s" (|> (format "  %s " (named 63)) trim (substr 4 6)))
+  (println "%s" (chain (format "  %s " (named 63)) trim (substr 4 6)))
   (println "%b %b" (= (named 64) (named 64)) (!= (named 64) (named 65))))
 
 ; reads that only borrow a variable leave it holding its value

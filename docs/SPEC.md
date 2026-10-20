@@ -291,8 +291,16 @@ Potem: makra i moduły (0.2), manifest i resolver gemów (0.3), bufor i okno (0.
   (`(b.on-click 2)`, `((get handlers 0) 5)` - wyrażenie liczy się przed argumentami), a lokalna nazwa przesłania
   funkcję. `(fn ((x : int)) : int ciało...)` to funkcja bez nazwy, kompilowana w środku otaczającego kodu ze skokiem
   nad nią; nie widzi lokalnych zmiennych dookoła (komunikat mówi to wprost) - domknięcia przyjdą osobno.
-- **Następne, po kolei:** operatory basha jako funkcje (`chain`, `pipe`, `pipe-in`, `run`, `append-file`, `pid`;
-  zostają zwykłe operatory), `$Ścieżka` jako `NodePath`, adnotacje `@export`, wywołania ogonowe, makra higieniczne,
+- **Operatory (decyzja 2026-10-20):** operatory to tylko arytmetyka i porównania (`+ - * / % < <= > >= = !=`); reszta
+  ma słowne nazwy. Logika: `and`, `or`, `not`, `nand`, `nor` (krótkie spięcie), `xor`, `xnor`. Bity intów:
+  `bit-and`, `bit-or`, `bit-xor`, `bit-not`, `shl`, `shr` (licznik od 0 do liczby bitów - 1, inaczej błąd czasu
+  wykonania; `shr` zachowuje znak typu ze znakiem); literały `0xff` i `0b1010`. Operatory basha zastąpione
+  funkcjami: `|>` → `chain`, `|` → `pipe`, `<<<` → `pipe-in`, `&&`/`||` → `and`/`or` z `(run "cmd")`, `>`/`>>` na
+  stringach → `write-file`/`append-file` (`>` znowu tylko porównuje), `($ ...)` → `sh`, `$$` → `(pid)`, `$HOME` →
+  `(env "HOME")`.
+- **`$` jak w GDScripcie (decyzja 2026-10-20):** `$Gracz/Sprite` to wartość typu `NodePath` (stała programu,
+  porównywalna, klucz mapy, drukuje się jako `$Gracz/Sprite`). Węzeł, na który wskazuje, przyjdzie z drzewem sceny.
+- **Następne, po kolei:** adnotacje `@export` (przed formą, nieznana to błąd), wywołania ogonowe, makra higieniczne,
   traits, tryb wydania aren (po pomiarze), manifest gemów, bufor i okno. Numery wersji przesuwają się względem planu
   wyżej.
 
@@ -309,8 +317,9 @@ Każdy punkt z notatek o godot-rs i gaelu, z tym, co się z nim stało. ✓ zrob
 - ✓ listy/array/dict/map/table: `vec` i `map`; ✓ hashmap.
 - ✓ typy o określonym rozmiarze, „można określać, ale nie trzeba” (`int` = `i64`, `float` = `f64`).
 - ✓ automatyczne SoA zamiast AoS na poziomie języka: `(vec struktura)` trzyma każde pole w osobnej kolumnie.
-- ✓ operatory basha: `|>`, `|`, `<<<`, `>`, `>>`, `$`, `$$`, `$ZMIENNA`, `&&` i `||` jak w bashu (komenda = prawda,
-  gdy kończy się kodem 0); ✓ klej jak w bashu: `sh`, `system`, `args`, `getenv`, pliki.
+- ✓ to, co dawały operatory basha, jako funkcje (decyzja 2026-10-20: operatory to tylko arytmetyka i porównania):
+  `chain`, `pipe`, `pipe-in`, `run`, `sh`, `system`, `env`, `pid`, `write-file`, `append-file`; ✓ klej jak w bashu:
+  `args`, `getenv`, pliki. ✓ logika słowami (`nand`, `nor`, `xor`, `xnor`) i bity intów (`bit-and`... `shl`, `shr`).
 - ✓ część edycji tekstu z Perla: `substr`, `find`, `split`, `join`, `trim`, `byte`, `char`; ○ operatory Perla (`=~`,
   wyrażenia regularne).
 - ✓ refcount (stringi z czasu wykonania, `vec`, `map`, `pool`; liczenie wstawia kompilator); ✓ pool na encje z
