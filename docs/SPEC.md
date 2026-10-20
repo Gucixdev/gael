@@ -330,8 +330,25 @@ Potem: makra i moduły (0.2), manifest i resolver gemów (0.3), bufor i okno (0.
   zmiany kończy się tam przepełnieniem stosu). Typ wyniku musi być ten sam co funkcji. Nie są ogonowe: ciało `arena`
   (po nim jest koniec areny), `while`, `for`, argumenty, `and` i `or`. Czas bez zmian (2500 × 4000 wywołań plus
   `fib 27`: ~254 ms wobec ~266 ms, w granicach szumu).
-- **Następne, po kolei:** makra higieniczne, traits, tryb wydania aren (po pomiarze), domknięcia, manifest gemów
-  (ładowanie tylko włączonych), bufor i okno. Numery wersji przesuwają się względem planu wyżej.
+- **Makra higieniczne (2026-10-20):** `(defmacro nazwa (wzorzec szablon)...)` jak `syntax-rules`: pierwsza reguła,
+  której wzorzec pasuje do użycia, przepisuje je, a kompilator sprawdza typy tego, co wyszło. We wzorcu (po `_` w
+  miejscu nazwy makra) symbol to zmienna wzorca, `_` pasuje do wszystkiego, keyword (`:else`, `:in`), liczba i string
+  tylko do siebie, `...` po elemencie - zero lub więcej razy (jedno na listę, elementy po nim wolno). Zamiast listy
+  literałów ze Scheme'a są keywordy, które gael już ma. Higiena przez stempel: każdy symbol wniesiony przez szablon
+  dostaje stempel swojego rozwinięcia, lokalna jest wiązana pod nazwą i stemplem, a symbol widzi tylko lokalne ze
+  swoim stemplem - `tmp` ze `swap` nie łapie `tmp` użytkownika, a wolna nazwa w szablonie (funkcja globalna, inne
+  makro) znaczy to, co na górnym poziomie, nawet gdy w miejscu użycia jest lokalna o tej nazwie. Makra są tylko na
+  górnym poziomie, widoczne w całym pliku (także powyżej definicji) i w plikach, które go używają; na górnym
+  poziomie makro może zrobić globalne, funkcje i typy, kilka naraz przez `(do ...)` (rozwijane przed deklaracjami).
+  Błędy definicji (zmienna dwa razy, `...` bez zmiennej, za mało `...` w szablonie) są w linii definicji, błędy użycia
+  (żadna reguła nie pasuje - z listą wzorców, różne długości pod jednym `...`, makro rozwijające się w nieskończoność)
+  w linii użycia. Analiza pożyczania operandów traktuje użycie makra jak możliwy `set`, bo `set` może być w środku
+  (test pokazał zły wynik bez tego). Koszt: 2000 funkcji z `cond` na 4 gałęzie (8000 rozwinięć) kompiluje się w
+  ~30 ms wobec ~18 ms z ręcznymi `if`. Przy okazji wyszło, że nazwy są szukane liniowo: 1000/2000/4000 funkcji to
+  ~11/24/78 ms kompilacji - do naprawy tablicą haszującą.
+- **Następne, po kolei:** nazwy w tablicach haszujących (szybki start przy dużych programach), traits, tryb wydania
+  aren (po pomiarze), domknięcia, manifest gemów (ładowanie tylko włączonych), bufor i okno. Numery wersji przesuwają
+  się względem planu wyżej.
 
 ## Notatki → stan
 
@@ -354,9 +371,9 @@ Każdy punkt z notatek o godot-rs i gaelu, z tym, co się z nim stało. ✓ zrob
 - ✓ refcount (stringi z czasu wykonania, `vec`, `map`, `pool`; liczenie wstawia kompilator); ✓ pool na encje z
   uchwytami z generacją; ✓ arena per klatka, poziom i żądanie z kontrolą ucieczek; → tryb wydania bez liczenia;
   ○ persistent arena pod snapshoty.
-- ✓ Scheme jako wzór: jedna przestrzeń nazw, funkcje jako wartości, wywołania ogonowe; → makra higieniczne;
-  ○ named let, `cond`, `case`, domknięcia.
-- ○ makra (dostęp do ECS przez makra gemu ecs: `ecs-query`), traits, abstrakcje bez boilerplate i bez pułapek C++.
+- ✓ Scheme jako wzór: jedna przestrzeń nazw, funkcje jako wartości, wywołania ogonowe, makra higieniczne
+  (`defmacro` w stylu `syntax-rules`); ○ named let, `cond` i `case` w bibliotece standardowej (makra), domknięcia.
+- ✓ makra; ○ makra gemu ecs (`ecs-query`), traits, abstrakcje bez boilerplate i bez pułapek C++.
 - ✓ zasada nazw: typy i formy gemu z prefiksem systemu (`ECSEntity`, `(ecs-query ...)`, `DBQuery`).
 - ✓ x-macro dla opkodów (`src/ops.h`).
 - ○ async/await, korutyny, fibery, joby (fine-grained, master/slave) - gemy.

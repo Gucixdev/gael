@@ -118,6 +118,7 @@ typedef struct {
 	const char *name;
 	Ty type;
 	i32 slot; /* the first of its slots in the frame */
+	u32 stamp; /* the stamp of the name that bound it: a symbol sees only locals with its own stamp (macro.c) */
 	u8 alias; /* a name for part of a value something else owns (the x of (some x)): never released by itself */
 } Local;
 
@@ -381,6 +382,7 @@ static int borrow_last(i32 arg, i32 rest)
 		const char *target;
 		if (g_nodes[k].kind != N_LIST) continue;
 		if (!local) return 0;
+		if (head >= 0 && g_nodes[head].kind == N_SYM && find_macro(g_nodes[head].text) >= 0) return 0; /* may hide a set */
 		if (head >= 0 && g_nodes[head].kind == N_SYM && !strcmp(g_nodes[head].text, "set") && (x = next_of(head)) >= 0 &&
 		    g_nodes[x].kind == N_SYM) {
 			target = g_nodes[x].text;
@@ -432,7 +434,8 @@ static const char *const g_reserved[] = {
 	"struct", "enum", "match", "some", "none", "option", "_", "format", "eprint", "eprintln", "vec", "push", "get", "put",
 	"pop", "for", "use", ".", "map", "insert", "lookup", "has", "remove", "keys", "values", "chain", "pipe", "pipe-in",
 	"nand", "nor", "xor", "xnor", "bit-and", "bit-or", "bit-xor", "bit-not", "shl", "shr",
-	"pool", "spawn", "handle", "arena", "keep", "fn", "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64"
+	"pool", "spawn", "handle", "arena", "keep", "fn", "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64",
+	"defmacro", "..."
 };
 
 static int is_builtin(const char *s);
@@ -829,11 +832,12 @@ static i32 add_str(const char *p, u32 len)
 	return g_nstrs++;
 }
 
-static i32 find_local(const char *name)
+/* find_local NAME STAMP: the innermost local bound under NAME by a symbol with this STAMP */
+static i32 find_local(const char *name, u32 stamp)
 {
 	i32 i;
 	for (i = g_nlocals - 1; i >= g_local_floor; i--) {
-		if (!strcmp(g_locals[i].name, name)) return i;
+		if (g_locals[i].stamp == stamp && !strcmp(g_locals[i].name, name)) return i;
 	}
 	return -1;
 }
@@ -910,12 +914,13 @@ static i32 new_slots(i32 n)
 	return s;
 }
 
-static o add_local(const char *name, Ty type, i32 slot)
+static o add_local(const char *name, u32 stamp, Ty type, i32 slot)
 {
 	if (g_nlocals == MAX_LOCALS) die("too many local names in scope (MAX_LOCALS)");
 	g_locals[g_nlocals].name = name;
 	g_locals[g_nlocals].type = type;
 	g_locals[g_nlocals].slot = slot;
+	g_locals[g_nlocals].stamp = stamp;
 	g_locals[g_nlocals].alias = 0;
 	g_nlocals++;
 }
@@ -1054,7 +1059,7 @@ static Ty quiet_type(i32 n)
 	dot = strchr(s, '.');
 	if ((size_t)(dot ? dot - s : (long)strlen(s)) >= sizeof(base)) return T_NONE;
 	sprintf(base, "%.*s", (int)(dot ? dot - s : (long)strlen(s)), s);
-	if ((i = find_local(base)) >= 0) t = g_locals[i].type;
+	if ((i = find_local(base, g_nodes[n].stamp)) >= 0) t = g_locals[i].type;
 	else if ((i = find_global(base)) >= 0) t = g_globals[i].type;
 	for (p = dot; p && is_struct(t); p = strchr(p + 1, '.')) {
 		const char *end = strchr(p + 1, '.');
@@ -1146,7 +1151,7 @@ static int resolve_place(i32 n, Place *pl)
 	if (blen >= sizeof(base)) return -1;
 	memcpy(base, s, blen);
 	base[blen] = 0;
-	if ((i = find_local(base)) >= 0) {
+	if ((i = find_local(base, g_nodes[n].stamp)) >= 0) {
 		pl->global = 0;
 		pl->at = g_locals[i].slot;
 		pl->type = g_locals[i].type;
@@ -1301,7 +1306,7 @@ static o compile_atom(i32 n, Ty want)
 		push_type(intern_fn(g_fns[r].params, g_fns[r].nparams, g_fns[r].ret));
 		return;
 	}
-	for (r = g_local_floor - 1; r >= 0 && strcmp(g_locals[r].name, s); r--) {}
+	for (r = g_local_floor - 1; r >= 0 && (g_locals[r].stamp != nd->stamp || strcmp(g_locals[r].name, s)); r--) {}
 	if (r >= 0) err_node(n, NAME_FMT " is a local of the code around this fn; a fn cannot use those yet, pass it in", s);
 	else if (is_struct(t)) err_node(n, NAME_FMT " is a type; make one with (" NAME_FMT " ...)", s, s);
 	else if (is_enum(t) && g_tys[t].n) err_node(n, NAME_FMT " is a type; a value of it is written " NAME_FMT ".%s", s, s, g_variants[g_tys[t].first]);
@@ -1400,7 +1405,8 @@ static o start_list(Frame *f)
 	else if (!strcmp(s, "fn")) f->form = F_LAMBDA;
 	else if (!strcmp(s, "for")) f->form = F_FOR;
 	else if (!strcmp(s, "match")) f->form = F_MATCH;
-	else if (!strcmp(s, "defn") || !strcmp(s, "def") || !strcmp(s, "struct") || !strcmp(s, "enum") || !strcmp(s, "use")) {
+	else if (!strcmp(s, "defn") || !strcmp(s, "def") || !strcmp(s, "struct") || !strcmp(s, "enum") || !strcmp(s, "use") ||
+	         !strcmp(s, "defmacro")) {
 		err_node(head, NAME_FMT " is only allowed at the top level of a file", s);
 		finish(T_ERR);
 		return;
@@ -1446,6 +1452,14 @@ static o start_list(Frame *f)
 				return;
 			}
 		}
+		if ((fi = find_macro(s)) >= 0) { /* a macro: what it expands to is compiled in its place */
+			i32 x = macro_expand(fi, f->node);
+			if (x < 0) { finish(T_ERR); return; }
+			f->node = x;
+			f->cur = -1;
+			f->k = 0;
+			return;
+		}
 		if (is_struct(t = find_named_type(s))) {
 			f->form = F_NEW;
 			f->a = t;
@@ -1453,7 +1467,7 @@ static o start_list(Frame *f)
 		}
 		if ((fi = find_fn(s)) < 0) {
 			if (t != T_NONE) err_node(head, NAME_FMT " is a type, not a function", s);
-			else if (find_local(s) >= 0 || find_global(s) >= 0) err_node(head, NAME_FMT " is a variable, not a function", s);
+			else if (find_local(s, g_nodes[head].stamp) >= 0 || find_global(s) >= 0) err_node(head, NAME_FMT " is a variable, not a function", s);
 			else err_node(head, "unknown function " NAME_FMT, s);
 			finish(T_ERR);
 			return;
@@ -1667,7 +1681,7 @@ static o escapes(const char *what, i32 place, i32 value)
 	dot = strchr(s, '.');
 	if ((size_t)(dot ? dot - s : (long)strlen(s)) >= sizeof(base)) return;
 	sprintf(base, "%.*s", (int)(dot ? dot - s : (long)strlen(s)), s);
-	i = find_local(base);
+	i = find_local(base, g_nodes[place].stamp);
 	if (i >= mark || (i < 0 && find_global(base) < 0)) return;
 	err_node(value, "%s: " NAME_FMT " lives outside this arena, and this value is made in it, so it would outlive it; (keep x) copies it out",
 	         what, base);
@@ -1698,7 +1712,7 @@ static o start_arm(Frame *f)
 	if (shaped && is_option(t) && head_is(p, "some")) {
 		i32 name = next_of(first_of(p));
 		if (is_sym(name) && strcmp(g_nodes[name].text, "_")) {
-			add_local(g_nodes[name].text, g_tys[t].elem, f->a + 1);
+			add_local(g_nodes[name].text, g_nodes[name].stamp, g_tys[t].elem, f->a + 1);
 			g_locals[g_nlocals - 1].alias = 1; /* the match holds the value */
 		}
 	}
@@ -1783,7 +1797,7 @@ static int lambda_begin(Frame *f)
 	g_depth = g_maxdepth = 0;
 	g_local_floor = g_nlocals; /* the locals around it belong to another frame */
 	for (p = first_of(params), k = 0; p >= 0; p = next_of(p), k++)
-		add_local(g_nodes[first_of(p)].text, g_fns[fi].params[k], new_slots(cells(g_fns[fi].params[k])));
+		add_local(g_nodes[first_of(p)].text, g_nodes[first_of(p)].stamp, g_fns[fi].params[k], new_slots(cells(g_fns[fi].params[k])));
 	f->phase = 1;
 	push_body(body, 1, g_fns[fi].ret);
 	g_work[g_nwork - 1].tail = 1;
@@ -2010,7 +2024,7 @@ static o run_work(i32 base)
 				if (type == T_UNIT) err_node(f->a, NAME_FMT " would hold no value (unit)", name);
 				i = new_slots(cells(type));
 				emit_store(0, i, type, g_nodes[f->a].line);
-				add_local(name, type, i);
+				add_local(name, g_nodes[f->a].stamp, type, i);
 				f->cur = next_of(f->cur);
 				f->phase = 1;
 				break;
@@ -2692,7 +2706,7 @@ static o run_work(i32 base)
 					emit(OP_PUSH_I, add_int(0), 0, line);
 					emit(OP_GE_I, 0, 0, line);
 					f->b = emit(OP_JF, -1, 0, line);
-					add_local(g_nodes[name].text, f->rt, f->a + 2);
+					add_local(g_nodes[name].text, g_nodes[name].stamp, f->rt, f->a + 2);
 					f->phase = 3;
 					push_body(next_of(b), 0, T_UNIT);
 					break;
@@ -2721,7 +2735,7 @@ static o run_work(i32 base)
 				emit(OP_LOAD_L, f->a + 1, 0, line);
 				emit(OP_VEC_GET, cells(f->rt), 1, line);
 				emit_store(0, f->a + 2, f->rt, line);
-				add_local(g_nodes[name].text, f->rt, f->a + 2);
+				add_local(g_nodes[name].text, g_nodes[name].stamp, f->rt, f->a + 2);
 				f->phase = 3;
 				push_body(next_of(b), 0, T_UNIT);
 				break;
@@ -2736,7 +2750,7 @@ static o run_work(i32 base)
 				emit(OP_LOAD_L, f->a + 1, 0, line);
 				emit(OP_LT_I, 0, 0, line);
 				f->b = emit(OP_JF, -1, 0, line);
-				add_local(g_nodes[name].text, T_INT, f->a);
+				add_local(g_nodes[name].text, g_nodes[name].stamp, T_INT, f->a);
 				f->phase = 3;
 				push_body(next_of(f->cur), 0, T_UNIT);
 				break;
@@ -3094,6 +3108,7 @@ static int new_name_ok(i32 name, i32 form, const char *what)
 	if (is_reserved(s)) { err_node(name, NAME_FMT " is a built-in name", s); return 0; }
 	if (find_fn(s) >= 0) { err_node(name, NAME_FMT " is already a function", s); return 0; }
 	if (find_global(s) >= 0) { err_node(name, NAME_FMT " is already a global", s); return 0; }
+	if (find_macro(s) >= 0) { err_node(name, NAME_FMT " is already a macro", s); return 0; }
 	return 1;
 }
 
@@ -3281,6 +3296,10 @@ static o declare_fn(i32 n, int repl)
 		err_node(name, NAME_FMT " is already a type", g_nodes[name].text);
 		return;
 	}
+	if (find_macro(g_nodes[name].text) >= 0) {
+		err_node(name, NAME_FMT " is already a macro", g_nodes[name].text);
+		return;
+	}
 	for (p = first_of(params); p >= 0; p = next_of(p)) {
 		i32 pn = first_of(p), colon = next_of(pn), pt = next_of(colon), q;
 		if (g_nodes[p].kind != N_LIST || !is_sym(pn) || !sym_is(colon, ":") || pt < 0 || next_of(pt) >= 0) {
@@ -3338,7 +3357,7 @@ static o compile_fn(i32 n)
 	g_depth = g_maxdepth = 0;
 	g_local_floor = g_nlocals; /* the top level's locals live in another frame */
 	for (p = first_of(params); p >= 0; p = next_of(p), k++)
-		add_local(g_nodes[first_of(p)].text, g_fns[fi].params[k], new_slots(cells(g_fns[fi].params[k])));
+		add_local(g_nodes[first_of(p)].text, g_nodes[first_of(p)].stamp, g_fns[fi].params[k], new_slots(cells(g_fns[fi].params[k])));
 	rt = g_fns[fi].ret;
 	push_body(body, 1, rt);
 	g_work[g_nwork - 1].tail = 1;
@@ -3392,6 +3411,7 @@ static o compile_def(i32 n, int repl, int exported)
 	if (is_reserved(s)) { err_node(name, NAME_FMT " is a built-in name", s); return; }
 	if (find_fn(s) >= 0) { err_node(name, NAME_FMT " is already a function", s); return; }
 	if (find_named_type(s) != T_NONE) { err_node(name, NAME_FMT " is already a type", s); return; }
+	if (find_macro(s) >= 0) { err_node(name, NAME_FMT " is already a macro", s); return; }
 	compile_expr(value, declared);
 	t = pop_type();
 	type = declared != T_NONE ? declared : t;
@@ -3421,11 +3441,68 @@ static o compile_def(i32 n, int repl, int exported)
 	emit_store(1, g_globals[gi].cell, type, g_nodes[name].line);
 }
 
+/* define_macro N REPL: (defmacro name rule...) at the top level; its name must be free, but the REPL may define a macro
+ * again */
+static o define_macro(i32 n, int repl)
+{
+	i32 name = next_of(first_of(n)), mi;
+	const char *s;
+	if (!is_sym(name)) { err_node(name < 0 ? n : name, "defmacro needs a name: (defmacro swap ((_ a b) template))"); return; }
+	s = g_nodes[name].text;
+	if (is_reserved(s) || strchr(s, '.')) {
+		err_node(name, strchr(s, '.') ? NAME_FMT ": a macro name cannot contain a dot" : NAME_FMT " is a built-in name", s);
+		return;
+	}
+	if (find_fn(s) >= 0) { err_node(name, NAME_FMT " is already a function", s); return; }
+	if (find_global(s) >= 0) { err_node(name, NAME_FMT " is already a global", s); return; }
+	if (find_named_type(s) != T_NONE) { err_node(name, NAME_FMT " is already a type", s); return; }
+	if ((mi = find_macro(s)) >= 0 && !repl) {
+		err_node(name, NAME_FMT " is already a macro (%s)", s, where(g_macros[mi].file, g_macros[mi].line));
+		return;
+	}
+	macro_define(n);
+}
+
+/* expand_top TOP REPL: the top-level forms with every macro use among them expanded in place, before anything is
+ * declared, so a macro can make functions, globals and types. What a macro makes with (do ...) is spliced in, one form
+ * per element, and a defmacro it makes is defined right there. Returns the new first form. */
+static i32 expand_top(i32 top, int repl)
+{
+	i32 prev = -1, n = top, head, mi, x, next, last;
+	while (n >= 0) {
+		next = next_of(n);
+		head = first_of(n);
+		if (g_nodes[n].kind != N_LIST || !is_sym(head)) { prev = n; n = next; continue; }
+		if (!strcmp(g_nodes[head].text, "defmacro") && !g_nodes[n].ival) {
+			define_macro(n, repl);
+			g_nodes[n].ival = 1;
+		}
+		if ((mi = find_macro(g_nodes[head].text)) < 0) { prev = n; n = next; continue; }
+		x = macro_expand(mi, n);
+		if (x >= 0 && head_is(x, "do")) { /* spliced: its elements take its place */
+			last = -1;
+			for (head = next_of(first_of(x)); head >= 0; head = next_of(head)) last = head;
+			if (last >= 0) {
+				g_nodes[last].next = next;
+				x = next_of(first_of(x));
+			} else {
+				x = -1;
+			}
+		} else if (x >= 0) {
+			g_nodes[x].next = next;
+		}
+		if (x < 0) x = next; /* an error, reported, or an empty (do): the form goes */
+		if (prev < 0) top = x; else g_nodes[prev].next = x;
+		n = x; /* what came out may be a macro use too */
+	}
+	return top;
+}
+
 /* everything a failed unit may have added, so the REPL can forget it */
 static struct {
 	i32 ncode, nints, nfloats, nstrs, nfns, nglobals, nglobal_cells, ntys, nfields, nvariants, nfmts, nfmt_tys, nleaves, nguards,
-	    ntparams;
-	size_t perm, text;
+	    ntparams, nmacros, nrules, nmnodes;
+	size_t perm, text, mtext;
 } g_snap;
 static i32 g_snap_entry[MAX_FNS], g_snap_slots[MAX_FNS], g_snap_depth[MAX_FNS];
 
@@ -3453,6 +3530,10 @@ static i32 compile_unit(i32 top, int repl)
 	g_snap.nguards = g_nguards;
 	g_snap.perm = g_perm.used;
 	g_snap.text = g_text.used;
+	g_snap.nmacros = g_nmacros;
+	g_snap.nrules = g_nrules;
+	g_snap.nmnodes = g_nmnodes;
+	g_snap.mtext = g_mtext.used;
 	for (i = 0; i < g_nfns; i++) {
 		g_snap_entry[i] = g_fns[i].entry;
 		g_snap_slots[i] = g_fns[i].nslots;
@@ -3464,6 +3545,14 @@ static i32 compile_unit(i32 top, int repl)
 	g_depth = g_maxdepth = 0;
 	g_ntypes = g_npatches = g_nwork = 0;
 
+	g_expansions = 0;
+	for (n = top; n >= 0; n = next_of(n)) { /* macros first: anything below may use them, and so may the passes below */
+		if (head_is(n, "defmacro")) {
+			define_macro(n, repl);
+			g_nodes[n].ival = 1; /* defined */
+		}
+	}
+	top = expand_top(top, repl);
 	for (n = top; n >= 0; n = next_of(n)) { /* types first, so signatures and bodies can use them */
 		if (head_is(n, "struct")) declare_struct(n, repl);
 		else if (head_is(n, "enum")) declare_enum(n, repl);
@@ -3482,7 +3571,7 @@ static i32 compile_unit(i32 top, int repl)
 		}
 		if (head_is(n, "defn")) { compile_fn(n); continue; }
 		if (head_is(n, "def")) { compile_def(n, repl, exported); exported = 0; continue; }
-		if (head_is(n, "struct") || head_is(n, "enum")) continue;
+		if (head_is(n, "struct") || head_is(n, "enum") || head_is(n, "defmacro")) continue;
 		if (head_is(n, "use")) { /* the loader compiled the file already; here only its shape is checked */
 			i32 arg = next_of(first_of(n));
 			if (arg < 0 || g_nodes[arg].kind != N_STR || next_of(arg) >= 0) err_node(n, "use takes one file name: (use \"lib.gael\")");
@@ -3515,6 +3604,10 @@ static i32 compile_unit(i32 top, int repl)
 	g_nguards = g_snap.nguards;
 	g_perm.used = g_snap.perm;
 	g_text.used = g_snap.text;
+	g_nmacros = g_snap.nmacros;
+	g_nrules = g_snap.nrules;
+	g_nmnodes = g_snap.nmnodes;
+	g_mtext.used = g_snap.mtext;
 	for (i = 0; i < g_nfns; i++) {
 		g_fns[i].entry = g_snap_entry[i];
 		g_fns[i].nslots = g_snap_slots[i];

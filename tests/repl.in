@@ -22,5 +22,11 @@ Light.green
 p
 (use "examples/lib/shapes.gael")
 (width (Rect origin (Vec2 2.0 0.0)))
+(defmacro twice ((_ e) (do e e)))
+(twice (println "hi"))
+(defmacro twice ((_ e) (do e e e)))
+(twice (println "ho"))
+(defmacro bad ((_ a a) a))
+(bad 1 1)
 :q
 (println "not reached")

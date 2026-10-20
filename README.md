@@ -212,6 +212,7 @@ starts with `;`.
 | `(for (x v) body...)`, `(for (k m) body...)`, `(for (h p) body...)`, `(for (i 0 n) body...)` | go over a vec (`x` is a copy of each element), over a map's keys, over the handles of a pool's elements, or over 0, 1, ..., n - 1 |
 | `(arena body...)` | the strings, vecs, maps and pools the body makes (also in the functions it calls) come from one block that is handed back at once when it ends; its value is the body's last one |
 | `(keep x)` | `x` with what it holds from the innermost arena copied out to the heap, so it outlives the arena |
+| `(defmacro name (pattern template)...)` | a macro: the first rule whose pattern matches a use rewrites it, before the types are checked (below) |
 | `(some 5)`, `none` | the two kinds of `(option int)` value; `none` takes its type from where it goes: a declared binding, a parameter, a field, a return type, or the else branch of an `if` whose then branch has one |
 | `(match x (pattern body...)...)` | patterns are `_`, int and string literals, `true` and `false`, enum values (`north` or `Dir.north`), `(some name)` and `none`; every value must be covered, and an arm that can never run is an error |
 | `(print "fmt" args...)`, `(println "fmt" args...)` | `%d` int, `%f` float, `%s` string, `%b` bool, `%v` any value, `%%`; the codes are checked against the arguments when compiling. `eprint` and `eprintln` write to stderr |
@@ -257,6 +258,26 @@ still held (put in a global, say, or in a cycle), that is a runtime error at the
 reference. Where the compiler can see a value made in an arena go somewhere that outlives it (`set` or `push` to a
 variable from outside, or the arena's own value), that is a compile error. `keep` is the way out: it copies the value.
 
+A macro rewrites code before its types are checked, as Scheme's `syntax-rules` does:
+
+```
+(defmacro swap
+  ((_ a b) (let ((tmp a)) (set a b) (set b tmp))))
+(defmacro cond
+  ((_ (:else body ...)) (do body ...))
+  ((_ (c body ...)) (when c body ...))
+  ((_ (c body ...) clause ...) (if c (do body ...) (cond clause ...))))
+```
+
+Each rule is a pattern and a template. In the pattern, after the `_` that stands for the macro's name, a symbol
+matches any one form and names it, `_` matches anything, a keyword like `:else`, a number or a string matches only
+itself, and `...` after an element matches it any number of times (one `...` per list). In the template each name
+becomes what it matched and `x ...` repeats `x` for each match. Macros are hygienic: the `tmp` of `swap` is never
+the `tmp` of the code that uses it, and a name the template uses without binding it means what it means at the top
+level, even where the use has a local of that name. A macro can be used anywhere in its file and in the files that
+use that file; at the top level it can make globals, functions and types, several at once with `(do ...)`.
+`examples/macros.gael` has more.
+
 `@export` before a `def` marks a global the way GDScript's `@export` marks a variable, for an editor's inspector to
 show and change; an annotation gael does not know is a compile error. `gael -x` lists them, with the value when it is
 written as a literal:
@@ -288,6 +309,9 @@ tests/errors/div-zero.gael:1: runtime error: division by zero
   checking and code generation happen in the same pass), and the VM keeps its own call stack, so deep recursion in a
   gael program is a gael runtime error, not a crash. A tail call (`TAILCALL`) moves its arguments down over its own
   frame and jumps, after the compiler has let go of the frame's locals, so it adds no frame.
+- Macros (`src/macro.c`) are checked when defined, kept in a table of their own (a unit's nodes are gone when the next
+  one is read) and matched and copied with explicit stacks. Hygiene is a stamp: each symbol a template brings in
+  carries the stamp of its expansion, and the compiler finds a local by its name and that stamp.
 - Every instruction is listed once in `src/ops.h` (an x-macro); the opcode enum, the disassembler's names and the
   operand counts come from that list.
 - The VM's cells carry no type tag: the compiler has already proved the types, so `ADD_I` reads two ints. A value
@@ -309,8 +333,8 @@ tests/errors/div-zero.gael:1: runtime error: division by zero
 
 ## Status
 
-Version 0.3, tested on Linux x86-64 with gcc 13.3 and clang 18.1. `./test` passes 92 checks per build (29 examples,
-55 compile and runtime error cases, two REPL sessions, six README examples) with gcc, clang and gcc with both
+Version 0.3, tested on Linux x86-64 with gcc 13.3 and clang 18.1. `./test` passes 95 checks per build (30 examples,
+57 compile and runtime error cases, two REPL sessions, six README examples) with gcc, clang and gcc with both
 sanitizers, every run with `GAEL_CHECK=1`. GitHub Actions runs shellcheck on the scripts and `./test` on every push
 (`.github/workflows/test.yml`, ubuntu-24.04).
 

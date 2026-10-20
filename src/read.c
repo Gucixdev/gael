@@ -15,6 +15,7 @@ typedef struct {
 	f64 fval;
 	const char *text; /* symbols, keywords, strings: NUL-terminated, in the unit arena */
 	u32 len;
+	u32 stamp; /* the macro expansion that wrote it, 0 for the program's own text (macro.c) */
 } Node;
 
 #define MAX_NODES (1 << 18)
