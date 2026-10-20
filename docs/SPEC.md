@@ -140,7 +140,12 @@ odwołania do nodów i komponentów w zapytaniach ECS - wszystko przed uruchomie
   zdejmuje jego komendy, keymapy i hooki, a jego dane zwalnia refcount. Skompilowany kod zostaje w pamięci do
   restartu; prawdziwe wyładowanie kodu i cache skompilowanego kodu przyjdą, gdy pomiar pokaże potrzebę. Powód: edytor
   ma z czasem zastąpić Blendera, GIMP-a i Kritę, więc trybów będzie dużo i będą duże - start ma kosztować tyle, co
-  tryby włączone.
+  tryby włączone. Większość gemów i tak włącza się w trakcie pracy, więc ładowanie w działającym programie to główna
+  droga, nie wyjątek. Pomiar (gcc -O2, mediana 7 przebiegów `gael -c`): plik 6000 linii (1000 funkcji ze strukturą,
+  `let`, `match`, `format`) kompiluje się w ~14 ms ponad ~3 ms startu procesu - mniej niż klatka przy 60 fps, więc
+  cache jeszcze niepotrzebny. Ten plik to ~46 tys. instrukcji, a tablica kodu ma dziś 2^18 (razem ~34 tys. linii
+  gaela), funkcji 4096: przed ładowaniem gemów w trakcie te tablice przejdą na rezerwację przestrzeni adresowej jak
+  sterta.
 - **Nowy projekt:** wybór gemów (2d, 3d, sdf, aabb, noise...). **Ustawienia:** globalne i per projekt, warstwami
   (domyślne gemu, globalne, projekt).
 - **Rejestr:** wszystkie gemy na Twoim GitHubie, Ty decydujesz o merge'ach; gałąź `experimental` dla chętnych. Prosty
