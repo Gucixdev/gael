@@ -54,6 +54,8 @@
 	X(LEN_S, 1)    /* s -- i       length in bytes; a: borrowed */ \
 	X(CALL, 1)     /* args -- r    a: function index */ \
 	X(CALL_V, 1)   /* args f -- r  call the function value on top (its number + 1); a: its type */ \
+	X(TAILCALL, 1) /* args --      a call that is the function's last act: the callee takes over this frame */ \
+	X(TAILCALL_V, 1) /* args f --  the same through a function value */ \
 	X(RET_V, 0)    /* r --         return with a one-cell value */ \
 	X(RET_N, 1)    /* r... --      return with a value of a cells */ \
 	X(RET_U, 0)    /* --           return without a value */ \

@@ -118,6 +118,7 @@ typedef struct {
 	const char *name;
 	Ty type;
 	i32 slot; /* the first of its slots in the frame */
+	u8 alias; /* a name for part of a value something else owns (the x of (some x)): never released by itself */
 } Local;
 
 /* a print's format: the string and the type of each value, so the VM can print values of any size */
@@ -194,6 +195,7 @@ typedef struct {
 	u8 form, phase;
 	u8 op;       /* the operator, which comparison, which builtin; set: a global; new: named fields; match: covered */
 	u8 keep;     /* bodies: 1 keeps the value of the last form */
+	u8 tail;     /* its value is the function's result, nothing runs after it: a call here is a tail call */
 	Ty rt;       /* running type, a binding's declared type, the matched type */
 	Ty want;     /* the type the parent expects; T_NONE when it does not know, T_UNIT when it drops the value */
 	Ty res;      /* match: the type of the arms */
@@ -280,8 +282,8 @@ static i32 effect(Op op, i32 a, i32 b)
 	case OP_LT_F: case OP_LE_F: case OP_GT_F: case OP_GE_F: case OP_EQ_F: case OP_NE_F:
 	case OP_EQ_S: case OP_NE_S: case OP_DIV_U: case OP_MOD_U: case OP_LT_U: case OP_LE_U: case OP_GT_U: case OP_GE_U: return -1;
 	case OP_BAND: case OP_BOR: case OP_BXOR: case OP_SHL: case OP_SHR: return -1;
-	case OP_CALL: return cells(g_fns[a].ret) - g_fns[a].pcells;
-	case OP_CALL_V: {
+	case OP_CALL: case OP_TAILCALL: return cells(g_fns[a].ret) - g_fns[a].pcells;
+	case OP_CALL_V: case OP_TAILCALL_V: {
 		i32 k, d = cells(g_tys[a].elem) - 1;
 		for (k = 0; k < g_tys[a].n; k++) d -= cells(g_tparams[g_tys[a].first + k]);
 		return d;
@@ -914,7 +916,28 @@ static o add_local(const char *name, Ty type, i32 slot)
 	g_locals[g_nlocals].name = name;
 	g_locals[g_nlocals].type = type;
 	g_locals[g_nlocals].slot = slot;
+	g_locals[g_nlocals].alias = 0;
 	g_nlocals++;
+}
+
+/* the function being compiled: its first work frame (-1 at the top level) and its return type */
+static i32 g_fn_base = -1;
+static Ty g_fn_ret;
+
+/* tail_ok FRAME RET: a call in FRAME returning RET can be a tail call */
+static int tail_ok(const Frame *f, Ty ret) { return f->tail && g_fn_base >= 0 && ret == g_fn_ret && ret != T_ERR; }
+
+/* emit_tail_releases LINE: before a tail call - what the function's scopes would release after the call: its
+ * parameters and locals, and the values the matches around the call hold */
+static o emit_tail_releases(i32 line)
+{
+	i32 i;
+	for (i = g_nlocals - 1; i >= g_local_floor; i--) {
+		if (!g_locals[i].alias) emit_release(0, g_locals[i].slot, g_locals[i].type, line);
+	}
+	for (i = g_nwork - 1; i >= g_fn_base; i--) {
+		if (g_work[i].form == F_MATCH && g_work[i].phase >= 3) emit_release(0, g_work[i].a, g_work[i].rt, line);
+	}
 }
 
 static Frame *push_frame(i32 node, Form form)
@@ -1674,18 +1697,23 @@ static o start_arm(Frame *f)
 	}
 	if (shaped && is_option(t) && head_is(p, "some")) {
 		i32 name = next_of(first_of(p));
-		if (is_sym(name) && strcmp(g_nodes[name].text, "_")) add_local(g_nodes[name].text, g_tys[t].elem, f->a + 1);
+		if (is_sym(name) && strcmp(g_nodes[name].text, "_")) {
+			add_local(g_nodes[name].text, g_tys[t].elem, f->a + 1);
+			g_locals[g_nlocals - 1].alias = 1; /* the match holds the value */
+		}
 	}
 	want = f->want != T_NONE ? f->want : (f->res == T_ERR ? (Ty)T_NONE : f->res);
 	f->phase = 3;
 	push_body(shaped ? next_of(p) : -1, 1, want);
+	g_work[g_nwork - 1].tail = f->tail;
 }
 
 /* A fn's body is compiled in the middle of the code around it, with a jump over it; what the compiler was counting
  * for the code around it waits here */
 #define MAX_LAMBDAS 64
 static struct {
-	i32 slots, maxslots, depth, maxdepth, nlocals, floor, jmp, fi;
+	i32 slots, maxslots, depth, maxdepth, nlocals, floor, jmp, fi, fn_base;
+	Ty fn_ret;
 } g_lambdas[MAX_LAMBDAS];
 static i32 g_nlambdas;
 
@@ -1747,6 +1775,8 @@ static int lambda_begin(Frame *f)
 	g_lambdas[g_nlambdas].maxdepth = g_maxdepth;
 	g_lambdas[g_nlambdas].nlocals = g_nlocals;
 	g_lambdas[g_nlambdas].floor = g_local_floor;
+	g_lambdas[g_nlambdas].fn_base = g_fn_base;
+	g_lambdas[g_nlambdas].fn_ret = g_fn_ret;
 	g_nlambdas++;
 	g_fns[fi].entry = g_ncode;
 	g_slots = g_maxslots = 0;
@@ -1756,6 +1786,9 @@ static int lambda_begin(Frame *f)
 		add_local(g_nodes[first_of(p)].text, g_fns[fi].params[k], new_slots(cells(g_fns[fi].params[k])));
 	f->phase = 1;
 	push_body(body, 1, g_fns[fi].ret);
+	g_work[g_nwork - 1].tail = 1;
+	g_fn_base = g_nwork - 1;
+	g_fn_ret = g_fns[fi].ret;
 	return 1;
 }
 
@@ -1784,6 +1817,8 @@ static o lambda_end(Ty t, i32 line)
 	g_maxdepth = g_lambdas[g_nlambdas].maxdepth;
 	g_nlocals = g_lambdas[g_nlambdas].nlocals;
 	g_local_floor = g_lambdas[g_nlambdas].floor;
+	g_fn_base = g_lambdas[g_nlambdas].fn_base;
+	g_fn_ret = g_lambdas[g_nlambdas].fn_ret;
 	patch(g_lambdas[g_nlambdas].jmp, g_ncode);
 	emit(OP_PUSH_K, fi + 1, 0, line);
 	finish(intern_fn(fn->params, fn->nparams, fn->ret));
@@ -1814,6 +1849,7 @@ static o run_work(i32 base)
 				if (f->cur < 0) { finish(T_UNIT); break; }
 				f->phase = 1;
 				push_child(f->cur, next_of(f->cur) < 0 && f->keep ? f->want : (Ty)T_UNIT);
+				if (next_of(f->cur) < 0) g_work[g_nwork - 1].tail = f->tail;
 				break;
 			}
 			t = pop_type();
@@ -1822,6 +1858,7 @@ static o run_work(i32 base)
 			if (next_of(f->cur) < 0) { finish(T_UNIT); break; }
 			f->cur = next_of(f->cur);
 			push_child(f->cur, next_of(f->cur) < 0 && f->keep ? f->want : (Ty)T_UNIT);
+			if (next_of(f->cur) < 0) g_work[g_nwork - 1].tail = f->tail; /* without keep too: a unit call can end it */
 			break;
 
 		case F_IF:
@@ -1843,6 +1880,7 @@ static o run_work(i32 base)
 				f->cur = next_of(f->cur);
 				f->phase = 2;
 				push_child(f->cur, next_of(f->cur) < 0 ? (Ty)T_UNIT : f->want); /* without else the value is dropped */
+				g_work[g_nwork - 1].tail = f->tail;
 				break;
 			case 2:
 				if (next_of(f->cur) < 0) {
@@ -1862,6 +1900,7 @@ static o run_work(i32 base)
 				f->phase = 3;
 				t = g_types[g_ntypes - 1]; /* the then branch tells an else branch like none what it is */
 				push_child(f->cur, f->want != T_NONE ? f->want : (t == T_ERR ? (Ty)T_NONE : t));
+				g_work[g_nwork - 1].tail = f->tail;
 				break;
 			default:
 				t2 = pop_type();
@@ -1901,6 +1940,7 @@ static o run_work(i32 base)
 				f->b = emit(OP_JF, -1, 0, line);
 				f->phase = 2;
 				push_body(next_of(f->cur), 0, T_UNIT);
+				if (f->form == F_WHEN) g_work[g_nwork - 1].tail = f->tail;
 				break;
 			default:
 				(void)pop_type();
@@ -1930,6 +1970,7 @@ static o run_work(i32 base)
 				if (f->cur < 0) {
 					f->phase = 3;
 					push_body(next_of(f->b), 1, f->want);
+					g_work[g_nwork - 1].tail = f->tail;
 					break;
 				}
 				name = first_of(f->cur);
@@ -2351,7 +2392,8 @@ static o run_work(i32 base)
 				}
 				f->k = 0;
 				if (f->cur < 0) {
-					emit(OP_CALL, f->a, 0, line);
+					if (tail_ok(f, fn->ret)) emit_tail_releases(line);
+					emit(tail_ok(f, fn->ret) ? OP_TAILCALL : OP_CALL, f->a, 0, line);
 					finish(fn->ret);
 					break;
 				}
@@ -2365,7 +2407,8 @@ static o run_work(i32 base)
 			f->k++;
 			f->cur = next_of(f->cur);
 			if (f->cur >= 0) { push_child(f->cur, fn->params[f->k]); break; }
-			emit(OP_CALL, f->a, 0, line);
+			if (tail_ok(f, fn->ret)) emit_tail_releases(line); /* the arguments are on the stack: the locals can go */
+			emit(tail_ok(f, fn->ret) ? OP_TAILCALL : OP_CALL, f->a, 0, line);
 			finish(fn->ret);
 			break;
 		}
@@ -2964,8 +3007,9 @@ static o run_work(i32 base)
 					break;
 				}
 			}
+			if (tail_ok(f, ft->elem)) emit_tail_releases(line);
 			emit(f->op == 2 ? OP_LOAD_G : OP_LOAD_L, f->c, 0, line); /* the function value goes on top */
-			emit(OP_CALL_V, f->rt, 0, line);
+			emit(tail_ok(f, ft->elem) ? OP_TAILCALL_V : OP_CALL_V, f->rt, 0, line);
 			if (f->op == 3) g_slots = f->mark2;
 			finish(ft->elem);
 			break;
@@ -3283,8 +3327,8 @@ static o compile_fn(i32 n)
 {
 	i32 name, params, ret, body, p, fi, jmp, k = 0, nc;
 	i32 s_slots = g_slots, s_max = g_maxslots, s_locals = g_nlocals, s_floor = g_local_floor;
-	i32 s_depth = g_depth, s_maxdepth = g_maxdepth;
-	Ty t, rt;
+	i32 s_depth = g_depth, s_maxdepth = g_maxdepth, s_base = g_fn_base;
+	Ty t, rt, s_ret = g_fn_ret;
 	if (!fn_shape(n, &name, &params, &ret, &body)) return;
 	fi = find_fn(g_nodes[name].text);
 	if (fi < 0 || g_fns[fi].decl_unit != g_unit_id || g_fns[fi].decl_node != n) return; /* declare_fn said why */
@@ -3297,7 +3341,12 @@ static o compile_fn(i32 n)
 		add_local(g_nodes[first_of(p)].text, g_fns[fi].params[k], new_slots(cells(g_fns[fi].params[k])));
 	rt = g_fns[fi].ret;
 	push_body(body, 1, rt);
+	g_work[g_nwork - 1].tail = 1;
+	g_fn_base = g_nwork - 1;
+	g_fn_ret = rt;
 	run_work(g_nwork - 1);
+	g_fn_base = s_base;
+	g_fn_ret = s_ret;
 	t = pop_type();
 	for (k = 0; k < g_fns[fi].nparams; k++) /* the parameters die; the result on top stays */
 		emit_release(0, g_locals[g_local_floor + k].slot, g_fns[fi].params[k], g_nodes[n].line);

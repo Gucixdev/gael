@@ -134,6 +134,13 @@ odwołania do nodów i komponentów w zapytaniach ECS - wszystko przed uruchomie
   błędu, dopisuje do `repldump.gael` pod linią z datą i katalogiem sesji (odtworzenie: `gael < ~/.gael/repldump.gael`,
   bo REPL pozwala na ponowne definicje). `GAEL_HOME=` (pusty) wyłącza jedno i drugie; `./test` używa folderu
   tymczasowego.
+- **Ładowanie (decyzja 2026-10-20):** liczba zainstalowanych gemów nie wpływa na start. Start czyta tylko
+  `main.gael`, a ten wymienia gemy włączone; gemu wyłączonego nikt nie otwiera. Gem albo tryb włącza się i wyłącza
+  w trakcie działania: włączenie kompiluje gem do działającego programu (tak jak REPL dokłada każdą formę), wyłączenie
+  zdejmuje jego komendy, keymapy i hooki, a jego dane zwalnia refcount. Skompilowany kod zostaje w pamięci do
+  restartu; prawdziwe wyładowanie kodu i cache skompilowanego kodu przyjdą, gdy pomiar pokaże potrzebę. Powód: edytor
+  ma z czasem zastąpić Blendera, GIMP-a i Kritę, więc trybów będzie dużo i będą duże - start ma kosztować tyle, co
+  tryby włączone.
 - **Nowy projekt:** wybór gemów (2d, 3d, sdf, aabb, noise...). **Ustawienia:** globalne i per projekt, warstwami
   (domyślne gemu, globalne, projekt).
 - **Rejestr:** wszystkie gemy na Twoim GitHubie, Ty decydujesz o merge'ach; gałąź `experimental` dla chętnych. Prosty
@@ -305,8 +312,16 @@ Potem: makra i moduły (0.2), manifest i resolver gemów (0.3), bufor i okno (0.
   błąd kompilacji. `gael -x PLIK` wypisuje eksporty (`nazwa : typ = wartość`, wartość gdy jest literałem) - tekstowy
   inspektor; edytor weźmie tę samą tabelę. Później: `@export` na polach struktur i nodach, adnotacje z argumentami
   (`(@export-range 0 100)`), `@onready` i `@tool` z drzewem sceny.
-- **Następne, po kolei:** wywołania ogonowe, makra higieniczne, traits, tryb wydania aren (po pomiarze), manifest
-  gemów, bufor i okno. Numery wersji przesuwają się względem planu wyżej.
+- **Wywołania ogonowe (2026-10-20):** wywołanie, którego wartość jest wartością funkcji i po którym nic już się nie
+  dzieje (ostatnia forma ciała, a stamtąd obie gałęzie `if` i koniec `do`, `let`, `when` i ramienia `match`), to
+  `TAILCALL`: kompilator zwalnia przed nim parametry, lokalne i wartości trzymane przez `match` dookoła, a VM
+  przesuwa argumenty na początek bieżącej ramki i skacze. Rekurencja w tym miejscu to pętla bez limitu
+  (`examples/tailcalls.gael`: milion wywołań, wzajemna rekurencja, przez wartość funkcji - `TAILCALL_V`; build sprzed
+  zmiany kończy się tam przepełnieniem stosu). Typ wyniku musi być ten sam co funkcji. Nie są ogonowe: ciało `arena`
+  (po nim jest koniec areny), `while`, `for`, argumenty, `and` i `or`. Czas bez zmian (2500 × 4000 wywołań plus
+  `fib 27`: ~254 ms wobec ~266 ms, w granicach szumu).
+- **Następne, po kolei:** makra higieniczne, traits, tryb wydania aren (po pomiarze), domknięcia, manifest gemów
+  (ładowanie tylko włączonych), bufor i okno. Numery wersji przesuwają się względem planu wyżej.
 
 ## Notatki → stan
 
@@ -329,7 +344,8 @@ Każdy punkt z notatek o godot-rs i gaelu, z tym, co się z nim stało. ✓ zrob
 - ✓ refcount (stringi z czasu wykonania, `vec`, `map`, `pool`; liczenie wstawia kompilator); ✓ pool na encje z
   uchwytami z generacją; ✓ arena per klatka, poziom i żądanie z kontrolą ucieczek; → tryb wydania bez liczenia;
   ○ persistent arena pod snapshoty.
-- → Scheme jako wzór: jedna przestrzeń nazw, funkcje jako wartości, makra higieniczne, wywołania ogonowe.
+- ✓ Scheme jako wzór: jedna przestrzeń nazw, funkcje jako wartości, wywołania ogonowe; → makra higieniczne;
+  ○ named let, `cond`, `case`, domknięcia.
 - ○ makra (dostęp do ECS przez makra gemu ecs: `ecs-query`), traits, abstrakcje bez boilerplate i bez pułapek C++.
 - ✓ zasada nazw: typy i formy gemu z prefiksem systemu (`ECSEntity`, `(ecs-query ...)`, `DBQuery`).
 - ✓ x-macro dla opkodów (`src/ops.h`).
@@ -346,6 +362,8 @@ Każdy punkt z notatek o godot-rs i gaelu, z tym, co się z nim stało. ✓ zrob
   przy nowym projekcie (2d, 3d, sdf, aabb, noise); gemy dają nody; build gry wycina nieużywane gemy.
 - ○ gemy w dowolnym języku (C, Rust, C++ - wejście C ABI; procesowe przez stdin/socket).
 - ○ prosty menedżer pakietów: gemy na Twoim GitHubie, Ty decydujesz o merge'ach, gałąź `experimental`.
+- ○ start ładuje tylko włączone gemy (liczba zainstalowanych nie ma znaczenia); gemy i tryby włączane i wyłączane w
+  trakcie działania.
 - ○ ustawienia per projekt i globalne (gemy, pluginy, assety); profile zmieniane w trakcie działania.
 - ○ katalog: soulslike, voxel, input buffer, parallax, dialogi w Markdownie, event flags, priority i event queue,
   fsm, hfsm, A*, voronoi, perlin, LOD, HLOD, raycast, raytrace, world-env, timeact editor, edytor poziomów jak w

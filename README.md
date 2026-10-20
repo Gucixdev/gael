@@ -239,7 +239,10 @@ used file runs when it is loaded). A struct is a value and is copied; a vec, a m
 copying one (also inside a struct) shares its contents. A struct can hold a vec, a pool or a handle of itself, which
 makes a tree, and options of itself in that vec. A pool is for things that come and go, like entities and particles:
 a handle names a slot and the generation the slot had when the element went in, so a handle kept after its element
-was removed never reads the element that took the slot later. A function's last form is its value. An integer literal
+was removed never reads the element that took the slot later. A function's last form is its value, and a call there
+is a tail call, as in Scheme: the last form of the body, and from there both branches of an `if` and the end of a
+`do`, `let`, `when` or match arm. It takes over the caller's frame, so recursion in that place is a loop and runs any
+number of times; other calls nest, and a few thousand deep the program stops with a stack overflow. An integer literal
 must fit in 64 bits, and a float needs digits on both sides of its point (`4.2`, `4.2e3`; `1e3` and `.5` are errors).
 
 Memory needs no care in the program: a string made at run time, a vec, a map and a pool count their owners, and when
@@ -283,7 +286,8 @@ tests/errors/div-zero.gael:1: runtime error: division by zero
   of a table is a fatal error that names it.
 - No recursion in C. The reader keeps its own stack of open lists, the compiler runs a work stack of frames (type
   checking and code generation happen in the same pass), and the VM keeps its own call stack, so deep recursion in a
-  gael program is a gael runtime error, not a crash.
+  gael program is a gael runtime error, not a crash. A tail call (`TAILCALL`) moves its arguments down over its own
+  frame and jumps, after the compiler has let go of the frame's locals, so it adds no frame.
 - Every instruction is listed once in `src/ops.h` (an x-macro); the opcode enum, the disassembler's names and the
   operand counts come from that list.
 - The VM's cells carry no type tag: the compiler has already proved the types, so `ADD_I` reads two ints. A value
@@ -305,7 +309,7 @@ tests/errors/div-zero.gael:1: runtime error: division by zero
 
 ## Status
 
-Version 0.3, tested on Linux x86-64 with gcc 13.3 and clang 18.1. `./test` passes 91 checks per build (28 examples,
+Version 0.3, tested on Linux x86-64 with gcc 13.3 and clang 18.1. `./test` passes 92 checks per build (29 examples,
 55 compile and runtime error cases, two REPL sessions, six README examples) with gcc, clang and gcc with both
 sanitizers, every run with `GAEL_CHECK=1`. GitHub Actions runs shellcheck on the scripts and `./test` on every push
 (`.github/workflows/test.yml`, ubuntu-24.04).
@@ -313,7 +317,7 @@ sanitizers, every run with `GAEL_CHECK=1`. GitHub Actions runs shellcheck on the
 Not in 0.3: gems (packages with versions, see the spec), calling C, and the editor. The fixed limits are 8
 parameters per function, 4096 functions, 4096 globals, 4096 types and 2^18 instructions; per unit (a file, or one REPL
 form) 2^18 syntax nodes and an 8 MiB arena for the source and its names; at run time a stack of 65536 cells and at
-most 4096 nested calls. Strings made at run time, vecs, maps and pools live on the heap; the text arena, as big, holds
+most 4096 nested calls (a tail call does not nest). Strings made at run time, vecs, maps and pools live on the heap; the text arena, as big, holds
 the program's own strings and a string while it is being built (a format, a command's output, a file). Both are 1 GiB
 of address space unless `GAEL_HEAP` says otherwise, and filling either is a runtime error.
 
