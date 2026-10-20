@@ -217,6 +217,7 @@ starts with `;`.
 | `(arena body...)` | the strings, vecs, maps and pools the body makes (also in the functions it calls) come from one block that is handed back at once when it ends; its value is the body's last one |
 | `(keep x)` | `x` with what it holds from the innermost arena copied out to the heap, so it outlives the arena |
 | `(defmacro name (pattern template)...)` | a macro: the first rule whose pattern matches a use rewrites it, before the types are checked (below) |
+| `(string-of x)`, `(name-of "print-" x)` | in a template: `x` written as a string, and a name joined from parts, as C's `#` and `##` |
 | `(async (f x...))` | run `f` as a task, at once until it first waits; a `(task type)` of what `f` returns |
 | `(await t)`, `(sleep 0.5)`, `(yield)` | wait for a task's result, for seconds of task time, or for the next step. In a task they let the others run; in the main program `await` and `sleep` run the tasks meanwhile |
 | `(tasks-step dt)`, `(tasks-run)` | from the main program: task time goes `dt` seconds on and each task that can goes on until it waits again (the number of tasks left); run them until none is left, waiting in real time |
@@ -285,7 +286,9 @@ becomes what it matched and `x ...` repeats `x` for each match. Macros are hygie
 the `tmp` of the code that uses it, and a name the template uses without binding it means what it means at the top
 level, even where the use has a local of that name. A macro can be used anywhere in its file and in the files that
 use that file; at the top level it can make globals, functions and types, several at once with `(do ...)`.
-`examples/macros.gael` has more.
+`examples/macros.gael` has more. In a template, `(string-of x)` and `(name-of "print-" x)` do what `#` and `##` do in
+C, so one list written once can make an enum, a table of its names and a function per entry: the x-macros of
+`examples/xmacros.gael`.
 
 A `fn` can use the locals of the code around it, a closure: it keeps a copy of each one it uses, made when the `fn`
 is made (as a GDScript lambda does). Setting one inside changes the fn's own copy, which stays from call to call, so

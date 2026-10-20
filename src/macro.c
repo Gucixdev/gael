@@ -8,7 +8,8 @@
  * matched (write _). In it a symbol is a pattern variable, _ matches any one form, a keyword, a number or a string
  * matches only itself, a list matches a list, and ... after an element matches it zero or more times (one ... per
  * list, other elements may follow it). In the template a pattern variable becomes a copy of what it matched, x ...
- * repeats x once for each form the variables in x matched, and everything else is copied as it is.
+ * repeats x once for each form the variables in x matched, and everything else is copied as it is. In what comes out,
+ * (string-of x) becomes a string and (name-of "print-" x) a name, as # and ## do in C (text_forms).
  *
  * Hygiene. Every expansion has a stamp, and the symbols its template brings in carry it; the forms a use hands in keep
  * theirs (0 for the program's own text). The compiler binds a local under a name and a stamp, and a symbol sees only
@@ -639,55 +640,154 @@ static o putn(char *buf, size_t cap, size_t *at, const char *s, size_t n)
 	buf[*at] = 0;
 }
 
+/* nprint NODES ROOT BUF CAP AT: the form ROOT of NODES (the unit's or the macro table's) as source text, added at *AT;
+ * cut short to fit in CAP. A number is written as it was read, a string between quotes */
+static o nprint(const Node *a, i32 root, char *buf, size_t cap, size_t *at)
+{
+	static i32 st[MAX_MSTACK]; /* the open lists: what comes after each */
+	i32 sp = 0, c = root;
+	int first = 1;
+	char num[40];
+	for (;;) {
+		const Node *nd;
+		i32 next;
+		if (c < 0) { /* a list ends, or the root was an atom */
+			if (sp == 0) return;
+			putn(buf, cap, at, ")", 1);
+			c = st[--sp];
+			first = 0;
+			continue;
+		}
+		nd = &a[c];
+		next = c == root ? -1 : nd->next;
+		if (!first) putn(buf, cap, at, " ", 1);
+		first = 0;
+		if (nd->kind == N_LIST) {
+			putn(buf, cap, at, "(", 1);
+			if (sp == MAX_MSTACK) { putn(buf, cap, at, "...)", 4); c = next; continue; }
+			st[sp++] = next;
+			c = nd->first;
+			first = 1;
+			continue;
+		}
+		if (nd->kind == N_STR) {
+			putn(buf, cap, at, "\"", 1);
+			putn(buf, cap, at, nd->text, nd->len);
+			putn(buf, cap, at, "\"", 1);
+		} else if (nd->text) {
+			putn(buf, cap, at, nd->text, nd->len);
+		} else { /* a number some code made, with no text of its own */
+			if (nd->kind == N_FLOAT) sprintf(num, "%g", nd->fval);
+			else if (nd->big) sprintf(num, "%lu", (unsigned long)(u64)nd->ival);
+			else sprintf(num, "%ld", (long)nd->ival);
+			putn(buf, cap, at, num, strlen(num));
+		}
+		c = next;
+	}
+}
+
 /* mprint P NAME BUF CAP: the pattern P as text, with NAME for its first element; cut short to fit in CAP */
 static o mprint(i32 p, const char *name, char *buf, size_t cap)
 {
-	static i32 st[MAX_MSTACK];
-	i32 sp = 1;
 	size_t at = 0;
-	int space = 1;
-	char num[40];
+	i32 c;
 	buf[0] = 0;
 	putn(buf, cap, &at, "(", 1);
 	putn(buf, cap, &at, name, strlen(name));
-	st[0] = g_mnodes[g_mnodes[p].first].next;
-	while (sp > 0) {
-		i32 c = st[sp - 1];
-		const Node *nd;
+	for (c = g_mnodes[g_mnodes[p].first].next; c >= 0; c = g_mnodes[c].next) {
+		putn(buf, cap, &at, " ", 1);
+		nprint(g_mnodes, c, buf, cap, &at);
+	}
+	putn(buf, cap, &at, ")", 1);
+}
+
+/* The x-macro helpers, C's # and ##: (string-of part...) is a string and (name-of part...) a name, each the parts'
+ * text joined - a string gives what it holds, a name or a number itself, and string-of writes a list as source. Both
+ * are worked out where they stand: in what a macro expands to, right after it expands (a defmacro in it keeps its own
+ * for its own uses), and in code written by hand when the compiler meets them. A name made this way is in the scope
+ * of the first name among its parts, as if the use had written it; with no name among them it is the template's own. */
+#define TEXT_FORM_BYTES 4096
+
+/* text_form N: the list N, when it is (string-of ...) or (name-of ...), becomes the string or the name; 0 after an
+ * error it reported */
+static int text_form(i32 n)
+{
+	static char buf[TEXT_FORM_BYTES + 1];
+	i32 head = g_nodes[n].first, p, scope = -1;
+	size_t at = 0;
+	int name;
+	Node *nd;
+	if (head < 0 || g_nodes[head].kind != N_SYM) return 1;
+	if (!strcmp(g_nodes[head].text, "string-of")) name = 0;
+	else if (!strcmp(g_nodes[head].text, "name-of")) name = 1;
+	else return 1;
+	buf[0] = 0;
+	if (g_nodes[head].next < 0) {
+		error_at(g_nodes[n].line, g_nodes[n].col, name ? "name-of joins the parts of a name: (name-of \"print-\" x)"
+		                                               : "string-of takes what to write as a string: (string-of x)");
+		return 0;
+	}
+	for (p = g_nodes[head].next; p >= 0; p = g_nodes[p].next) {
+		const Node *pn = &g_nodes[p];
+		if (name && (pn->kind == N_LIST || pn->kind == N_FLOAT)) {
+			error_at(pn->line, pn->col, "name-of joins names, strings and ints; %s cannot be part of a name",
+			         pn->kind == N_LIST ? "a list" : "a float");
+			return 0;
+		}
+		if (pn->kind == N_SYM && scope < 0) scope = p;
+		if (pn->kind == N_STR) putn(buf, sizeof(buf), &at, pn->text, pn->len);
+		else nprint(g_nodes, p, buf, sizeof(buf), &at);
+	}
+	if (at >= TEXT_FORM_BYTES) {
+		error_at(g_nodes[n].line, g_nodes[n].col, "%s: the text is longer than %d bytes", name ? "name-of" : "string-of", TEXT_FORM_BYTES);
+		return 0;
+	}
+	nd = &g_nodes[n];
+	if (name) {
+		size_t i;
+		NodeKind kind = at ? atom_kind(buf, at) : N_INT;
+		for (i = 0; i < at && !is_delim((unsigned char)buf[i]); i++) {}
+		if (!at || i < at || kind == N_INT || kind == N_FLOAT || (kind == N_SYM && like_number(buf, at))) {
+			error_at(nd->line, nd->col, "name-of made \"%.64s\", which is not a name: a name has no spaces, parentheses, quotes or ;, and does not start like a number", buf);
+			return 0;
+		}
+		nd->kind = (u8)kind;
+		nd->stamp = scope >= 0 ? g_nodes[scope].stamp : g_nodes[head].stamp;
+	} else {
+		nd->kind = N_STR;
+	}
+	nd->text = arena_strndup(&g_unit_arena, buf, at);
+	nd->len = (u32)at;
+	nd->first = -1;
+	nd->ival = 0;
+	return 1;
+}
+
+/* text_forms ROOT: every (string-of ...) and (name-of ...) in the form ROOT worked out in place, the outer one first: a
+ * string-of writes the parts it is given as they are, as # does; 0 after an error it reported */
+static int text_forms(i32 root)
+{
+	static i32 st[MAX_MSTACK]; /* the lists being walked: what comes after each */
+	i32 sp = 0, c = root, next, h;
+	for (;;) {
 		if (c < 0) {
-			putn(buf, cap, &at, ")", 1);
-			sp--;
-			space = 1;
+			if (sp == 0) return 1;
+			c = st[--sp];
 			continue;
 		}
-		nd = &g_mnodes[c];
-		st[sp - 1] = nd->next;
-		if (space) putn(buf, cap, &at, " ", 1);
-		space = 1;
-		switch (nd->kind) {
-		case N_LIST:
-			putn(buf, cap, &at, "(", 1);
-			space = 0;
-			if (sp < MAX_MSTACK) st[sp++] = nd->first;
-			break;
-		case N_INT:
-			if (nd->big) sprintf(num, "%lu", (unsigned long)(u64)nd->ival);
-			else sprintf(num, "%ld", (long)nd->ival);
-			putn(buf, cap, &at, num, strlen(num));
-			break;
-		case N_FLOAT:
-			sprintf(num, "%g", nd->fval);
-			putn(buf, cap, &at, num, strlen(num));
-			break;
-		case N_STR:
-			putn(buf, cap, &at, "\"", 1);
-			putn(buf, cap, &at, nd->text, nd->len);
-			putn(buf, cap, &at, "\"", 1);
-			break;
-		default:
-			putn(buf, cap, &at, nd->text, nd->len);
-			break;
+		next = c == root ? -1 : g_nodes[c].next;
+		if (g_nodes[c].kind == N_LIST && (h = g_nodes[c].first) >= 0) {
+			const char *s = g_nodes[h].kind == N_SYM ? g_nodes[h].text : "";
+			if (!strcmp(s, "string-of") || !strcmp(s, "name-of")) {
+				if (!text_form(c)) return 0;
+			} else if (strcmp(s, "defmacro")) { /* a defmacro's template is its own, for its own uses */
+				if (sp == MAX_MSTACK) die("a form nested too deep (MAX_MSTACK)");
+				st[sp++] = next;
+				c = h;
+				continue;
+			}
 		}
+		c = next;
 	}
 }
 
@@ -705,7 +805,10 @@ static i32 macro_expand(i32 m, i32 call)
 	}
 	for (k = 0; k < mc->nrules; k++) {
 		const Rule *r = &g_rules[mc->rule0 + k];
-		if (match_rule(r, call)) return expand_rule(r, call);
+		if (match_rule(r, call)) {
+			i32 x = expand_rule(r, call);
+			return x >= 0 && !text_forms(x) ? -1 : x;
+		}
 	}
 	list[0] = 0;
 	for (k = 0; k < mc->nrules; k++) {

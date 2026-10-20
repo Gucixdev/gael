@@ -409,11 +409,22 @@ Potem: makra i moduły (0.2), manifest i resolver gemów (0.3), bufor i okno (0.
   wywołanie metody `(v.len)` = `(Vec2.len v)`, haki wybierane w kompilacji: `add`, `sub`, `mul`, `div` dla `+ - * /`,
   `equal` dla `=`, `compare` dla `<`, `>` i sortowania (słowa, nie znaki - jego wybór), `text` dla `%v`, `len`, `get`,
   `put`, iteracja w `for`, `init` (po prostu `init`, bez podkreślnika) i domyślne wartości pól. Do tego `(sort v)` i
-  `(sort-by v f)`. X-makra już działają (makro-lista wołające inne makro); dojdą `(string-of x)` i
-  `(name-of "a-" x)` w szablonach, jak `#x` i `##` z preprocesora C.
-- **Następne, po kolei:** haki i metody z `init` i domyślnymi polami, `sort`, `string-of`/`name-of`, mapy stosu
-  (anulowanie zadań), traits, tryb wydania aren (po pomiarze), bufor i okno. Numery wersji przesuwają się względem
-  planu wyżej.
+  `(sort-by v f)`.
+- **X-makra (2026-10-20, „też potrzebne jest mega”):** `(string-of x)` i `(name-of "print-" x)` - `#` i `##` z
+  preprocesora C. Lista pisana raz to makro, które oddaje swoje wpisy makru, jakie dostanie
+  (`(colors def-enum Color)`), i z jednej listy powstaje enum, tablica nazw i funkcja na wpis. Oba liczone zaraz po
+  rozwinięciu makra, zewnętrzne pierwsze (`string-of` pisze części tak, jak są, jak `#`), więc nazwa zrobiona przez
+  `name-of` może być nazwą `defn` na górnym poziomie, zanim cokolwiek zostanie zadeklarowane. `defmacro` w tym, co
+  makro robi, zachowuje swoje na własne użycia. Higiena: zrobiona nazwa należy do zakresu pierwszej nazwy wśród części
+  (jak `format-id` w Rackecie) - `(name-of v "-squared")` widzi kod użycia; bez nazwy wśród części jest nazwą
+  szablonu. Pisane ręcznie poza makrem też działają, tam gdzie wyrażenie.
+- **Inspektor (2026-10-20, propozycja do potwierdzenia):** nie robimy inspektora jak w Godocie. Tam jest potrzebny,
+  bo scena to osobne dane od skryptu; w gaelu kod to dane - poziom to plik s-wyrażeń, liczbę zmienia się w źródle
+  (przeładowanie) albo `(set x ...)` w REPL-u. Później: edytor, który zmienia literały wprost w źródle, z widżetem
+  wynikającym z typu pola (np. kolor), nie z adnotacji. `@export` zostaje jak jest (mały, `gael -x`), nic na nim nie
+  budujemy; jak nikt go nie użyje, gdy edytor powstanie - do kosza.
+- **Następne, po kolei:** haki i metody z `init` i domyślnymi polami, `sort`, mapy stosu (anulowanie zadań), traits,
+  tryb wydania aren (po pomiarze), bufor i okno. Numery wersji przesuwają się względem planu wyżej.
 
 ## Notatki → stan
 
@@ -440,7 +451,7 @@ Każdy punkt z notatek o godot-rs i gaelu, z tym, co się z nim stało. ✓ zrob
   (`defmacro` w stylu `syntax-rules`), domknięcia; ○ named let, `cond` i `case` w bibliotece standardowej (makra).
 - ✓ makra; ○ makra gemu ecs (`ecs-query`), traits, abstrakcje bez boilerplate i bez pułapek C++.
 - ✓ zasada nazw: typy i formy gemu z prefiksem systemu (`ECSEntity`, `(ecs-query ...)`, `DBQuery`).
-- ✓ x-macro dla opkodów (`src/ops.h`).
+- ✓ x-macro dla opkodów (`src/ops.h`); ✓ x-makra w gaelu (`string-of`, `name-of`, `examples/xmacros.gael`).
 - ✓ async/await, korutyny (zadania ze stosem: `async`, `await`, `sleep`, `yield`, `tasks-step`, `tasks-run`);
   ○ anulowanie zadań (mapy stosu), joby (fine-grained, master/slave) na wątkach - gemy.
 - ○ typy deltatime, tick, tag, uuid; ○ typy SIMD i cache-friendly; ○ kluczowa matematyka z czasem do rdzenia w C.

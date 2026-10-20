@@ -481,7 +481,8 @@ static const char *const g_reserved[] = {
 	"pop", "for", "use", ".", "map", "insert", "lookup", "has", "remove", "keys", "values", "chain", "pipe", "pipe-in",
 	"nand", "nor", "xor", "xnor", "bit-and", "bit-or", "bit-xor", "bit-not", "shl", "shr",
 	"pool", "spawn", "handle", "arena", "keep", "fn", "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64",
-	"defmacro", "...", "gem", "enable", "disable", "return", "task", "async", "await", "sleep", "yield", "tasks-step", "tasks-run", "done?", "task-time"
+	"defmacro", "...", "gem", "enable", "disable", "return", "task", "async", "await", "sleep", "yield", "tasks-step", "tasks-run", "done?", "task-time",
+	"string-of", "name-of"
 };
 
 
@@ -1592,6 +1593,12 @@ static o start_list(Frame *f)
 		f->tail = 0;
 		f->cur = next_of(h);
 		f->k = count_from(f->cur);
+		return;
+	}
+	else if (!strcmp(s, "string-of") || !strcmp(s, "name-of")) { /* written by hand: the string or the name, here */
+		if (!text_forms(f->node)) { finish(T_ERR); return; }
+		f->cur = -1;
+		f->k = 0;
 		return;
 	}
 	else if (!strcmp(s, "return")) f->form = F_RETURN;

@@ -87,6 +87,7 @@ How the entries read:
 | `lookup` | a map's value or a pool's element, as an option | [Maps](#maps), [Pools](#pools) |
 | `map` | a map; the map type | [Maps](#maps) |
 | `match` | choose by a value's shape | [match](#match) |
+| `name-of` | a name joined from a macro's parts, like C's `##` | [Macros](#macros) |
 | `nand` | not all true | [Logic](#logic) |
 | `none` | the empty option | [Options](#options) |
 | `nor` | none true | [Logic](#logic) |
@@ -118,6 +119,7 @@ How the entries read:
 | `spawn` | put an element into a pool | [Pools](#pools) |
 | `split` | the pieces between separators | [Strings](#strings) |
 | `string` | the string type | [Types](#types) |
+| `string-of` | a macro's parts as a string, like C's `#` | [Macros](#macros) |
 | `struct` | a type with fields | [Structs](#structs) |
 | `substr` | bytes from one index up to another | [Strings](#strings) |
 | `system` | run a command, its output passing through; its status | [Files and the system](#files-and-the-system) |
@@ -637,6 +639,41 @@ Compile errors at the definition: a rule that is not `(pattern template)`, a pat
 name, `...` with nothing before it or twice in a list, a variable used under fewer `...` than it was matched under, a
 `...` that repeats nothing. At a use: no rule matches, variables under one `...` that matched different numbers of
 forms, a macro that keeps expanding into itself.
+
+### string-of, name-of
+
+```
+(string-of part...)   -> string
+(name-of part...)     -> a name
+```
+
+C's `#` and `##`, for templates. Each joins the text of its parts: a string gives what it holds, a name, a keyword or
+a number gives itself as written, and `string-of` writes a list as source text, so `(string-of (+ a b))` is
+`"(+ a b)"`. `(name-of "print-" v)` with `v` matched to `red` is the name `print-red`; one that starts with `:` is a
+keyword, and `(name-of p "." f)` is a field path like `p.hp`. Both are worked out right after the macro expands, the
+outer one first (a `string-of` writes its parts as they are, unexpanded), wherever they stand: as a function's name in
+a `defn`, as a format string, as a pattern. A `defmacro` in what a macro makes keeps its own for its own uses. Written
+by hand outside a macro they work too, where an expression goes.
+
+A made name belongs to the scope of the first name among its parts, as if the code that used the macro had written it:
+`(name-of v "-squared")` bound in a `let` of the template is visible to the body the use handed in. With no name among
+the parts it is the template's own, hidden from the use like any name the template binds.
+
+X-macros: a list written once, as a macro that hands its entries to whatever macro it is given, and macros that each
+make one thing from the entries:
+
+```
+(defmacro colors ((_ m more ...) (m more ... (red 0xff0000) (green 0x00ff00) (blue 0x0000ff))))
+(defmacro def-enum ((_ name (v rgb) ...) (enum name v ...)))
+(defmacro def-names ((_ name (v rgb) ...) (def name (vec (string-of v) ...))))
+(defmacro def-printers ((_ (v rgb) ...) (do (defn (name-of "print-" v) () (println "%s is %d" (string-of v) rgb)) ...)))
+(colors def-enum Color)            ; (enum Color red green blue)
+(colors def-names color-names)     ; (def color-names (vec "red" "green" "blue"))
+(colors def-printers)              ; print-red, print-green, print-blue
+```
+
+Compile errors: no parts; a list or a float as part of a name; a name that would not read as one (a space,
+parenthesis, quote or `;` in it, or it starts like a number); text longer than 4096 bytes.
 
 ## Gems
 
