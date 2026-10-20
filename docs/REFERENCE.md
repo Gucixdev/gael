@@ -107,6 +107,7 @@ How the entries read:
 | `read-file` | a whole file | [Files and the system](#files-and-the-system) |
 | `read-line` | the next line of stdin | [Files and the system](#files-and-the-system) |
 | `remove` | take out a map entry or a pool element | [Maps](#maps), [Pools](#pools) |
+| `return` | leave the function now, with a value | [Control](#control) |
 | `run` | run a command; true when it succeeds | [Files and the system](#files-and-the-system) |
 | `set` | give a variable or a field a new value | [Control](#control) |
 | `sh` | run a command, get its output | [Files and the system](#files-and-the-system) |
@@ -344,6 +345,23 @@ On `bool`s. `and` is true when all are, `or` when any is, `nand` and `nor` are t
 first value that decides. `xor` is true when an odd number are true and `xnor` when an even number are; every value is
 evaluated. `not` takes exactly one. A value that is not a bool is a compile error (the message says when `(run "cmd")`
 was meant).
+
+### return
+
+```
+(return value)
+(return)                 ; in a function that returns unit
+```
+
+Leaves the function (a `defn` or a `fn`) at once with `value`, which must have the function's return type; what the
+function's locals, the matches and the loops around hold is let go on the way out. It stands where a statement goes -
+`(when (< hp 0) (return false))`, an arm of a `match`, a body of a `for` - or anywhere no value is waiting for the rest
+of an expression. Since it never gives a value where it stands, it fits in any branch: `(if bad (return none) x)`.
+`(return (f x))` is not a tail call; a call as the function's last form is.
+
+Compile errors: `return` outside a function, inside an `arena` (let it end first), in the middle of an expression with
+values already worked out (`(+ 1 (return 2))`), among the fields of a struct being made by name, more than one value,
+a value in a unit function or none in another, a value of another type.
 
 ### chain
 

@@ -395,8 +395,25 @@ Potem: makra i moduły (0.2), manifest i resolver gemów (0.3), bufor i okno (0.
   przed zwolnieniem lokalnych). Szybka ścieżka dla typów z jednym uchwytem (string, vec, map, pool, task, fn) w
   `RETAIN`, `DROP` i `RELEASE`: pętla 200 tys. wywołań przez wartość +0,4% instrukcji wobec stanu sprzed domknięć,
   `fib 24` -6,5%.
-- **Następne, po kolei:** mapy stosu (anulowanie zadań), traits, tryb wydania aren (po pomiarze), bufor i okno. Numery
-  wersji przesuwają się względem planu wyżej.
+- **Słownik (2026-10-20):** `docs/REFERENCE.md` - indeks wszystkich nazw wbudowanych i każdy temat z sygnaturami,
+  wynikami i błędami (kompilacji i czasu wykonania). `gael -n` wypisuje nazwy wbudowane, a `./test` nie przechodzi,
+  gdy którejś brakuje w indeksie - słownik nie może się rozjechać z językiem (złapał `return` przy dodawaniu).
+- **`return` (2026-10-20):** `(return x)`, a w funkcji zwracającej unit `(return)`, wychodzi z funkcji (`defn` albo
+  `fn`) od razu; to, co trzymają lokalne, `match` i pętle dookoła, jest zwalniane po drodze (ta sama lista co przed
+  wywołaniem ogonowym). Stoi tam, gdzie instrukcja - albo gdziekolwiek, gdzie na stosie nie czeka wartość na resztę
+  wyrażenia (stos operandów funkcji pusty); nie wolno w `arena` ani wśród pól struktury robionej po nazwach. Nie daje
+  wartości, więc pasuje do każdej gałęzi: `(if zle (return none) x)`. Przy okazji wyszło, że stos typów kompilatora
+  nie odbija stosu operandów (np. `+` zdejmuje typ lewego operandu od razu): do map stosu (anulowanie zadań) trzeba
+  będzie śledzić typy na stosie dokładnie.
+- **Haki zamiast magicznych metod Pythona (decyzja 2026-10-20, w kolejce):** funkcje `Typ.nazwa` (jak `Dir.north`),
+  wywołanie metody `(v.len)` = `(Vec2.len v)`, haki wybierane w kompilacji: `add`, `sub`, `mul`, `div` dla `+ - * /`,
+  `equal` dla `=`, `compare` dla `<`, `>` i sortowania (słowa, nie znaki - jego wybór), `text` dla `%v`, `len`, `get`,
+  `put`, iteracja w `for`, `init` (po prostu `init`, bez podkreślnika) i domyślne wartości pól. Do tego `(sort v)` i
+  `(sort-by v f)`. X-makra już działają (makro-lista wołające inne makro); dojdą `(string-of x)` i
+  `(name-of "a-" x)` w szablonach, jak `#x` i `##` z preprocesora C.
+- **Następne, po kolei:** haki i metody z `init` i domyślnymi polami, `sort`, `string-of`/`name-of`, mapy stosu
+  (anulowanie zadań), traits, tryb wydania aren (po pomiarze), bufor i okno. Numery wersji przesuwają się względem
+  planu wyżej.
 
 ## Notatki → stan
 

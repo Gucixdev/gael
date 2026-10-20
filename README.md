@@ -193,6 +193,7 @@ starts with `;`.
 | `(let ((x 1) (y : float 2.0)) body...)` | locals for the body |
 | `(set x 5)`, `(set b.pos.x 3.0)` | assign to a variable or a field of one; the value must have its type |
 | `(if c then else)`, `(when c body...)`, `(while c body...)`, `(do body...)` | a condition must be a bool; `if` without `else` is unit |
+| `(return x)`, `(return)` | leave the function now, with `x` (none when it returns unit): `(when (< hp 0) (return false))` |
 | `(and a b...)`, `(or a b...)`, `(not a)`, `(nand a b...)`, `(nor a b...)` | on bools; all but `not` stop at the first answer |
 | `(xor a b...)`, `(xnor a b...)` | true when an odd number of the bools are true, and the opposite; every one is evaluated |
 | `(+ a b...)`, `-`, `*`, `/` | numbers of one type; `(- x)` negates |
@@ -391,8 +392,8 @@ tests/errors/div-zero.gael:1: runtime error: division by zero
 
 ## Status
 
-Version 0.3, tested on Linux x86-64 with gcc 13.3 and clang 18.1. `./test` passes 113 checks per build (33 examples,
-71 compile and runtime error cases, three REPL sessions, six README examples) with gcc, clang and gcc with both
+Version 0.3, tested on Linux x86-64 with gcc 13.3 and clang 18.1. `./test` passes 115 checks per build (34 examples,
+72 compile and runtime error cases, three REPL sessions, six README examples) with gcc, clang and gcc with both
 sanitizers, every run with `GAEL_CHECK=1`. GitHub Actions runs shellcheck on the scripts and `./test` on every push
 (`.github/workflows/test.yml`, ubuntu-24.04).
 

@@ -217,7 +217,7 @@ static i32 g_npatches;
 static u8 *g_seen;      /* match: the variants an arm already covers */
 
 typedef enum {
-	F_START, F_CALL, F_TASK, F_IF, F_WHEN, F_WHILE, F_DO, F_LET, F_SET, F_AND, F_OR, F_NOT, F_ARITH, F_CMP, F_PRINT,
+	F_START, F_CALL, F_TASK, F_RETURN, F_IF, F_WHEN, F_WHILE, F_DO, F_LET, F_SET, F_AND, F_OR, F_NOT, F_ARITH, F_CMP, F_PRINT,
 	F_CONV, F_BUILTIN, F_NEW, F_SOME, F_MATCH, F_VEC, F_VECOP, F_FOR, F_DOT, F_MAP, F_MAPOP, F_SHPIPE, F_POOL, F_ARENA,
 	F_KEEP, F_CALLV, F_LAMBDA, F_XOR, F_BITS
 } Form;
@@ -481,7 +481,7 @@ static const char *const g_reserved[] = {
 	"pop", "for", "use", ".", "map", "insert", "lookup", "has", "remove", "keys", "values", "chain", "pipe", "pipe-in",
 	"nand", "nor", "xor", "xnor", "bit-and", "bit-or", "bit-xor", "bit-not", "shl", "shr",
 	"pool", "spawn", "handle", "arena", "keep", "fn", "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64",
-	"defmacro", "...", "gem", "enable", "disable", "task", "async", "await", "sleep", "yield", "tasks-step", "tasks-run", "done?", "task-time"
+	"defmacro", "...", "gem", "enable", "disable", "return", "task", "async", "await", "sleep", "yield", "tasks-step", "tasks-run", "done?", "task-time"
 };
 
 
@@ -1019,21 +1019,50 @@ static o add_local(const char *name, u32 stamp, Ty type, i32 slot)
 /* the function being compiled: its first work frame (-1 at the top level) and its return type */
 static i32 g_fn_base = -1;
 static Ty g_fn_ret;
+static i32 g_fn_tbase; /* g_types' height when the function's body began: values above it are the function's own */
 
 /* tail_ok FRAME RET: a call in FRAME returning RET can be a tail call */
 static int tail_ok(const Frame *f, Ty ret) { return f->tail && g_fn_base >= 0 && ret == g_fn_ret && ret != T_ERR; }
 
-/* emit_tail_releases LINE: before a tail call - what the function's scopes would release after the call: its
- * parameters and locals, and the values the matches around the call hold */
+/* emit_tail_releases LINE: before a tail call or a return - what the function's scopes would release on the way out:
+ * its parameters and locals, the values the matches around hold, what the loops around go over, a function value
+ * waiting in a slot for its arguments. The frame on top (the call, or the return) holds nothing of its own */
 static o emit_tail_releases(i32 line)
 {
 	i32 i;
 	for (i = g_nlocals - 1; i >= g_local_floor; i--) {
-		if (!g_locals[i].alias) emit_release(0, g_locals[i].slot, g_locals[i].type, line);
+		if (!g_locals[i].alias) emit_release(AT_LOCAL, g_locals[i].slot, g_locals[i].type, line);
 	}
-	for (i = g_nwork - 1; i >= g_fn_base; i--) {
-		if (g_work[i].form == F_MATCH && g_work[i].phase >= 3) emit_release(0, g_work[i].a, g_work[i].rt, line);
+	for (i = g_nwork - 2; i >= g_fn_base; i--) {
+		const Frame *w = &g_work[i];
+		if (w->form == F_MATCH && w->phase >= 3) emit_release(AT_LOCAL, w->a, w->rt, line);
+		else if (w->form == F_FOR && !w->op && w->phase >= 3) emit_release(AT_LOCAL, w->a, w->res, line);
+		else if (w->form == F_CALLV && w->op == 3 && w->phase <= 1) emit_release(AT_LOCAL, w->c, w->rt, line);
 	}
+}
+
+/* emit_ret TYPE LINE: return the value of TYPE on top (unit: nothing) */
+static o emit_ret(Ty rt, i32 line)
+{
+	i32 nc = cells(rt);
+	if (nc == 0) emit(OP_RET_U, 0, 0, line);
+	else if (nc == 1) emit(OP_RET_V, 0, 0, line);
+	else emit(OP_RET_N, nc, 0, line);
+}
+
+/* return_blocked: why a return cannot be compiled here, 0 when it can: it releases what the function's scopes hold,
+ * so nothing may be half done between it and the function's body - values waiting on the stack for the rest of an
+ * expression, a struct being filled by name, an arena that would not end */
+static const char *return_blocked(void)
+{
+	i32 i;
+	for (i = g_nwork - 2; i >= g_fn_base; i--) {
+		if (g_work[i].form == F_ARENA) return "return cannot leave an arena; let the arena end, then return";
+		if (g_work[i].form == F_NEW && g_work[i].op && g_work[i].phase >= 1) return "return cannot be among the fields of a struct being made";
+	}
+	if (g_depth > 0) /* the operand stack of the function holds values for the rest of an expression */
+		return "return cannot be in the middle of an expression with values already worked out; put it where a statement goes, like (when c (return x))";
+	return 0;
 }
 
 static Frame *push_frame(i32 node, Form form)
@@ -1243,7 +1272,7 @@ typedef struct {
 	u8 from_env;
 } Capture;
 static struct {
-	i32 slots, maxslots, depth, maxdepth, nlocals, floor, jmp, fi, fn_base;
+	i32 slots, maxslots, depth, maxdepth, nlocals, floor, jmp, fi, fn_base, fn_tbase;
 	Ty fn_ret;
 	i32 ncaps, envcells;
 	Capture caps[MAX_CAPS];
@@ -1565,6 +1594,7 @@ static o start_list(Frame *f)
 		f->k = count_from(f->cur);
 		return;
 	}
+	else if (!strcmp(s, "return")) f->form = F_RETURN;
 	else if (!strcmp(s, "not")) f->form = F_NOT;
 	else if (s[1] == 0 && strchr("+-*/%", s[0])) { f->form = F_ARITH; f->op = (u8)s[0]; }
 
@@ -1975,6 +2005,7 @@ static int lambda_begin(Frame *f)
 	g_lambdas[g_nlambdas].floor = g_local_floor;
 	g_lambdas[g_nlambdas].fn_base = g_fn_base;
 	g_lambdas[g_nlambdas].fn_ret = g_fn_ret;
+	g_lambdas[g_nlambdas].fn_tbase = g_fn_tbase;
 	g_lambdas[g_nlambdas].ncaps = 0;
 	g_lambdas[g_nlambdas].envcells = 0;
 	g_nlambdas++;
@@ -1990,6 +2021,7 @@ static int lambda_begin(Frame *f)
 	g_work[g_nwork - 1].tail = 1;
 	g_fn_base = g_nwork - 1;
 	g_fn_ret = g_fns[fi].ret;
+	g_fn_tbase = g_ntypes;
 	return 1;
 }
 
@@ -2024,16 +2056,10 @@ static o lambda_end(Ty t, i32 line)
 	i32 fi = g_lambdas[g_nlambdas - 1].fi, k, nc;
 	Fn *fn = &g_fns[fi];
 	for (k = 0; k <= fn->nparams; k++) emit_release(AT_LOCAL, g_locals[g_local_floor + k].slot, g_locals[g_local_floor + k].type, line);
-	if (fn->ret == T_UNIT) {
-		emit_pop(t, line);
-		emit(OP_RET_U, 0, 0, line);
-	} else {
-		if (t != T_ERR && fn->ret != T_ERR && t != fn->ret) err_node(g_fns[fi].decl_node, "this fn must return %s, its body ends with %s", tn(fn->ret), tn(t));
-		nc = cells(fn->ret);
-		if (nc == 0) emit(OP_RET_U, 0, 0, line);
-		else if (nc == 1) emit(OP_RET_V, 0, 0, line);
-		else emit(OP_RET_N, nc, 0, line);
-	}
+	if (fn->ret == T_UNIT) emit_pop(t, line);
+	else if (t != T_ERR && fn->ret != T_ERR && t != fn->ret) err_node(g_fns[fi].decl_node, "this fn must return %s, its body ends with %s", tn(fn->ret), tn(t));
+	(void)nc;
+	emit_ret(fn->ret, line);
 	fn->nslots = g_maxslots;
 	fn->maxdepth = g_maxdepth;
 	g_nlambdas--;
@@ -2045,6 +2071,7 @@ static o lambda_end(Ty t, i32 line)
 	g_local_floor = g_lambdas[g_nlambdas].floor;
 	g_fn_base = g_lambdas[g_nlambdas].fn_base;
 	g_fn_ret = g_lambdas[g_nlambdas].fn_ret;
+	g_fn_tbase = g_lambdas[g_nlambdas].fn_tbase;
 	patch(g_lambdas[g_nlambdas].jmp, g_ncode);
 	if (g_lambdas[g_nlambdas].ncaps) { /* a closure: the values it keeps, copied now, in the code around it */
 		Ty env = env_type(g_nlambdas);
@@ -2659,6 +2686,35 @@ static o run_work(i32 base)
 			finish(fn->ret);
 			break;
 		}
+
+		case F_RETURN: /* (return value), or (return) where the function returns unit: out of it now */
+			if (f->phase == 0) {
+				const char *why = g_fn_base < 0 ? "return is for the body of a function, a defn or a fn" : return_blocked();
+				if (!why && f->k > 1) why = "return takes one value, or none in a function that returns unit";
+				if (!why && g_fn_ret == T_UNIT && f->k) why = "this function returns unit, so its return takes no value: (return)";
+				if (!why && g_fn_ret != T_UNIT && g_fn_ret != T_ERR && !f->k) why = "this function returns a value: (return x)";
+				if (why) {
+					err_node(f->node, "%s", why);
+					finish(T_ERR);
+					break;
+				}
+				f->depth = g_depth;
+				if (f->k) {
+					f->phase = 1;
+					push_child(f->cur, g_fn_ret);
+					break;
+				}
+				t = T_UNIT;
+			} else {
+				t = pop_type();
+				if (t != T_ERR && g_fn_ret != T_ERR && t != g_fn_ret)
+					err_node(f->cur, "return: this function returns %s, the value is %s", tn(g_fn_ret), tn(t));
+			}
+			emit_tail_releases(line);
+			emit_ret(g_fn_ret, line);
+			g_depth = f->depth;
+			finish(T_ERR); /* it gives no value: it fits wherever it stands (what follows it never runs) */
+			break;
 
 		case F_TASK: { /* await, sleep, yield, tasks-step, tasks-run, done?, task-time - in g_task_names' order */
 			static const Op ops[] = { OP_AWAIT, OP_SLEEP, OP_YIELD, OP_TASKS_STEP, OP_TASKS_RUN, OP_TASK_DONE, OP_TASK_TIME };
@@ -3618,7 +3674,7 @@ static o compile_fn(i32 n)
 {
 	i32 name, params, ret, body, p, fi, jmp, k = 0, nc;
 	i32 s_slots = g_slots, s_max = g_maxslots, s_locals = g_nlocals, s_floor = g_local_floor;
-	i32 s_depth = g_depth, s_maxdepth = g_maxdepth, s_base = g_fn_base;
+	i32 s_depth = g_depth, s_maxdepth = g_maxdepth, s_base = g_fn_base, s_tbase = g_fn_tbase;
 	Ty t, rt, s_ret = g_fn_ret;
 	if (!fn_shape(n, &name, &params, &ret, &body)) return;
 	fi = find_fn(g_nodes[name].text);
@@ -3635,23 +3691,21 @@ static o compile_fn(i32 n)
 	g_work[g_nwork - 1].tail = 1;
 	g_fn_base = g_nwork - 1;
 	g_fn_ret = rt;
+	g_fn_tbase = g_ntypes;
 	run_work(g_nwork - 1);
 	g_fn_base = s_base;
 	g_fn_ret = s_ret;
+	g_fn_tbase = s_tbase;
 	t = pop_type();
 	for (k = 0; k < g_fns[fi].nparams; k++) /* the parameters die; the result on top stays */
 		emit_release(0, g_locals[g_local_floor + k].slot, g_fns[fi].params[k], g_nodes[n].line);
 	if (rt == T_UNIT) {
 		emit_pop(t, g_nodes[n].line);
-		emit(OP_RET_U, 0, 0, g_nodes[n].line);
-	} else {
-		if (t != T_ERR && rt != T_ERR && t != rt)
-			err_node(name, NAME_FMT " must return %s, its body ends with %s", g_nodes[name].text, tn(rt), tn(t));
-		nc = cells(rt);
-		if (nc == 0) emit(OP_RET_U, 0, 0, g_nodes[n].line);
-		else if (nc == 1) emit(OP_RET_V, 0, 0, g_nodes[n].line);
-		else emit(OP_RET_N, nc, 0, g_nodes[n].line);
+	} else if (t != T_ERR && rt != T_ERR && t != rt) {
+		err_node(name, NAME_FMT " must return %s, its body ends with %s", g_nodes[name].text, tn(rt), tn(t));
 	}
+	(void)nc;
+	emit_ret(rt, g_nodes[n].line);
 	g_fns[fi].nslots = g_maxslots;
 	g_fns[fi].maxdepth = g_maxdepth;
 	g_slots = s_slots;
