@@ -8,6 +8,7 @@
 #                           what it saved to repldump.gael (its header lines aside) must equal tests/repl.dump; then
 #                           the REPL with a main.gael, and with a gem from gael's folder turned on and off
 #   README.md               every "$ ./gael ARGS" example prints exactly the lines shown under it
+#   docs/REFERENCE.md       its index has every built-in name gael -n lists
 # Every run has GAEL_CHECK=1: freed memory is overwritten, so a stale read shows, and a program that ends normally
 # must have freed every string, vec and map it made.
 # Exit 0 when everything passed. Build outputs go to a temp folder; the checkout is not touched.
@@ -111,6 +112,15 @@ for bin in "${builds[@]}"; do
 		check "$b README: gael ${args[*]}" "$ok"
 	done
 done
+
+if [ "${#builds[@]}" -gt 0 ]; then # docs/REFERENCE.md: every built-in name (gael -n) has its line in the index
+	ok=1
+	index=$(awk '/^## Index/ { on = 1; next } /^## / { on = 0 } on' docs/REFERENCE.md)
+	while IFS= read -r name; do
+		grep -qF -- "\`$name\`" <<< "$index" || { ok=0; echo "  not in the index of docs/REFERENCE.md: $name"; }
+	done < <("${builds[0]}" -n)
+	check "docs/REFERENCE.md has every built-in name" "$ok"
+fi
 
 echo "$pass passed, $fail failed (${#builds[@]} builds)"
 [ "$fail" = 0 ]

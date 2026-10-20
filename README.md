@@ -4,7 +4,8 @@ gael is a small statically typed language written as s-expressions. The compiler
 runs and reports all the errors of a file in one go, each with its line, column and a caret under the mistake. A
 program without errors is compiled to bytecode and run on a stack VM. gael is meant to become the scripting language
 of a game engine and of an Emacs-like editor written in it (`docs/SPEC.md`, in Polish); this repository is the
-language, version 0.3.
+language, version 0.3. `docs/REFERENCE.md` is the dictionary: every form, operator, function and type, with what it
+takes, gives and reports.
 
 ## Build and run
 
@@ -171,6 +172,8 @@ the bytecode, one instruction per line with its operands, the constant it uses
 and the source line it came from.
 
 ## The language in 0.3
+
+A tour; `docs/REFERENCE.md` has the exact entry for each name (`gael -n` lists them all).
 
 Types: `int` (64-bit, arithmetic wraps around), `float` (64-bit), `bool`, `string`, `unit` (no value), structs,
 enums, `(option type)`, `(vec type)`, `(map key value)`, `(pool type)`, `(handle type)`, `(fn (types) type)`, `(task type)`, and numbers with a size:

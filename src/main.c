@@ -6,6 +6,8 @@
  *   gael -d FILE           compile and print the bytecode
  *   gael -e CODE ARGS...   compile and run CODE
  *   gael -x FILE           compile FILE and list what it exports (@export), the way an editor's inspector shows it
+ *   gael -n                the built-in names, one a line: forms, operators, functions and types (docs/REFERENCE.md
+ *                          has each one)
  *   gael -h                this help
  *
  * gael's own folder is $GAEL_HOME or ~/.gael (like ~/.emacs.d). The REPL first runs main.gael from there when there is
@@ -33,14 +35,17 @@
 #include "compile.c"
 #include "vm.c"
 
-static const char g_usage[] =
-	"usage: gael                   the REPL\n"
-	"       gael FILE ARGS...      compile FILE; when there are no errors, run it; (args) gives it ARGS\n"
-	"       gael -c FILE           only compile: report every type error, run nothing\n"
-	"       gael -d FILE           compile and print the bytecode\n"
-	"       gael -e CODE ARGS...   compile and run CODE\n"
-	"       gael -x FILE           compile FILE and list its @export globals: name : type = value\n"
-	"       gael -h                this help\n";
+static const char *const g_usage[] = {
+	"usage: gael                   the REPL\n",
+	"       gael FILE ARGS...      compile FILE; when there are no errors, run it; (args) gives it ARGS\n",
+	"       gael -c FILE           only compile: report every type error, run nothing\n",
+	"       gael -d FILE           compile and print the bytecode\n",
+	"       gael -e CODE ARGS...   compile and run CODE\n",
+	"       gael -x FILE           compile FILE and list its @export globals: name : type = value\n",
+	"       gael -n                the built-in names, one a line (docs/REFERENCE.md explains each)\n",
+	"       gael -h                this help\n",
+	0
+};
 static const char *const g_usage_env[] = { /* one string each: C89 promises only 509 bytes in one */
 	"GAEL_HEAP=SIZE  the heap for strings, vecs, maps and pools, and as much again for arenas and for the program's\n",
 	"                own text (default 1G; K, M, G; the system gives pages only where they are written)\n",
@@ -541,8 +546,22 @@ int main(int argc, char **argv)
 	compile_init();
 	if (argc == 1) return repl();
 	if (!strcmp(argv[1], "-h") || !strcmp(argv[1], "--help")) {
-		fputs(g_usage, stdout);
+		for (k = 0; g_usage[k]; k++) fputs(g_usage[k], stdout);
 		for (k = 0; g_usage_env[k]; k++) fputs(g_usage_env[k], stdout);
+		return 0;
+	}
+	if (!strcmp(argv[1], "-n") && argc == 2) { /* every name the language takes, once: for the reference and for editors */
+		size_t i;
+		size_t j;
+		for (i = 0; i < GAEL_COUNT(g_reserved); i++) puts(g_reserved[i]);
+		for (i = 0; i < GAEL_COUNT(g_builtins); i++) {
+			for (j = 0; j < GAEL_COUNT(g_reserved) && strcmp(g_reserved[j], g_builtins[i].name); j++) {}
+			if (j == GAEL_COUNT(g_reserved)) puts(g_builtins[i].name);
+		}
+		for (i = T_UNIT; i < T_USER; i++) {
+			const NameSlot *sl = names_get(g_prim_tys[i].name);
+			if (sl && sl->type >= 0 && !sl->reserved) puts(g_prim_tys[i].name); /* NodePath: a type, not a reserved word */
+		}
 		return 0;
 	}
 	if (argv[1][0] != '-') {
@@ -566,7 +585,7 @@ int main(int argc, char **argv)
 		st = load("<-e>", argv[2], strlen(argv[2]), 0, RUN);
 		if (!st) st = leaks();
 	} else {
-		fputs(g_usage, stderr);
+		for (k = 0; g_usage[k]; k++) fputs(g_usage[k], stderr);
 		for (k = 0; g_usage_env[k]; k++) fputs(g_usage_env[k], stderr);
 		return 2;
 	}
