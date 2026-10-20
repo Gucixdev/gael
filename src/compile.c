@@ -38,10 +38,12 @@ typedef struct {
 	i32 offset; /* in cells, from the start of the struct */
 } Field;
 
-#define MAX_TYS 4096
-#define MAX_FIELDS 16384
-#define MAX_VARIANTS 16384
-static TyInfo g_tys[MAX_TYS] = {
+/* The tables that grow with the program are reserved address space (table in base.h): the limits are generous, and
+ * pages come only where something is written */
+#define MAX_TYS (1 << 16)
+#define MAX_FIELDS (1 << 18)
+#define MAX_VARIANTS (1 << 18)
+static const TyInfo g_prim_tys[T_USER] = {
 	{ "<error>", K_PRIM, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
 	{ "unit", K_PRIM, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
 	{ "int", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0 },
@@ -60,12 +62,13 @@ static TyInfo g_tys[MAX_TYS] = {
 	{ "f32", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0 },
 	{ "NodePath", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0 } /* $Player/Sprite, the program's own text */
 };
+static TyInfo *g_tys; /* the built-in ones first */
 static i32 g_ntys = T_USER;
-static Field g_fields[MAX_FIELDS];
+static Field *g_fields;
 static i32 g_nfields;
-static Ty g_tparams[MAX_FIELDS]; /* the parameter types of function types */
+static Ty *g_tparams; /* the parameter types of function types */
 static i32 g_ntparams;
-static const char *g_variants[MAX_VARIANTS];
+static const char **g_variants;
 static i32 g_nvariants;
 
 /* A leaf is a cell inside a value that holds an object (a string, a vec, a map). It holds one only when every guard
@@ -74,10 +77,10 @@ typedef struct {
 	i32 off, guard_first, nguards;
 } Leaf;
 
-#define MAX_LEAVES (1 << 16)
-static Leaf g_leaves[MAX_LEAVES]; /* leaf 0: the value's only cell (a string, a vec, a map); shared by those types */
+#define MAX_LEAVES (1 << 20)
+static Leaf *g_leaves; /* leaf 0: the value's only cell (a string, a vec, a map); shared by those types */
 static i32 g_nleaves = 1;
-static i32 g_guards[MAX_LEAVES];
+static i32 *g_guards;
 static i32 g_nguards;
 static Ty g_vec_str; /* (vec string), the type split and args make */
 
@@ -123,7 +126,7 @@ typedef struct {
  * something they provide - checked at each use when compiling. Two gems on together may not provide the same thing,
  * and neither may exclude the other. The program can use every gem that is on; (disable name) turns one off, and its
  * names cannot be used again until (enable name). */
-#define MAX_GEMS 256
+#define MAX_GEMS 1024
 #define MAX_GEM_LINKS 16
 enum { GEM_KNOWN = 1, GEM_LOADING, GEM_ON, GEM_OFF };
 typedef struct {
@@ -152,30 +155,31 @@ typedef struct {
 } Fmt;
 
 /* what lives as long as the process: code, constants, strings, functions, globals */
-#define MAX_CODE (1 << 18)
-#define MAX_CONSTS (1 << 16)
-#define MAX_FNS 4096
-#define MAX_GLOBALS 4096
-#define MAX_GLOBAL_CELLS (1 << 16)
-#define MAX_FMTS (1 << 14)
-static Ins g_code[MAX_CODE];
+#define MAX_CODE (1 << 24)
+#define MAX_CONSTS (1 << 20)
+#define MAX_FNS (1 << 16)
+#define MAX_GLOBALS (1 << 16)
+#define MAX_GLOBAL_CELLS (1 << 22)
+#define MAX_FMTS (1 << 18)
+#define PERM_BYTES ((size_t)256 << 20)
+static Ins *g_code;
 static i32 g_ncode;
-static i64 g_ints[MAX_CONSTS];
+static i64 *g_ints;
 static i32 g_nints;
-static f64 g_floats[MAX_CONSTS];
+static f64 *g_floats;
 static i32 g_nfloats;
-static Str g_strs[MAX_CONSTS];
+static Str *g_strs;
 static i32 g_nstrs;
-static Fn g_fns[MAX_FNS];
+static Fn *g_fns;
+static i32 *g_snap_entry, *g_snap_slots, *g_snap_depth; /* the REPL: what each function was before a unit */
 static i32 g_nfns;
-static Global g_globals[MAX_GLOBALS];
+static Global *g_globals;
 static i32 g_nglobals, g_nglobal_cells;
-static Fmt g_fmts[MAX_FMTS];
+static Fmt *g_fmts;
 static i32 g_nfmts;
-static Ty g_fmt_tys[MAX_CONSTS];
+static Ty *g_fmt_tys;
 static i32 g_nfmt_tys;
-static u64 g_perm_mem[(8u << 20) / 8];
-static Arena g_perm = { (u8 *)g_perm_mem, sizeof(g_perm_mem), 0, "permanent" };
+static Arena g_perm = { 0, 0, 0, "permanent" };
 
 /* The program's own strings, each followed by a 0, and scratch space for strings being built at run time. A string
  * of the program is one cell: bit 63 set, its offset in this arena in bits 32 to 62 and its length in the low 32. It
@@ -207,7 +211,7 @@ static Ty g_types[MAX_WORK];
 static i32 g_ntypes;
 static i32 g_patches[MAX_WORK];
 static i32 g_npatches;
-static u8 g_seen[MAX_VARIANTS];      /* match: the variants an arm already covers */
+static u8 *g_seen;      /* match: the variants an arm already covers */
 
 typedef enum {
 	F_START, F_CALL, F_TASK, F_IF, F_WHEN, F_WHILE, F_DO, F_LET, F_SET, F_AND, F_OR, F_NOT, F_ARITH, F_CMP, F_PRINT,
@@ -616,8 +620,43 @@ static o names_rebuild(void);
 
 static i32 g_task_end; /* the instruction a task's function returns to: TASK_END */
 
+static o tables_init(void)
+{
+	g_nodes = (Node *)table(MAX_NODES, sizeof(Node));
+	g_unit_arena.base = (u8 *)table(UNIT_BYTES, 1);
+	g_unit_arena.cap = UNIT_BYTES;
+	g_tys = (TyInfo *)table(MAX_TYS, sizeof(TyInfo));
+	memcpy(g_tys, g_prim_tys, sizeof(g_prim_tys));
+	g_fields = (Field *)table(MAX_FIELDS, sizeof(Field));
+	g_variants = (const char **)table(MAX_VARIANTS, sizeof(const char *));
+	g_tparams = (Ty *)table(MAX_FIELDS, sizeof(Ty));
+	g_leaves = (Leaf *)table(MAX_LEAVES, sizeof(Leaf));
+	g_guards = (i32 *)table(MAX_LEAVES, sizeof(i32));
+	g_code = (Ins *)table(MAX_CODE, sizeof(Ins));
+	g_ints = (i64 *)table(MAX_CONSTS, sizeof(i64));
+	g_floats = (f64 *)table(MAX_CONSTS, sizeof(f64));
+	g_strs = (Str *)table(MAX_CONSTS, sizeof(Str));
+	g_fmt_tys = (Ty *)table(MAX_CONSTS, sizeof(Ty));
+	g_fns = (Fn *)table(MAX_FNS, sizeof(Fn));
+	g_snap_entry = (i32 *)table(MAX_FNS, sizeof(i32));
+	g_snap_slots = (i32 *)table(MAX_FNS, sizeof(i32));
+	g_snap_depth = (i32 *)table(MAX_FNS, sizeof(i32));
+	g_globals = (Global *)table(MAX_GLOBALS, sizeof(Global));
+	g_fmts = (Fmt *)table(MAX_FMTS, sizeof(Fmt));
+	g_seen = (u8 *)table(MAX_VARIANTS, 1);
+	g_perm.base = (u8 *)table(PERM_BYTES, 1);
+	g_perm.cap = PERM_BYTES;
+	g_names = (NameSlot *)table(NAME_SLOTS, sizeof(NameSlot));
+	g_mnodes = (Node *)table(MAX_MNODES, sizeof(Node));
+	g_rules = (Rule *)table(MAX_RULES, sizeof(Rule));
+	g_macros = (Macro *)table(MAX_MACROS, sizeof(Macro));
+	g_mtext.base = (u8 *)table(MTEXT_BYTES, 1);
+	g_mtext.cap = MTEXT_BYTES;
+}
+
 static o compile_init(void)
 {
+	tables_init();
 	text_init();
 	g_task_end = emit(OP_TASK_END, 0, 0, 0);
 	g_vec_str = intern_wrap(K_VEC, T_STR);
@@ -3791,7 +3830,6 @@ static struct {
 	    ntparams, nmacros, nrules, nmnodes;
 	size_t perm, text, mtext;
 } g_snap;
-static i32 g_snap_entry[MAX_FNS], g_snap_slots[MAX_FNS], g_snap_depth[MAX_FNS];
 
 /* compile_unit TOP REPL: compile every top-level form; returns the entry point, or -1 after errors (and then nothing
  * of the unit stays). In the REPL the value of the last form is shown. */

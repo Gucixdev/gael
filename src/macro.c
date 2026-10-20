@@ -21,9 +21,10 @@
  * is read; an expansion copies its template back into the unit's nodes. Checking, matching and copying keep their own
  * stacks: no recursion in C. */
 
-#define MAX_MACROS 1024
-#define MAX_RULES 4096
-#define MAX_MNODES (1 << 16)
+#define MAX_MACROS (1 << 14)
+#define MAX_RULES (1 << 16)
+#define MAX_MNODES (1 << 20)
+#define MTEXT_BYTES ((size_t)64 << 20)
 #define MAX_PVARS 63            /* pattern variables in one rule: one bit each of a mask in an i64 */
 #define MAX_BINDS (1 << 15)     /* what one use matched */
 #define MAX_MSTACK 1024         /* lists nested in one pattern, template or copy */
@@ -64,14 +65,13 @@ typedef struct {
 	u8 busy;     /* a repetition is running, to be closed when control comes back to this list */
 } MFrame;
 
-static Node g_mnodes[MAX_MNODES];
+static Node *g_mnodes; /* these three and the text: reserved address space (compile.c's tables_init) */
 static i32 g_nmnodes;
-static Rule g_rules[MAX_RULES];
+static Rule *g_rules;
 static i32 g_nrules;
-static Macro g_macros[MAX_MACROS];
+static Macro *g_macros;
 static i32 g_nmacros;
-static u64 g_mtext_mem[(1u << 20) / 8];
-static Arena g_mtext = { (u8 *)g_mtext_mem, sizeof(g_mtext_mem), 0, "macro text" };
+static Arena g_mtext = { 0, 0, 0, "macro text" };
 static u32 g_stamps;     /* the last stamp an expansion got */
 static i32 g_expansions; /* in this unit */
 

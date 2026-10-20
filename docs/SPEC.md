@@ -145,7 +145,10 @@ odwołania do nodów i komponentów w zapytaniach ECS - wszystko przed uruchomie
   `let`, `match`, `format`) kompiluje się w ~14 ms ponad ~3 ms startu procesu - mniej niż klatka przy 60 fps, więc
   cache jeszcze niepotrzebny. Ten plik to ~46 tys. instrukcji, a tablica kodu ma dziś 2^18 (razem ~34 tys. linii
   gaela), funkcji 4096: przed ładowaniem gemów w trakcie te tablice przejdą na rezerwację przestrzeni adresowej jak
-  sterta.
+  sterta. Zrobione: węzły, kod, funkcje, typy, nazwy i makra są rezerwacjami (strony dopiero przy zapisie), limity
+  2^24 instrukcji, 65536 funkcji, globalnych i typów, 2^21 węzłów na plik; BSS binarki spadł z 53 MB do 3,4 MB, start
+  ~1,6 ms (`/bin/true` ~1,4 ms). Plik z 30 tys. funkcji (390 tys. instrukcji) kompiluje się i działa w ~84 ms. Indeks
+  nazw zaczyna od 4096 miejsc i rośnie dwukrotnie: rozrzucony po 8 MB kosztowałby błąd strony na każdą nazwę.
 - **Start (decyzja 2026-10-20):** program ma się odpalać błyskawicznie, w ułamku sekundy. Dziś `gael -e` startuje w
   ~1,5 ms, tyle co `/bin/true` w tym samym pomiarze (`python3 -c pass`: ~15 ms; 200 uruchomień, statyczna binarka,
   rezerwacje mmap nic nie kosztują, dopóki nic nie jest zapisane). Koszt rośnie tylko z gemami włączonymi na starcie:
@@ -381,9 +384,8 @@ Potem: makra i moduły (0.2), manifest i resolver gemów (0.3), bufor i okno (0.
   użyć aż do ponownego `enable`; kod skompilowany wcześniej działa dalej. Jeszcze nie: zakresy wersji w wymaganiach
   (`:version` jest zapisywana), `:depends` (opcjonalne), wyładowanie kodu, zamiana jednej implementacji na drugą w
   trakcie (nazwy wyłączonego gemu są dalej zajęte), gemy natywne i procesowe, prywatne nazwy gemu.
-- **Następne, po kolei:** mapy stosu (anulowanie zadań), tablice kompilatora na rezerwacji mmap (przed dużymi gemami),
-  traits, tryb wydania aren (po pomiarze), domknięcia, bufor i okno. Numery wersji przesuwają się względem planu
-  wyżej.
+- **Następne, po kolei:** domknięcia (fn łapiące lokalne), mapy stosu (anulowanie zadań), traits, tryb wydania aren
+  (po pomiarze), bufor i okno. Numery wersji przesuwają się względem planu wyżej.
 
 ## Notatki → stan
 

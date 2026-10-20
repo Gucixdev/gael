@@ -18,15 +18,15 @@ typedef struct {
 	u32 stamp; /* the macro expansion that wrote it, 0 for the program's own text (macro.c) */
 } Node;
 
-#define MAX_NODES (1 << 18)
+#define MAX_NODES (1 << 21)
+#define UNIT_BYTES ((size_t)64 << 20) /* the source of one unit and its names */
 #define MAX_DEPTH 256
 #define MAX_ERRORS 32
 
-static Node g_nodes[MAX_NODES];
+static Node *g_nodes; /* reserved address space for MAX_NODES, and the arena too (compile.c's tables_init) */
 static i32 g_nnodes;
 
-static u64 g_unit_mem[(8u << 20) / 8];
-static Arena g_unit_arena = { (u8 *)g_unit_mem, sizeof(g_unit_mem), 0, "unit" };
+static Arena g_unit_arena = { 0, 0, 0, "unit" };
 
 typedef struct {
 	const char *file;

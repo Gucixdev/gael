@@ -28,7 +28,7 @@ typedef union {
 #define FRAME_PC(c) ((i32)((c).i >> 32))
 #define FRAME_FP(c) ((i32)(u32)(c).i)
 
-static Cell g_global_cells[MAX_GLOBAL_CELLS];
+static Cell *g_global_cells; /* reserved address space, like the heap */
 static Cell g_vstack[VM_STACK];
 static Cell g_vframes[VM_FRAMES];
 
@@ -183,12 +183,6 @@ static o part_ungrow(i64 at, i64 n)
 	else if (at + 2 * n == g_arena_top) g_arena_top = at + n;
 }
 
-/* reserve BYTES: that much address space, given pages only where something is written; 0 when the system refuses */
-static o *reserve(size_t bytes)
-{
-	o *p = mmap(0, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
-	return p == MAP_FAILED ? 0 : p;
-}
 
 /* heap_order_of SIZE: GAEL_HEAP's value, bytes with K, M or G after them, as the order of the largest number of cells
  * (a power of 2) that fits; 0 when it is not a size or is under 32K */
@@ -227,6 +221,7 @@ static o vm_init(int check)
 	}
 	g_text.base = (u8 *)text;
 	g_text.cap = (size_t)8 << k;
+	g_global_cells = (Cell *)table(MAX_GLOBAL_CELLS, sizeof(Cell));
 	g_heap_order = k;
 	g_arena_lo = g_arena_top = (i64)1 << k;
 	g_check = check;

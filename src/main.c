@@ -53,7 +53,7 @@ static const char *const g_usage_env[] = { /* one string each: C89 promises only
 enum { RUN, CHECK, DIS };
 
 /* Every file a program uses, once, by its canonical path */
-#define MAX_MODULES 1024
+#define MAX_MODULES (1 << 14)
 typedef struct {
 	const char *real;  /* the canonical path: the same file reached two ways is one module */
 	const char *shown; /* the path as messages show it */

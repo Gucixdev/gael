@@ -77,4 +77,20 @@ static char *arena_strndup(Arena *a, const char *s, size_t n)
 	return p;
 }
 
+/* reserve BYTES: that much address space, given pages only where something is written; 0 when the system refuses */
+static o *reserve(size_t bytes)
+{
+	o *p = mmap(0, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+	return p == MAP_FAILED ? 0 : p;
+}
+
+/* table N SIZE: room for N things of SIZE bytes, from reserved address space: pages come only where a thing is
+ * written, so a table can have a generous limit and cost nothing until it fills */
+static o *table(size_t n, size_t size)
+{
+	o *p = reserve(n * size);
+	if (!p) die("the system gave no address space for the compiler's tables");
+	return p;
+}
+
 #endif

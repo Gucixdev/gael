@@ -342,9 +342,10 @@ tests/errors/div-zero.gael:1: runtime error: division by zero
 
 - C89 in one translation unit (`src/main.c` includes the rest), with the fixed-size types `i8`..`i64`, `u8`..`u64`,
   `f32`, `f64` and `o` for void (`src/base.h`), the same names as gael's own sized numbers.
-- No `malloc`: every table is a static array, and the VM's heap and text arena are each one reservation of address
-  space (mmap with `MAP_NORESERVE`), which the system fills with pages only where something is written. Running out
-  of a table is a fatal error that names it.
+- No `malloc`: every table that grows with the program (nodes, code, functions, types, names, macros) and the VM's
+  heap and text arena are each one reservation of address space (mmap with `MAP_NORESERVE`), which the system fills
+  with pages only where something is written, so the limits are generous and cost nothing until they are reached; the
+  rest are small static arrays. Running out of a table is a fatal error that names it.
 - No recursion in C. The reader keeps its own stack of open lists, the compiler runs a work stack of frames (type
   checking and code generation happen in the same pass), and the VM keeps its own call stack, so deep recursion in a
   gael program is a gael runtime error, not a crash. A tail call (`TAILCALL`) moves its arguments down over its own
@@ -384,10 +385,10 @@ Version 0.3, tested on Linux x86-64 with gcc 13.3 and clang 18.1. `./test` passe
 sanitizers, every run with `GAEL_CHECK=1`. GitHub Actions runs shellcheck on the scripts and `./test` on every push
 (`.github/workflows/test.yml`, ubuntu-24.04).
 
-Not in 0.3: gems (packages with versions, see the spec), calling C, and the editor. The fixed limits are 8
-parameters per function, 4096 functions, 4096 globals, 4096 types and 2^18 instructions; per unit (a file, or one REPL
-form) 2^18 syntax nodes and an 8 MiB arena for the source and its names; at run time a stack of 65536 cells and at
-most 4096 nested calls (a tail call does not nest). Strings made at run time, vecs, maps and pools live on the heap; the text arena, as big, holds
+Not in 0.3: versions of gems, calling C, and the editor. The fixed limits are 8 parameters per function, 65536
+functions, 65536 globals, 65536 types and 2^24 instructions; per unit (a file, or one REPL form) 2^21 syntax nodes
+and a 64 MiB arena for the source and its names; at run time a stack of 65536 cells and at most 4096 nested calls (a
+tail call does not nest), the same for each task. Strings made at run time, vecs, maps and pools live on the heap; the text arena, as big, holds
 the program's own strings and a string while it is being built (a format, a command's output, a file). Both are 1 GiB
 of address space unless `GAEL_HEAP` says otherwise, and filling either is a runtime error.
 
