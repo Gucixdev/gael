@@ -1548,6 +1548,25 @@ static int vm_run(i32 pc)
 		case OP_MUL_F: sp--; s[sp - 1].f *= s[sp].f; break;
 		case OP_DIV_F: sp--; s[sp - 1].f /= s[sp].f; break;
 		case OP_NEG_F: s[sp - 1].f = -s[sp - 1].f; break;
+		case OP_MATH: {
+			f64 x = s[sp - 1].f;
+			switch (in->a) {
+			case 0: x = sqrt(x); break;
+			case 1: x = sin(x); break;
+			case 2: x = cos(x); break;
+			case 3: x = tan(x); break;
+			case 4: x = asin(x); break;
+			case 5: x = acos(x); break;
+			case 6: x = atan(x); break;
+			case 7: x = exp(x); break;
+			case 8: x = log(x); break;
+			case 9: x = floor(x); break;
+			default: x = ceil(x); break;
+			}
+			s[sp - 1].f = x;
+			break;
+		}
+		case OP_MATH2: sp--; s[sp - 1].f = in->a ? pow(s[sp - 1].f, s[sp].f) : atan2(s[sp - 1].f, s[sp].f); break;
 
 		case OP_LT_I: sp--; s[sp - 1].i = s[sp - 1].i < s[sp].i; break;
 		case OP_LE_I: sp--; s[sp - 1].i = s[sp - 1].i <= s[sp].i; break;

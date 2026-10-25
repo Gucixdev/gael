@@ -198,6 +198,7 @@ starts with `;`.
 | `(xor a b...)`, `(xnor a b...)` | true when an odd number of the bools are true, and the opposite; every one is evaluated |
 | `(+ a b...)`, `-`, `*`, `/` | numbers of one type; `(- x)` negates |
 | `(% a b)` | the remainder of two ints |
+| `(sqrt x)`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `(atan2 y x)`, `exp`, `ln`, `(pow x y)`, `floor`, `ceil` | the C library's functions of floats |
 | `<`, `<=`, `>`, `>=`, `=`, `!=` | compare two numbers of one type; `=` and `!=` also take bools, strings, enum values, handles and node paths |
 | `(bit-and a b...)`, `bit-or`, `bit-xor`, `(bit-not a)`, `(shl a n)`, `(shr a n)` | the bits of ints of one type; a shift count runs from 0 to the type's bits - 1 (anything else is a runtime error), and `shr` keeps the sign of a signed type. Ints can also be written `0xff` and `0b1010` |
 | `$Player`, `$Enemies/Goblin` | a node path, as in GDScript: a value of type `NodePath`; what it points at comes with the scene tree |

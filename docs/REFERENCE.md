@@ -36,11 +36,15 @@ How the entries read:
 | `>=` | greater than or equal | [Comparing](#comparing) |
 | `NodePath` | the type of `$Player/Sprite` | [Types](#types) |
 | `_` | matches anything: `match` arms, macro patterns | [match](#match), [Macros](#macros) |
+| `acos` | arc cosine | [Math](#math) |
 | `and` | all true, stops at the first false | [Logic](#logic) |
 | `append-file` | add text to the end of a file | [Files and the system](#files-and-the-system) |
-| `args` | the command line after the file | [Files and the system](#files-and-the-system) |
 | `arena` | memory handed back at once when the body ends | [Memory](#memory) |
+| `args` | the command line after the file | [Files and the system](#files-and-the-system) |
+| `asin` | arc sine | [Math](#math) |
 | `async` | run a function as a task | [Tasks](#tasks) |
+| `atan` | arc tangent | [Math](#math) |
+| `atan2` | the angle of a point (y, x) | [Math](#math) |
 | `await` | a task's result, once it has ended | [Tasks](#tasks) |
 | `bit-and` | the bits set in all | [Bits](#bits) |
 | `bit-not` | every bit flipped | [Bits](#bits) |
@@ -48,8 +52,10 @@ How the entries read:
 | `bit-xor` | the bits set in an odd number | [Bits](#bits) |
 | `bool` | `true` or `false` | [Types](#types) |
 | `byte` | one byte of a string, as an int | [Strings](#strings) |
+| `ceil` | round up to a whole number | [Math](#math) |
 | `chain` | hand a value through steps: `(chain x (f a) g)` | [Control](#control) |
 | `char` | the one-byte string of a byte | [Strings](#strings) |
+| `cos` | cosine | [Math](#math) |
 | `def` | a global | [Top level](#top-level) |
 | `defmacro` | a macro | [Macros](#macros) |
 | `defn` | a function | [Top level](#top-level) |
@@ -62,11 +68,13 @@ How the entries read:
 | `eprint` | print to stderr | [Printing](#printing) |
 | `eprintln` | print a line to stderr | [Printing](#printing) |
 | `exit` | end the program with a status | [Files and the system](#files-and-the-system) |
+| `exp` | e to a power | [Math](#math) |
 | `f32` | a 32-bit float; converts to it | [Types](#types), [Numbers](#numbers) |
 | `f64` | the same as `float` | [Types](#types) |
 | `false` | the bool | [Types](#types) |
 | `find` | where a part of a string starts | [Strings](#strings) |
 | `float` | a 64-bit float; converts to it | [Types](#types), [Numbers](#numbers) |
+| `floor` | round down to a whole number | [Math](#math) |
 | `fn` | a function without a name, a closure; a function type | [Functions](#functions) |
 | `for` | go over a range, a vec, a map's keys or a pool | [Control](#control) |
 | `format` | print into a new string | [Printing](#printing) |
@@ -84,6 +92,7 @@ How the entries read:
 | `keys` | a map's keys, in order | [Maps](#maps) |
 | `len` | the length of a string, vec, map or pool | [Strings](#strings), [Vecs](#vecs) |
 | `let` | locals for a body | [Control](#control) |
+| `ln` | natural logarithm | [Math](#math) |
 | `lookup` | a map's value or a pool's element, as an option | [Maps](#maps), [Pools](#pools) |
 | `map` | a map; the map type | [Maps](#maps) |
 | `match` | choose by a value's shape | [match](#match) |
@@ -101,6 +110,7 @@ How the entries read:
 | `pipe-in` | the same, with text on the first one's stdin | [Files and the system](#files-and-the-system) |
 | `pool` | a fixed number of slots with generational handles | [Pools](#pools) |
 | `pop` | take a vec's last element off | [Vecs](#vecs) |
+| `pow` | a number to a power | [Math](#math) |
 | `print` | print to stdout | [Printing](#printing) |
 | `println` | print a line to stdout | [Printing](#printing) |
 | `push` | add at a vec's end | [Vecs](#vecs) |
@@ -114,15 +124,18 @@ How the entries read:
 | `sh` | run a command, get its output | [Files and the system](#files-and-the-system) |
 | `shl` | shift left | [Bits](#bits) |
 | `shr` | shift right | [Bits](#bits) |
+| `sin` | sine | [Math](#math) |
 | `sleep` | wait seconds | [Tasks](#tasks) |
 | `some` | an option with a value | [Options](#options) |
 | `spawn` | put an element into a pool | [Pools](#pools) |
 | `split` | the pieces between separators | [Strings](#strings) |
+| `sqrt` | square root | [Math](#math) |
 | `string` | the string type | [Types](#types) |
 | `string-of` | a macro's parts as a string, like C's `#` | [Macros](#macros) |
 | `struct` | a type with fields | [Structs](#structs) |
 | `substr` | bytes from one index up to another | [Strings](#strings) |
 | `system` | run a command, its output passing through; its status | [Files and the system](#files-and-the-system) |
+| `tan` | tangent | [Math](#math) |
 | `task` | the type of a running function | [Tasks](#tasks) |
 | `task-time` | the tasks' clock | [Tasks](#tasks) |
 | `tasks-run` | run the tasks until none is left | [Tasks](#tasks) |
@@ -427,6 +440,18 @@ of operands.
 Exactly two values of one type; a `bool`. `<` and the like compare numbers. `=` and `!=` also compare bools, strings
 (by content), enum values, handles and node paths. For a struct or an enum with an `equal` or a `compare` function
 they call that ([Methods and hooks](#methods-and-hooks)). Anything else is a compile error.
+
+### Math
+
+```
+(sqrt x)   (sin x)   (cos x)   (tan x)   (asin x)   (acos x)   (atan x)   (atan2 y x)
+(exp x)    (ln x)    (pow x y)  (floor x)  (ceil x)
+```
+
+Functions of `float`s, giving a `float`, the C library's: `atan2` is the angle of the point `(x, y)` from the x axis,
+between -pi and pi; `ln` is the natural logarithm (the name `log` stays free for the program); `floor` and `ceil` round
+down and up and stay floats (`(int (floor x))` makes an int). Angles are in radians. Outside a function's domain the
+answer is `nan` or `inf`, as IEEE says (`(sqrt -1.0)` is `nan`), not an error. An `f32` goes in as `(float x)`.
 
 ### Bits
 

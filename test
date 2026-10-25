@@ -25,7 +25,7 @@ pass=0 fail=0
 
 for cc in gcc clang; do
 	command -v "$cc" > /dev/null || continue
-	if "$cc" "${flags[@]}" -O2 -o "$out/gael-$cc" src/main.c 2> "$out/$cc.log"; then
+	if "$cc" "${flags[@]}" -O2 -o "$out/gael-$cc" src/main.c -lm 2> "$out/$cc.log"; then
 		builds+=("$out/gael-$cc")
 	else
 		echo "FAIL build with $cc:"; sed 's/^/  /' "$out/$cc.log"; fail=$((fail + 1))
@@ -35,7 +35,7 @@ sanitized=0
 for cc in gcc clang; do # the first compiler whose sanitizer runtime is installed
 	command -v "$cc" > /dev/null || continue
 	if "$cc" "${flags[@]}" -O1 -g -fno-omit-frame-pointer -fsanitize=address,undefined -fno-sanitize-recover=all \
-		-o "$out/gael-asan" src/main.c 2> "$out/asan.log"; then
+		-o "$out/gael-asan" src/main.c -lm 2> "$out/asan.log"; then
 		builds+=("$out/gael-asan")
 		sanitized=1
 		break

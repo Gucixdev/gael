@@ -74,6 +74,8 @@
 	X(JOIN, 0)     /* v s -- s     the strings of a vec with the separator between them, a new string */ \
 	X(CHAR, 0)     /* i -- s       the one-byte string of 0 to 255 */ \
 	X(TRIM, 0)     /* s -- s       without the spaces, tabs and newlines around it */ \
+	X(MATH, 1)     /* f -- f       a: sqrt sin cos tan asin acos atan exp ln floor ceil, in that order */ \
+	X(MATH2, 1)    /* f f -- f     a: atan2 (y x), pow (x y) */ \
 	X(READ_FILE, 0)  /* s -- o     (option string): the whole file, or none when it cannot be read */ \
 	X(WRITE_FILE, 2) /* s s -- b   write a string to a file, false on failure; a: 1 appends, b: 1 when the text comes first */ \
 	X(READ_LINE, 0)  /* -- o       (option string): one line of standard input without its newline; none at the end */ \

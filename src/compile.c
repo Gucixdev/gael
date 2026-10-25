@@ -709,7 +709,20 @@ static const Builtin g_builtins[] = {
 	{ "read-line", "", "", 'O', OP_READ_LINE, 0, 0 },
 	{ "getenv", "s", "name", 'O', OP_GETENV, 0, 0 },
 	{ "args", "", "", 'S', OP_ARGS, 0, 0 },
-	{ "exit", "i", "status", 'u', OP_EXIT, 0, 0 }
+	{ "exit", "i", "status", 'u', OP_EXIT, 0, 0 },
+	{ "sqrt", "f", "x", 'f', OP_MATH, 0, 0 },
+	{ "sin", "f", "x", 'f', OP_MATH, 1, 0 },
+	{ "cos", "f", "x", 'f', OP_MATH, 2, 0 },
+	{ "tan", "f", "x", 'f', OP_MATH, 3, 0 },
+	{ "asin", "f", "x", 'f', OP_MATH, 4, 0 },
+	{ "acos", "f", "x", 'f', OP_MATH, 5, 0 },
+	{ "atan", "f", "x", 'f', OP_MATH, 6, 0 },
+	{ "exp", "f", "x", 'f', OP_MATH, 7, 0 },
+	{ "ln", "f", "x", 'f', OP_MATH, 8, 0 },
+	{ "floor", "f", "x", 'f', OP_MATH, 9, 0 },
+	{ "ceil", "f", "x", 'f', OP_MATH, 10, 0 },
+	{ "atan2", "ff", "y x", 'f', OP_MATH2, 0, 0 },
+	{ "pow", "ff", "x y", 'f', OP_MATH2, 1, 0 }
 };
 
 static Ty code_type(char c)
