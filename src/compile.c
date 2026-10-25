@@ -147,6 +147,24 @@ static struct {
 } g_replaced[MAX_REPLACED];
 static i32 g_nreplaced;
 
+/* The file each stretch of code was compiled from, for a runtime error's line: the units in the order compiled, a new
+ * entry where the file changes */
+#define MAX_CODE_FILES 4096
+static struct {
+	i32 start;
+	const char *file;
+} g_code_files[MAX_CODE_FILES];
+static i32 g_ncode_files;
+
+static const char *code_file(i32 pc)
+{
+	i32 i;
+	for (i = g_ncode_files - 1; i >= 0; i--) {
+		if (g_code_files[i].start <= pc) return g_code_files[i].file;
+	}
+	return g_unit.file;
+}
+
 static Gem g_gems[MAX_GEMS]; /* zero until used, so it costs the binary nothing; gem 0 is set in compile_init */
 static i32 g_ngems = 1;
 static int g_unit_main; /* the unit is a gem's main file: it starts with the manifest */
@@ -4937,6 +4955,12 @@ static i32 compile_unit(i32 top, int repl)
 	g_code[entry].b = g_maxdepth;
 	if (!g_unit.nerrors) {
 		fuse(g_snap.ncode, g_ncode);
+		if (!g_ncode_files || strcmp(g_code_files[g_ncode_files - 1].file, g_unit.file)) {
+			if (g_ncode_files == MAX_CODE_FILES) g_ncode_files--; /* past the table, the last file takes the rest */
+			g_code_files[g_ncode_files].start = g_snap.ncode;
+			g_code_files[g_ncode_files].file = g_unit.file;
+			g_ncode_files++;
+		}
 		return entry;
 	}
 

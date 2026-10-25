@@ -536,17 +536,19 @@ static o drain(void)
 	g_draining = 0;
 }
 
-static int vm_error(i32 line, const char *msg)
+/* vm_error IN MSG: the runtime error at instruction IN, "file:line: runtime error: msg" - the file IN was compiled
+ * from, a gem's or a used file's as well as the program's */
+static int vm_error(const Ins *in, const char *msg)
 {
 	fflush(stdout);
-	fprintf(stderr, "%s:%ld: runtime error: %s\n", g_unit.file, (long)line, msg);
+	fprintf(stderr, "%s:%ld: runtime error: %s\n", code_file((i32)(in - g_code)), (long)in->line, msg);
 	return 1;
 }
 
 #define HEAP_FULL "out of memory (the heap is full)"
 #define NOT_MADE "this vec, map or pool was never made: a global read before its def ran"
 #define STALE "a stale handle: its element was removed from the pool"
-#define MADE(h) if ((h) <= 0) return vm_error(in->line, NOT_MADE)
+#define MADE(h) if ((h) <= 0) return vm_error(in, NOT_MADE)
 #define TEXT_FULL "out of memory for strings (the text arena is full)"
 
 /* Strings made at run time are first written to the free end of the text arena, then copied into a string object
@@ -1282,8 +1284,8 @@ static int keep(Cell *val, Ty t)
 	return 1;
 }
 
-/* arena_error LINE ARENA: the runtime error for an arena that ends while objects made in it are still held */
-static int arena_error(i32 line, const ArenaLevel *ar)
+/* arena_error IN ARENA: the runtime error for an arena that ends while objects made in it are still held */
+static int arena_error(const Ins *in, const ArenaLevel *ar)
 {
 	static const char *const kinds[] = { "?", "string", "vec", "map", "pool" };
 	char msg[400];
@@ -1302,23 +1304,23 @@ static int arena_error(i32 line, const ArenaLevel *ar)
 	}
 	sprintf(msg + n, " made in this arena %s still held when it ends (kept outside it, or in a cycle); (keep x) copies a value out",
 	        total == 1 ? "is" : "are");
-	return vm_error(line, msg);
+	return vm_error(in, msg);
 }
 
-/* index_error LINE I LEN: the runtime error for an index outside a vec */
-static int index_error(i32 line, i64 i, i64 len)
+/* index_error IN I LEN: the runtime error for an index outside a vec */
+static int index_error(const Ins *in, i64 i, i64 len)
 {
 	char msg[96];
 	sprintf(msg, "index %ld is outside a vec of %ld", (long)i, (long)len);
-	return vm_error(line, msg);
+	return vm_error(in, msg);
 }
 
-/* range_error LINE FROM TO LEN: substr's bytes FROM up to TO do not fit a string of LEN, or TO is before FROM */
-static int range_error(i32 line, i64 from, i64 to, i64 len)
+/* range_error IN FROM TO LEN: substr's bytes FROM up to TO do not fit a string of LEN, or TO is before FROM */
+static int range_error(const Ins *in, i64 from, i64 to, i64 len)
 {
 	char msg[160];
 	sprintf(msg, "substr %ld %ld does not fit a string of %ld bytes", (long)from, (long)to, (long)len);
-	return vm_error(line, msg);
+	return vm_error(in, msg);
 }
 
 /* the command line after the file name, kept in the text arena as the program's own strings */
@@ -1519,10 +1521,10 @@ static int coro_grow(i64 cells_needed, i64 frames_needed)
 /* the running coroutine pauses (its state is set): back to whoever ran it; on its first pause it joins g_coros */
 #define SUSPEND(at_pc) do { \
 	i64 t_ = g_cur; \
-	if (g_narenas != g_arena_floor) return vm_error(in->line, "a coroutine cannot pause inside an arena: the arena would end out of turn"); \
+	if (g_narenas != g_arena_floor) return vm_error(in, "a coroutine cannot pause inside an arena: the arena would end out of turn"); \
 	SAVE_REGS(at_pc); \
 	if (!g_heap[t_ + CO_LISTED].i) { \
-		if (g_ncoros == MAX_COROS) return vm_error(in->line, "too many coroutines paused (MAX_COROS)"); \
+		if (g_ncoros == MAX_COROS) return vm_error(in, "too many coroutines paused (MAX_COROS)"); \
 		g_coros[g_ncoros++] = t_; \
 		g_heap[t_ + CO_LISTED].i = 1; \
 		obj_retain(t_); \
@@ -1601,7 +1603,7 @@ static int vm_run(i32 pc)
 		switch ((Op)in->op) {
 		CASE(OP_HALT) return 0;
 		CASE(OP_ENTER)
-			if (fp + in->a + in->b > cap) return vm_error(in->line, "stack overflow");
+			if (fp + in->a + in->b > cap) return vm_error(in, "stack overflow");
 			while (sp < fp + in->a) s[sp++].i = 0;
 			NEXT;
 		CASE(OP_PUSH_I) s[sp++].i = g_ints[in->a]; NEXT;
@@ -1655,7 +1657,7 @@ static int vm_run(i32 pc)
 		CASE(OP_DIV_I)
 		CASE(OP_MOD_I)
 			sp--;
-			if (s[sp].i == 0) return vm_error(in->line, "division by zero");
+			if (s[sp].i == 0) return vm_error(in, "division by zero");
 			if (s[sp].i == -1) { /* INT_MIN / -1 overflows; -x and 0 are what wrapping gives */
 				s[sp - 1].i = in->op == OP_DIV_I ? (i64)(0 - (u64)s[sp - 1].i) : 0;
 				NEXT;
@@ -1666,7 +1668,7 @@ static int vm_run(i32 pc)
 		CASE(OP_DIV_U)
 		CASE(OP_MOD_U)
 			sp--;
-			if (s[sp].i == 0) return vm_error(in->line, "division by zero");
+			if (s[sp].i == 0) return vm_error(in, "division by zero");
 			s[sp - 1].i = (i64)(in->op == OP_DIV_U ? (u64)s[sp - 1].i / (u64)s[sp].i : (u64)s[sp - 1].i % (u64)s[sp].i);
 			NEXT;
 		CASE(OP_BAND) sp--; s[sp - 1].i = (i64)((u64)s[sp - 1].i & (u64)s[sp].i); NEXT;
@@ -1681,7 +1683,7 @@ static int vm_run(i32 pc)
 			if (n < 0 || n >= bits) {
 				char msg[96];
 				sprintf(msg, "a shift by %ld does not fit a %ld-bit int", (long)n, (long)bits);
-				return vm_error(in->line, msg);
+				return vm_error(in, msg);
 			}
 			sp--;
 			if (in->op == OP_SHR && !is_unsigned(t) && s[sp - 1].i < 0) v = ~(~v >> n); /* the sign comes in from the left */
@@ -1769,7 +1771,7 @@ static int vm_run(i32 pc)
 			if (!(v > lo && v < hi)) {
 				char msg[160];
 				sprintf(msg, "%s of a float that does not fit in it (%s)", tn(t), int_range(t));
-				return vm_error(in->line, msg);
+				return vm_error(in, msg);
 			}
 			s[sp - 1].i = t == T_U64 && v >= 9223372036854775808.0 ? (i64)(u64)v : (i64)v;
 			NEXT;
@@ -1788,7 +1790,7 @@ static int vm_run(i32 pc)
 			i64 fv = 0;
 			if (in->op == OP_CALL_V) {
 				fv = s[--sp].i;
-				if (!fv) return vm_error(in->line, UNSET_FN);
+				if (!fv) return vm_error(in, UNSET_FN);
 				fn = &g_fns[fv < 0 ? -fv - 1 : g_heap[fv + CL_FN].i];
 			} else {
 				fn = &g_fns[in->a];
@@ -1796,7 +1798,7 @@ static int vm_run(i32 pc)
 			nfp = sp + fn->env - fn->pcells;
 			if (nf == fcap || nfp + fn->nslots + fn->maxdepth > cap) {
 				if (!g_cur || !coro_grow(nfp + fn->nslots + fn->maxdepth, nf + 1))
-					return vm_error(in->line, "stack overflow (recursion too deep?)");
+					return vm_error(in, "stack overflow (recursion too deep?)");
 				LOAD_STACK(); /* the coroutine's stack moved */
 			}
 			if (fn->env) { /* its closure (or 0) goes under the arguments, into slot 0; the call owns it now */
@@ -1817,13 +1819,13 @@ static int vm_run(i32 pc)
 			i64 fv = 0;
 			if (in->op == OP_TAILCALL_V) {
 				fv = s[--sp].i;
-				if (!fv) return vm_error(in->line, UNSET_FN);
+				if (!fv) return vm_error(in, UNSET_FN);
 				fn = &g_fns[fv < 0 ? -fv - 1 : g_heap[fv + CL_FN].i];
 			} else {
 				fn = &g_fns[in->a];
 			}
 			if (fp + fn->nslots + fn->maxdepth > cap) {
-				if (!g_cur || !coro_grow(fp + fn->nslots + fn->maxdepth, nf)) return vm_error(in->line, "stack overflow");
+				if (!g_cur || !coro_grow(fp + fn->nslots + fn->maxdepth, nf)) return vm_error(in, "stack overflow");
 				LOAD_STACK();
 			}
 			if (fn->env) {
@@ -1877,15 +1879,15 @@ static int vm_run(i32 pc)
 			g_sink = 0;
 			g_sink_full = !text_room();
 			print_fmt(&g_fmts[in->a], s + sp);
-			if (g_sink_full) return vm_error(in->line, TEXT_FULL);
+			if (g_sink_full) return vm_error(in, TEXT_FULL);
 			release_args(&g_fmts[in->a], s + sp);
-			if ((h = text_take(start)) < 0) return vm_error(in->line, HEAP_FULL);
+			if ((h = text_take(start)) < 0) return vm_error(in, HEAP_FULL);
 			s[sp++].i = h;
 			NEXT;
 		}
 		CASE(OP_SH) {
 			i64 cmd = s[sp - 1].i, res;
-			if (!run_cmd(c_str(cmd), &res)) return vm_error(in->line, g_fail);
+			if (!run_cmd(c_str(cmd), &res)) return vm_error(in, g_fail);
 			obj_release(cmd);
 			s[sp - 1].i = res;
 			NEXT;
@@ -1893,7 +1895,7 @@ static int vm_run(i32 pc)
 		CASE(OP_SHPIPE) {
 			i64 res, k;
 			sp -= in->a;
-			if (!run_pipe(s + sp, in->a, in->b, &res)) return vm_error(in->line, g_fail);
+			if (!run_pipe(s + sp, in->a, in->b, &res)) return vm_error(in, g_fail);
 			for (k = 0; k < in->a; k++) obj_release(s[sp + k].i);
 			s[sp++].i = res;
 			NEXT;
@@ -1902,10 +1904,10 @@ static int vm_run(i32 pc)
 		CASE(OP_ENV) {
 			i64 name = s[sp - 1].i, h;
 			const char *c = c_str(name), *val;
-			if (!c) return vm_error(in->line, TEXT_FULL);
+			if (!c) return vm_error(in, TEXT_FULL);
 			val = getenv(c);
 			if (!val) val = "";
-			if ((h = str_new(val, strlen(val))) < 0) return vm_error(in->line, HEAP_FULL);
+			if ((h = str_new(val, strlen(val))) < 0) return vm_error(in, HEAP_FULL);
 			obj_release(name);
 			s[sp - 1].i = h;
 			NEXT;
@@ -1915,7 +1917,7 @@ static int vm_run(i32 pc)
 			i64 cmd = s[sp - 1].i;
 			const char *c = c_str(cmd);
 			int st;
-			if (!c) return vm_error(in->line, TEXT_FULL);
+			if (!c) return vm_error(in, TEXT_FULL);
 			fflush(stdout);
 			st = system(c);
 			obj_release(cmd);
@@ -1942,8 +1944,8 @@ static int vm_run(i32 pc)
 		}
 		CASE(OP_SUBSTR) {
 			i64 v = s[sp - 3].i, from = s[sp - 2].i, to = s[sp - 1].i, h;
-			if (from < 0 || from > to || to > STR_LEN(v)) return range_error(in->line, from, to, STR_LEN(v));
-			if ((h = str_piece(v, from, to - from)) == -1) return vm_error(in->line, HEAP_FULL);
+			if (from < 0 || from > to || to > STR_LEN(v)) return range_error(in, from, to, STR_LEN(v));
+			if ((h = str_piece(v, from, to - from)) == -1) return vm_error(in, HEAP_FULL);
 			obj_release(v);
 			sp -= 2;
 			s[sp - 1].i = h;
@@ -1954,7 +1956,7 @@ static int vm_run(i32 pc)
 			if (i < 0 || i >= STR_LEN(v)) {
 				char msg[96];
 				sprintf(msg, "byte %ld is outside a string of %ld bytes", (long)i, (long)STR_LEN(v));
-				return vm_error(in->line, msg);
+				return vm_error(in, msg);
 			}
 			sp--;
 			s[sp - 1].i = (u8)STR_P(v)[i];
@@ -1972,13 +1974,13 @@ static int vm_run(i32 pc)
 		CASE(OP_SPLIT) {
 			i64 v = s[sp - 2].i, sep = s[sp - 1].i, n = 1, at, start = 0, h, piece;
 			Cell *data;
-			if (!STR_LEN(sep)) return vm_error(in->line, "split: the separator is empty");
+			if (!STR_LEN(sep)) return vm_error(in, "split: the separator is empty");
 			for (at = str_find(v, sep, 0); at >= 0; at = str_find(v, sep, at + STR_LEN(sep))) n++;
-			if ((h = vec_new(g_vec_str, n, 0)) < 0) return vm_error(in->line, HEAP_FULL);
+			if ((h = vec_new(g_vec_str, n, 0)) < 0) return vm_error(in, HEAP_FULL);
 			data = g_heap + g_heap[h + VH_DATA].i;
 			for (n = 0;; start = at + STR_LEN(sep)) {
 				at = str_find(v, sep, start);
-				if ((piece = str_piece(v, start, (at >= 0 ? at : STR_LEN(v)) - start)) == -1) return vm_error(in->line, HEAP_FULL);
+				if ((piece = str_piece(v, start, (at >= 0 ? at : STR_LEN(v)) - start)) == -1) return vm_error(in, HEAP_FULL);
 				data[n++].i = piece;
 				if (at < 0) break;
 			}
@@ -2001,9 +2003,9 @@ static int vm_run(i32 pc)
 			}
 			if (!ok) {
 				g_text.used = start;
-				return vm_error(in->line, TEXT_FULL);
+				return vm_error(in, TEXT_FULL);
 			}
-			if ((h = text_take(start)) < 0) return vm_error(in->line, HEAP_FULL);
+			if ((h = text_take(start)) < 0) return vm_error(in, HEAP_FULL);
 			obj_release(v);
 			obj_release(sep);
 			sp--;
@@ -2014,7 +2016,7 @@ static int vm_run(i32 pc)
 			if (s[sp - 1].i < 0 || s[sp - 1].i > 255) {
 				char msg[64];
 				sprintf(msg, "char takes 0 to 255, this is %ld", (long)s[sp - 1].i);
-				return vm_error(in->line, msg);
+				return vm_error(in, msg);
 			}
 			s[sp - 1].i = str_cell((size_t)(2 * s[sp - 1].i), 1);
 			NEXT;
@@ -2023,7 +2025,7 @@ static int vm_run(i32 pc)
 			const char *p;
 			u32 n;
 			trimmed(v, &p, &n);
-			if ((h = str_piece(v, p - STR_P(v), n)) == -1) return vm_error(in->line, HEAP_FULL);
+			if ((h = str_piece(v, p - STR_P(v), n)) == -1) return vm_error(in, HEAP_FULL);
 			obj_release(v);
 			s[sp - 1].i = h;
 			NEXT;
@@ -2032,11 +2034,11 @@ static int vm_run(i32 pc)
 			i64 pathv = s[sp - 1].i, v = 0;
 			const char *path = c_str(pathv);
 			FILE *file = path ? fopen(path, "rb") : 0;
-			if (!path) return vm_error(in->line, TEXT_FULL);
+			if (!path) return vm_error(in, TEXT_FULL);
 			if (file) {
 				int ok = read_into(file, &v);
 				fclose(file);
-				if (!ok) return vm_error(in->line, g_fail);
+				if (!ok) return vm_error(in, g_fail);
 			}
 			obj_release(pathv);
 			s[sp - 1].i = file != 0;
@@ -2049,7 +2051,7 @@ static int vm_run(i32 pc)
 			FILE *file = path ? fopen(path, in->a ? "ab" : "wb") : 0;
 			int ok = file && fwrite(STR_P(text), 1, STR_LEN(text), file) == STR_LEN(text);
 			if (file && fclose(file)) ok = 0;
-			if (!path) return vm_error(in->line, TEXT_FULL);
+			if (!path) return vm_error(in, TEXT_FULL);
 			obj_release(text);
 			obj_release(pathv);
 			sp--;
@@ -2067,7 +2069,7 @@ static int vm_run(i32 pc)
 				if (ch == '\n') break;
 				if (!text_put(&ch, 1)) {
 					g_text.used = start;
-					return vm_error(in->line, TEXT_FULL);
+					return vm_error(in, TEXT_FULL);
 				}
 			}
 			if (g_text.used > start && g_text.base[g_text.used - 1] == '\r') g_text.used--;
@@ -2077,7 +2079,7 @@ static int vm_run(i32 pc)
 				s[sp++].i = 0;
 				NEXT;
 			}
-			if ((h = text_take(start)) < 0) return vm_error(in->line, HEAP_FULL);
+			if ((h = text_take(start)) < 0) return vm_error(in, HEAP_FULL);
 			s[sp++].i = 1;
 			s[sp++].i = h;
 			NEXT;
@@ -2085,9 +2087,9 @@ static int vm_run(i32 pc)
 		CASE(OP_GETENV) {
 			i64 name = s[sp - 1].i, h = 0;
 			const char *c = c_str(name), *val;
-			if (!c) return vm_error(in->line, TEXT_FULL);
+			if (!c) return vm_error(in, TEXT_FULL);
 			val = getenv(c);
-			if (val && (h = str_new(val, strlen(val))) < 0) return vm_error(in->line, HEAP_FULL);
+			if (val && (h = str_new(val, strlen(val))) < 0) return vm_error(in, HEAP_FULL);
 			obj_release(name);
 			s[sp - 1].i = val != 0;
 			s[sp++].i = h;
@@ -2095,7 +2097,7 @@ static int vm_run(i32 pc)
 		}
 		CASE(OP_ARGS) {
 			i64 h = vec_new(g_vec_str, g_nargs, 0), k;
-			if (h < 0) return vm_error(in->line, HEAP_FULL);
+			if (h < 0) return vm_error(in, HEAP_FULL);
 			for (k = 0; k < g_nargs; k++) vec_cell0(g_heap + h, k)->i = g_arg_cells[k];
 			s[sp++].i = h;
 			NEXT;
@@ -2107,7 +2109,7 @@ static int vm_run(i32 pc)
 		CASE(OP_VEC_NEW) { /* a: elements on the stack, b: the vec type */
 			i64 h;
 			sp -= in->a * cells(g_tys[in->b].elem);
-			if ((h = vec_new((Ty)in->b, in->a, s + sp)) < 0) return vm_error(in->line, HEAP_FULL);
+			if ((h = vec_new((Ty)in->b, in->a, s + sp)) < 0) return vm_error(in, HEAP_FULL);
 			s[sp++].i = h;
 			NEXT;
 		}
@@ -2121,7 +2123,7 @@ static int vm_run(i32 pc)
 		CASE(OP_VEC_PUSH)
 			sp -= in->a + 1;
 			MADE(s[sp].i);
-			if (!vec_push(s[sp].i, s + sp + 1)) return vm_error(in->line, HEAP_FULL);
+			if (!vec_push(s[sp].i, s + sp + 1)) return vm_error(in, HEAP_FULL);
 			if (!in->b) obj_release(s[sp].i);
 			NEXT;
 		CASE(OP_VEC_GET) { /* a copy of the element: the vec keeps its own */
@@ -2129,7 +2131,7 @@ static int vm_run(i32 pc)
 			const Cell *hd = g_heap + v;
 			Ty et;
 			MADE(v);
-			if (i < 0 || i >= hd[VH_LEN].i) return index_error(in->line, i, hd[VH_LEN].i);
+			if (i < 0 || i >= hd[VH_LEN].i) return index_error(in, i, hd[VH_LEN].i);
 			sp -= 2;
 			et = vec_elem(v);
 			if (!g_tys[et].bits) { /* no bit columns: cell C at C * cap */
@@ -2155,7 +2157,7 @@ static int vm_run(i32 pc)
 			hd = g_heap + v;
 			i = s[sp + 1].i;
 			MADE(v);
-			if (i < 0 || i >= hd[VH_LEN].i) return index_error(in->line, i, hd[VH_LEN].i);
+			if (i < 0 || i >= hd[VH_LEN].i) return index_error(in, i, hd[VH_LEN].i);
 			et = vec_elem(v);
 			if (g_tys[et].nleaf) cols_refs(hd[VH_DATA].i, et, hd[VH_CAP].i, i, 0); /* the element it replaces */
 			if (!g_tys[et].bits) {
@@ -2191,10 +2193,10 @@ static int vm_run(i32 pc)
 		CASE(OP_MAP_NEW) { /* a: entries on the stack, b: the map type */
 			i64 vsize = cells(g_tys[in->b].elem), k, m;
 			sp -= in->a * (1 + vsize);
-			if ((m = map_new((Ty)in->b)) < 0) return vm_error(in->line, HEAP_FULL);
+			if ((m = map_new((Ty)in->b)) < 0) return vm_error(in, HEAP_FULL);
 			for (k = 0; k < in->a; k++) {
 				const Cell *e = s + sp + k * (1 + vsize);
-				if (!map_insert(m, e[0].i, e + 1)) return vm_error(in->line, HEAP_FULL);
+				if (!map_insert(m, e[0].i, e + 1)) return vm_error(in, HEAP_FULL);
 			}
 			s[sp++].i = m;
 			NEXT;
@@ -2202,7 +2204,7 @@ static int vm_run(i32 pc)
 		CASE(OP_MAP_INSERT)
 			sp -= in->a + 2;
 			MADE(s[sp].i);
-			if (!map_insert(s[sp].i, s[sp + 1].i, s + sp + 2)) return vm_error(in->line, HEAP_FULL);
+			if (!map_insert(s[sp].i, s[sp + 1].i, s + sp + 2)) return vm_error(in, HEAP_FULL);
 			if (!in->b) obj_release(s[sp].i);
 			NEXT;
 		CASE(OP_MAP_LOOKUP)
@@ -2255,7 +2257,7 @@ static int vm_run(i32 pc)
 		CASE(OP_MAP_VALUES) { /* a: the vec type made; its elements are copies */
 			i64 m = s[sp - 1].i, e, k = 0, v, esize = 2 + map_vsize(m);
 			MADE(m);
-			if ((v = vec_new((Ty)in->a, g_heap[m + MH_COUNT].i, 0)) < 0) return vm_error(in->line, HEAP_FULL);
+			if ((v = vec_new((Ty)in->a, g_heap[m + MH_COUNT].i, 0)) < 0) return vm_error(in, HEAP_FULL);
 			for (e = 0; e < g_heap[m + MH_USED].i; e++) {
 				const Cell *ent = g_heap + g_heap[m + MH_ENT].i + e * esize;
 				if (!ent[0].i) continue;
@@ -2271,9 +2273,9 @@ static int vm_run(i32 pc)
 			if (cap < 1 || cap > 0x7fffffff) {
 				char msg[96];
 				sprintf(msg, "a pool holds 1 to 2147483647 elements, not %ld", (long)cap);
-				return vm_error(in->line, msg);
+				return vm_error(in, msg);
 			}
-			if ((h = pool_new((Ty)in->b, cap)) < 0) return vm_error(in->line, HEAP_FULL);
+			if ((h = pool_new((Ty)in->b, cap)) < 0) return vm_error(in, HEAP_FULL);
 			s[sp - 1].i = h;
 			NEXT;
 		}
@@ -2288,7 +2290,7 @@ static int vm_run(i32 pc)
 			if ((i = hd[PH_FREE].i) < 0) {
 				char msg[96];
 				sprintf(msg, "the pool is full (%ld elements)", (long)cap);
-				return vm_error(in->line, msg);
+				return vm_error(in, msg);
 			}
 			gens = g_heap + hd[PH_GENS].i;
 			hd[PH_FREE].i = gens[cap + i].i;
@@ -2304,7 +2306,7 @@ static int vm_run(i32 pc)
 			i64 p = s[sp - 2].i, i;
 			const Cell *hd = g_heap + p;
 			MADE(p);
-			if ((i = pool_slot(hd, s[sp - 1].i)) < 0) return vm_error(in->line, STALE);
+			if ((i = pool_slot(hd, s[sp - 1].i)) < 0) return vm_error(in, STALE);
 			sp -= 2;
 			cols_load(hd[PH_DATA].i, g_tys[obj_type(p)].elem, hd[PH_CAP].i, i, s + sp);
 			refs(s + sp, 1, g_tys[obj_type(p)].elem, 1);
@@ -2319,7 +2321,7 @@ static int vm_run(i32 pc)
 			p = s[sp].i;
 			MADE(p);
 			hd = g_heap + p;
-			if ((i = pool_slot(hd, s[sp + 1].i)) < 0) return vm_error(in->line, STALE);
+			if ((i = pool_slot(hd, s[sp + 1].i)) < 0) return vm_error(in, STALE);
 			cols_refs(hd[PH_DATA].i, g_tys[obj_type(p)].elem, hd[PH_CAP].i, i, 0); /* the element it replaces */
 			cols_store(hd[PH_DATA].i, g_tys[obj_type(p)].elem, hd[PH_CAP].i, i, s + sp + 2);
 			if (!in->b) obj_release(p);
@@ -2377,7 +2379,7 @@ static int vm_run(i32 pc)
 			NEXT;
 		}
 		CASE(OP_ARENA_BEGIN)
-			if (g_narenas == MAX_ARENAS) return vm_error(in->line, "arenas nested deeper than 64");
+			if (g_narenas == MAX_ARENAS) return vm_error(in, "arenas nested deeper than 64");
 			memset(&g_arenas[g_narenas], 0, sizeof(ArenaLevel));
 			g_arenas[g_narenas].start = g_arena_top;
 			g_arenas[g_narenas].line = in->line;
@@ -2387,7 +2389,7 @@ static int vm_run(i32 pc)
 			const ArenaLevel *ar = &g_arenas[g_narenas - 1];
 			i64 k;
 			for (k = 0; k < 8; k++) {
-				if (ar->live[k]) return arena_error(in->line, ar);
+				if (ar->live[k]) return arena_error(in, ar);
 			}
 			if (g_check) memset(g_heap + ar->start, 0xa5, (size_t)(g_arena_top - ar->start) * sizeof(Cell));
 			g_arena_top = ar->start;
@@ -2395,12 +2397,12 @@ static int vm_run(i32 pc)
 			NEXT;
 		}
 		CASE(OP_KEEP)
-			if (!keep(s + sp - cells((Ty)in->a), (Ty)in->a)) return vm_error(in->line, "keep: out of memory (the heap or the text arena is full)");
+			if (!keep(s + sp - cells((Ty)in->a), (Ty)in->a)) return vm_error(in, "keep: out of memory (the heap or the text arena is full)");
 			NEXT;
 		CASE(OP_CLOSURE) { /* a: the fn, b: the type of the values it keeps, which are on the stack and move in */
 			i32 n = cells((Ty)in->b);
 			i64 h = heap_alloc(CL_DATA + n);
-			if (h < 0) return vm_error(in->line, HEAP_FULL);
+			if (h < 0) return vm_error(in, HEAP_FULL);
 			obj_born(h, KIND_CLOSURE, (u64)in->b);
 			g_heap[h + CL_FN].i = in->a;
 			sp -= n;
@@ -2420,7 +2422,7 @@ static int vm_run(i32 pc)
 		CASE(OP_CORO_NEW) { /* the new coroutine runs at once, until it first pauses or ends */
 			const Fn *fn = &g_fns[in->a];
 			i64 t = coro_new(fn, (Ty)in->b, in->line);
-			if (t < 0) return vm_error(in->line, HEAP_FULL);
+			if (t < 0) return vm_error(in, HEAP_FULL);
 			memcpy(g_heap + g_heap[t + CO_STACK].i, s + sp - fn->pcells, (size_t)fn->pcells * sizeof(Cell));
 			sp -= fn->pcells;
 			s[sp++].i = t; /* the starter's handle: the coroutine's first count */
@@ -2448,8 +2450,8 @@ static int vm_run(i32 pc)
 			i64 t = s[sp - 1].i;
 			Ty rt = g_tys[(Ty)in->a].elem;
 			i32 n = cells(rt);
-			if (t <= 0) return vm_error(in->line, "this coroutine was never started: a global read before its def ran");
-			if (coro_state(t) == CS_DEAD) return vm_error(in->line, "this coroutine was stopped by a runtime error");
+			if (t <= 0) return vm_error(in, "this coroutine was never started: a global read before its def ran");
+			if (coro_state(t) == CS_DEAD) return vm_error(in, "this coroutine was stopped by a runtime error");
 			sp--;
 			if (coro_state(t) >= CS_DONE) {
 				s[sp].i = 1;
@@ -2480,14 +2482,14 @@ static int vm_run(i32 pc)
 			}
 			NEXT;
 		CASE(OP_YIELD)
-			if (!g_cur) return vm_error(in->line, "yield is for a coroutine; the main program runs its coroutines with step-coroutines");
+			if (!g_cur) return vm_error(in, "yield is for a coroutine; the main program runs its coroutines with step-coroutines");
 			g_heap[g_cur + CO_STATE].i = CS_READY;
 			SUSPEND(pc);
 			NEXT;
 		CASE(OP_CORO_STEP)
 		CASE(OP_CORO_RUN) {
 			int r;
-			if (g_cur) return vm_error(in->line, "the main program runs the coroutines, not a coroutine: a coroutine pauses with sleep or yield");
+			if (g_cur) return vm_error(in, "the main program runs the coroutines, not a coroutine: a coroutine pauses with sleep or yield");
 			if (!g_mwait.kind) {
 				main_wait_start(in->op == OP_CORO_STEP ? MW_STEP : MW_RUN);
 				if (in->op == OP_CORO_STEP) g_coro_time += s[--sp].f;
@@ -2504,7 +2506,7 @@ static int vm_run(i32 pc)
 			NEXT;
 		}
 		CASE(OP_CORO_TIME) s[sp++].f = g_coro_time; NEXT;
-		CASE(OP_FAIL) return vm_error(in->line, g_strs[in->a].p);
+		CASE(OP_FAIL) return vm_error(in, g_strs[in->a].p);
 		CASE(OP_SHOW)
 			sp -= cells((Ty)in->a);
 			g_sink = stdout;
@@ -2526,7 +2528,7 @@ static int vm_run(i32 pc)
 		CASE(OP_INC_JMP) s[fp + in->a].i = (i64)((u64)s[fp + in->a].i + 1); pc = in->b; NEXT;
 		CASE(OP_NOP) NEXT;
 		default:
-			return vm_error(in->line, "internal: unknown instruction");
+			return vm_error(in, "internal: unknown instruction");
 		}
 	}
 }
