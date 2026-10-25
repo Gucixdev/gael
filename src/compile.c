@@ -1447,6 +1447,7 @@ static Ty fmt_type(const char *s, u32 n, i32 want, i32 *count)
 		switch (s[++i]) {
 		case '%': continue;
 		case 'd': t = T_INT; break;
+		case 'x': t = T_INT; break; /* an int in hex: 0xff8800ff prints ff8800ff */
 		case 'f': t = T_FLOAT; break;
 		case 's': t = T_STR; break;
 		case 'b': t = T_BOOL; break;
@@ -3366,7 +3367,7 @@ static o run_work(i32 base)
 					break;
 				}
 				if (fmt_type(g_nodes[fmt].text, g_nodes[fmt].len, -1, &codes) == T_ERR) {
-					err_node(fmt, "%s: unknown %% code; use %%d (int), %%f (float), %%s (string), %%b (bool), %%v (any value) or %%%%", what);
+					err_node(fmt, "%s: unknown %% code; use %%d (int), %%x (int in hex), %%f (float), %%s (string), %%b (bool), %%v (any value) or %%%%", what);
 					finish(T_ERR);
 					break;
 				}

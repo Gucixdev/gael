@@ -11,3 +11,4 @@
 
 (println "%v %v" (parse-float "2.5") (parse-int "seven"))
 (println "true exits with %d, false with %d" (system "true") (system "false"))
+(println "a color in hex: %x, -1 as an i32: %x" 0xff8800ff (i32 -1))

@@ -679,7 +679,7 @@ With `GAEL_CHECK=1` freed memory is overwritten, and a program that runs to its 
 ```
 
 The format must be a string literal; its codes are checked against the values when compiling. `%d` takes any int
-type, `%f` any float type, `%s` a string, `%b` a bool, `%v` any value but unit (printed the way the REPL shows it),
+type, `%x` too and writes it in hex (`ff8800ff`, as many bits as its type has), `%f` any float type, `%s` a string, `%b` a bool, `%v` any value but unit (printed the way the REPL shows it),
 `%%` is a `%`. A struct or an enum with a `text` function prints as what it gives, with `%v` and with `%s`
 ([Methods and hooks](#methods-and-hooks)); inside a vec, a map or another struct values print the way the REPL shows
 them. `println` and `eprintln` add a newline; `eprint` and `eprintln` write to stderr; `format` gives the

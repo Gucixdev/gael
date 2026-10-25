@@ -818,7 +818,15 @@ static o print_fmt(const Fmt *fm, const Cell *args)
 	for (i = 0; i < fmt->len; i++) {
 		if (fmt->p[i] != '%') { out(fmt->p + i, 1); continue; }
 		if (fmt->p[++i] == '%') { out_s("%"); continue; }
-		print_value(g_fmt_tys[fm->first + k], args);
+		if (fmt->p[i] == 'x') { /* hex, as many bits as the type has */
+			char buf[24];
+			i32 bits = int_bits(g_fmt_tys[fm->first + k]);
+			u64 v = (u64)args->i;
+			if (bits < 64) v &= ((u64)1 << bits) - 1;
+			sprintf(buf, "%lx", (unsigned long)v);
+			out_s(buf);
+		} else
+			print_value(g_fmt_tys[fm->first + k], args);
 		args += cells(g_fmt_tys[fm->first + k]);
 		k++;
 	}

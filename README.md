@@ -281,7 +281,7 @@ error. A comment starts with `;`.
 | `(enable name...)`, `(disable name...)` | turn gems on, loading each one after what it requires, or off (below) |
 | `(some 5)`, `none` | the two kinds of `(option int)` value; `none` takes its type from where it goes: a declared binding, a parameter, a field, a return type, or the else branch of an `if` whose then branch has one |
 | `(match x (pattern body...)...)` | patterns are `_`, int and string literals, `true` and `false`, enum values (`north` or `Dir.north`), `(some name)` and `none`; every value must be covered, and an arm that can never run is an error |
-| `(print "fmt" args...)`, `(println "fmt" args...)` | `%d` int, `%f` float, `%s` string, `%b` bool, `%v` any value, `%%`; the codes are checked against the arguments when compiling. `eprint` and `eprintln` write to stderr |
+| `(print "fmt" args...)`, `(println "fmt" args...)` | `%d` int, `%x` int in hex, `%f` float, `%s` string, `%b` bool, `%v` any value, `%%`; the codes are checked against the arguments when compiling. `eprint` and `eprintln` write to stderr |
 | `(format "fmt" args...)` | the same codes as `println`, checked the same way, into a new string |
 | `(len s)` | the length of a string in bytes |
 | `(sh "command")` | run a command with `/bin/sh`, get what it printed, without the newlines at the end |
