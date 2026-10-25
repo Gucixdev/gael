@@ -481,10 +481,11 @@ variable, a field, a function or a macro named `min` comes first, so `(let ((max
 (exp x)    (ln x)    (pow x y)  (floor x)  (ceil x)
 ```
 
-Functions of `float`s, giving a `float`, the C library's: `atan2` is the angle of the point `(x, y)` from the x axis,
+Functions of `float`s, giving a `float`, the C library's - and of `f32`s, giving an `f32` (worked out as a float,
+then rounded): `atan2` is the angle of the point `(x, y)` from the x axis,
 between -pi and pi; `ln` is the natural logarithm (the name `log` stays free for the program); `floor` and `ceil` round
 down and up and stay floats (`(int (floor x))` makes an int). Angles are in radians. Outside a function's domain the
-answer is `nan` or `inf`, as IEEE says (`(sqrt -1.0)` is `nan`), not an error. An `f32` goes in as `(float x)`.
+answer is `nan` or `inf`, as IEEE says (`(sqrt -1.0)` is `nan`), not an error.
 
 ### Bits
 

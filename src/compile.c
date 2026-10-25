@@ -3419,10 +3419,12 @@ static o run_work(i32 base)
 				f->k = 0;
 				f->c = 0;
 				f->phase = 1;
-				push_child(f->cur, code_type(bi->args[0]));
+				/* sqrt and the like work on f32 too: an f32 in, an f32 out, as in (set p.x (sqrt d)) */
+				push_child(f->cur, (bi->op == OP_MATH || bi->op == OP_MATH2) && f->want == T_F32 ? (Ty)T_F32 : code_type(bi->args[0]));
 				break;
 			}
 			t = pop_type();
+			if (!f->k && (bi->op == OP_MATH || bi->op == OP_MATH2) && t == T_F32) f->c = 4; /* the f32 one */
 			if (bi->args[f->k] == 'x' && (is_struct(t) || is_enum(t))) { /* len of a struct or an enum: its len */
 				i = hook(t, "len");
 				if (i < 0)
@@ -3435,7 +3437,7 @@ static o run_work(i32 base)
 				break;
 			}
 			if (!f->k && (bi->op == OP_LEN_S || bi->op == OP_BYTE)) f->b = borrow_last(f->cur, next_of(f->cur));
-			t2 = code_type(bi->args[f->k]);
+			t2 = f->c == 4 ? (Ty)T_F32 : code_type(bi->args[f->k]);
 			if (bi->args[f->k] == 'x') {
 				if (is_vec(t)) f->c = 1; /* len of a vec */
 				else if (is_map(t)) f->c = 2;
@@ -3447,7 +3449,13 @@ static o run_work(i32 base)
 			}
 			f->k++;
 			f->cur = next_of(f->cur);
-			if (f->cur >= 0) { push_child(f->cur, code_type(bi->args[f->k])); break; }
+			if (f->cur >= 0) { push_child(f->cur, f->c == 4 ? (Ty)T_F32 : code_type(bi->args[f->k])); break; }
+			if (f->c == 4) { /* worked out as a float, then rounded to the f32 it gives */
+				emit(bi->op, bi->a, bi->b, line);
+				emit(OP_F32, 0, 0, line);
+				finish(T_F32);
+				break;
+			}
 			emit(f->c == 1 ? OP_VEC_LEN : f->c == 2 ? OP_MAP_LEN : f->c == 3 ? OP_POOL_LEN : bi->op,
 			     bi->op == OP_LEN_S || bi->op == OP_BYTE ? f->b : bi->a, f->c ? 0 : bi->b, line);
 			finish(code_type(bi->ret));

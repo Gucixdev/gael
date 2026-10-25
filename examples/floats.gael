@@ -12,6 +12,8 @@
 (println "length %f, angle %f, %f degrees" (length 3.0 4.0) (atan2 4.0 3.0) (* (/ (atan2 1.0 1.0) pi) 180.0))
 (println "sin %f, cos %f, 2^10 %f, e %f, ln e %f" (sin (/ pi 2.0)) (cos 0.0) (pow 2.0 10.0) (exp 1.0) (ln (exp 1.0)))
 (println "floor %f, ceil %f, as an int %d" (floor -2.5) (ceil -2.5) (int (floor 7.9)))
+(let ((h : f32 2.0))                           ; on an f32 they give an f32
+  (println "sqrt of an f32: %v" (sqrt h)))
 (let ((nan (sqrt -1.0)))                       ; no error: nan, which is not even equal to itself
   (println "sqrt -1 = sqrt -1: %b" (= nan nan)))
 
