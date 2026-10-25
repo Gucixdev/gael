@@ -1,2 +1,1 @@
 tests/errors/string.gael:1:10: error: string not closed
-tests/errors/string.gael:1:1: error: '(' not closed

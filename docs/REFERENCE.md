@@ -160,7 +160,11 @@ Not names but syntax: `;` comments, `"..."` strings, `:keyword`, `$Node/Path`, `
 ## Reading
 
 - `;` starts a comment that runs to the end of the line.
-- A list is `(` forms `)`, nested at most 256 deep. `()` is an error where a form is expected.
+- A list is `(` forms `)`, nested at most 256 deep. `()` is an error where a form is expected. When the parens do not
+  balance, gael reads the indentation the way parinfer does - a code line's first column ends the lists opened at that
+  column or right of it - and names the line where a `)` is missing or one too many:
+  `a ')' is missing at the end of line 4: line 5 is indented as if the ( at 4:8 ended there`. When the indentation
+  does not add up either, it says `unexpected ')'` and `'(' not closed`.
 - An **int** literal is decimal (`42`, `-7`, `+3`), hex (`0xff`, `0XFF`) or binary (`0b1010`), with an optional sign.
   It must fit in 64 bits; one above 2^63 - 1 fits only a `u64`. Its type is the one expected where it stands - a
   declared type, a parameter, a field, the other operand of an operator - and it must fit that type: `(def b : u8 300)`

@@ -165,6 +165,178 @@ static int like_number(const char *s, size_t n)
 	return i < n && s[i] >= '0' && s[i] <= '9';
 }
 
+/* Paren mistakes, read from the indentation the way parinfer reads it; used only when the parens do not balance. The
+ * first column of a code line closes, at the end of the code line before it, every list opened at that column or
+ * right of it; the closing parens that line ends with are counted against that, and where the counts differ a ')' is
+ * missing or one too many. A line that starts with ')' adds those to the code line before. At the end of the file
+ * every list still open closes. */
+#define PAREN_TRAIL 64
+typedef struct {
+	i32 line, col;
+} ParenAt;
+
+typedef struct {
+	ParenAt st[MAX_DEPTH];         /* the lists open by the indentation */
+	i32 sp;
+	i32 line, end;                 /* the last code line: its number, the column after its last character */
+	ParenAt trail[PAREN_TRAIL];    /* the closing parens it ends with */
+	i32 ntrail;
+	i32 found, net;                /* mistakes found; ')' missing minus ')' too many */
+	int quiet;                     /* count only, report nothing */
+} ParenRead;
+
+static ParenRead g_pr;
+
+/* paren_close NEXT COL: the last code line is over; the next one is NEXT and starts at column COL (NEXT 0: the end of
+ * the file), so the lists from COL on close at the end of it. Reports where that disagrees with its closing parens */
+static o paren_close(i32 next, i32 col)
+{
+	ParenRead *pr = &g_pr;
+	char what[200];
+	i32 k = 0, t = pr->ntrail, i, n;
+	size_t used = 0;
+	while (pr->sp > 0 && (!next || pr->st[pr->sp - 1].col >= col)) {
+		pr->sp--;
+		k++;
+	}
+	pr->ntrail = 0;
+	if (k == t || !pr->line) return;
+	pr->found++;
+	pr->net += k - t;
+	if (pr->quiet) return;
+	what[0] = 0;
+	if (k > t) { /* the outermost k - t of the lists closed here have no ')' */
+		n = k - t;
+		for (i = pr->sp + n - 1; i >= pr->sp && used + 40 < sizeof(what); i--) {
+			sprintf(what + used, "%sthe ( at %ld:%ld", i == pr->sp + n - 1 ? "" : i == pr->sp ? " and " : ", ",
+			        (long)pr->st[i].line, (long)pr->st[i].col);
+			used = strlen(what);
+		}
+		if (next && n == 1)
+			error_at(pr->line, pr->end, "a ')' is missing at the end of line %ld: line %ld is indented as if %s ended there",
+			         (long)pr->line, (long)next, what);
+		else if (next)
+			error_at(pr->line, pr->end, "%ld ')' are missing at the end of line %ld: line %ld is indented as if %s ended there",
+			         (long)n, (long)pr->line, (long)next, what);
+		else if (n == 1)
+			error_at(pr->line, pr->end, "a ')' is missing at the end of line %ld, the last: %s is still open", (long)pr->line, what);
+		else
+			error_at(pr->line, pr->end, "%ld ')' are missing at the end of line %ld, the last: %s are still open", (long)n,
+			         (long)pr->line, what);
+		return;
+	}
+	n = t - k; /* the closing parens from the (k + 1)th on would close what the indentation says goes on */
+	if (pr->sp > 0 && next)
+		sprintf(what, "line %ld is indented as part of the ( at %ld:%ld, which %s would close", (long)next,
+		        (long)pr->st[pr->sp - 1].line, (long)pr->st[pr->sp - 1].col, n == 1 ? "it" : "they");
+	else
+		strcpy(what, "nothing is open there");
+	i = GAEL_MIN(k, PAREN_TRAIL - 1);
+	if (n == 1) error_at(pr->trail[i].line, pr->trail[i].col, "a ')' too many at the end of line %ld: %s; remove it", (long)pr->line, what);
+	else error_at(pr->trail[i].line, pr->trail[i].col, "%ld ')' too many at the end of line %ld: %s; remove them", (long)n,
+	              (long)pr->line, what);
+}
+
+/* paren_scan: one pass over the unit's text with g_pr; 0 when it nests too deep to tell anything */
+static int paren_scan(void)
+{
+	ParenRead *pr = &g_pr;
+	const char *s = g_unit.src;
+	size_t i = 0, n = g_unit.len;
+	i32 line = 1, col = 1, npend = 0, k;
+	ParenAt pend[PAREN_TRAIL]; /* ')' after the last other token of this line: they end it, or more code follows */
+	int in_str = 0, start = 1, code = 0; /* start: nothing but ')' on this line yet; code: it has some */
+	pr->sp = pr->line = pr->end = pr->ntrail = pr->found = pr->net = 0;
+	while (i <= n) {
+		char c = i < n ? s[i] : '\n';
+		if (in_str) { /* a string runs on, maybe over lines; a line that starts inside one is no code line */
+			if (i == n) break;
+			if (c == '\\' && i + 1 < n && s[i + 1] != '\n') { i += 2, col += 2; continue; }
+			if (c == '"') { in_str = 0; pr->line = line; pr->end = col + 1; }
+			if (c == '\n') { line++; col = 1; start = 0; } else col++;
+			i++;
+			continue;
+		}
+		if (c == '\n') { /* the closing parens a code line ends with are its trail */
+			if (code) {
+				for (k = 0; k < npend && k < PAREN_TRAIL; k++) pr->trail[k] = pend[k];
+				pr->ntrail = npend;
+			}
+			npend = 0;
+			code = 0;
+			start = 1;
+			if (i == n) break;
+			line++, col = 1, i++;
+			continue;
+		}
+		if (c == ' ' || c == '\t' || c == '\r') { i++, col++; continue; }
+		if (c == ';') { while (i < n && s[i] != '\n') i++, col++; continue; }
+		if (c == ')') {
+			if (start) { /* a line that starts with ')': they end the code line before */
+				if (pr->ntrail < PAREN_TRAIL) {
+					pr->trail[pr->ntrail].line = line;
+					pr->trail[pr->ntrail].col = col;
+				}
+				pr->ntrail++;
+			} else {
+				if (npend < PAREN_TRAIL) {
+					pend[npend].line = line;
+					pend[npend].col = col;
+				}
+				npend++;
+				pr->end = col + 1;
+			}
+			i++, col++;
+			continue;
+		}
+		if (start) { /* the first column of a code line closes what it says */
+			paren_close(line, col);
+			start = 0;
+		}
+		code = 1;
+		for (k = 0; k < npend; k++) { /* ')' with more code after them on the line close lists now */
+			if (pr->sp > 0) {
+				pr->sp--;
+				continue;
+			}
+			pr->found++;
+			pr->net--;
+			if (!pr->quiet) {
+				const ParenAt *at = &pend[GAEL_MIN(k, PAREN_TRAIL - 1)];
+				error_at(at->line, at->col, "unexpected ')': nothing is open here; remove it");
+			}
+		}
+		npend = 0;
+		pr->line = line;
+		if (c == '(') {
+			if (pr->sp == MAX_DEPTH) return 0;
+			pr->st[pr->sp].line = line;
+			pr->st[pr->sp].col = col;
+			pr->sp++;
+			i++, col++;
+			pr->end = col;
+		} else if (c == '"') {
+			in_str = 1;
+			i++, col++;
+		} else { /* an atom */
+			while (i < n && !is_delim((unsigned char)s[i])) i++, col++;
+			pr->end = col;
+		}
+	}
+	paren_close(0, 0);
+	return 1;
+}
+
+/* paren_hints NET: report the paren mistakes the indentation shows and return 1; 0, reporting nothing, when it shows
+ * none or they do not add up to NET - the ')' the file misses, minus those it has too many - so it cannot be trusted */
+static int paren_hints(i32 net)
+{
+	g_pr.quiet = 1;
+	if (!paren_scan() || !g_pr.found || g_pr.net != net) return 0;
+	g_pr.quiet = 0;
+	return paren_scan();
+}
+
 /* read_unit: parse g_unit.src; returns the first top-level node (the rest follow by `next`), -1 when empty */
 static i32 read_unit(void)
 {
@@ -174,6 +346,9 @@ static i32 read_unit(void)
 	i32 open[MAX_DEPTH];      /* the lists not closed yet */
 	i32 last[MAX_DEPTH + 1];  /* last[0]: last top-level form; last[d]: last child of open[d - 1] */
 	i32 depth = 0, top = -1, node, k;
+	ParenAt extra[MAX_ERRORS]; /* ')' with nothing open: told after the whole unit, from its indentation if it can */
+	i32 nextra = 0;
+	int open_str = 0;          /* a string not closed took the rest of the text: the parens in it are not missing */
 
 	last[0] = -1;
 	while (i < n) {
@@ -187,7 +362,14 @@ static i32 read_unit(void)
 		}
 		if (c == ')') {
 			i++, col++;
-			if (!depth) { error_at(l0, c0, "unexpected ')'"); continue; }
+			if (!depth) {
+				if (nextra < MAX_ERRORS) {
+					extra[nextra].line = l0;
+					extra[nextra].col = c0;
+				}
+				nextra++;
+				continue;
+			}
 			depth--;
 			continue;
 		}
@@ -223,7 +405,10 @@ static i32 read_unit(void)
 				i++, col++;
 			}
 			buf[len] = 0;
-			if (!closed) error_at(l0, c0, "string not closed");
+			if (!closed) {
+				error_at(l0, c0, "string not closed");
+				open_str = 1;
+			}
 			node = new_node(N_STR, l0, c0);
 			g_nodes[node].text = buf;
 			g_nodes[node].len = (u32)len;
@@ -286,6 +471,9 @@ static i32 read_unit(void)
 			last[depth] = -1;
 		}
 	}
-	for (k = depth; k > 0; k--) error_at(g_nodes[open[k - 1]].line, g_nodes[open[k - 1]].col, "'(' not closed");
+	if ((nextra || depth) && !open_str && !paren_hints(depth - nextra)) {
+		for (k = 0; k < nextra && k < MAX_ERRORS; k++) error_at(extra[k].line, extra[k].col, "unexpected ')'");
+		for (k = depth; k > 0; k--) error_at(g_nodes[open[k - 1]].line, g_nodes[open[k - 1]].col, "'(' not closed");
+	}
 	return top;
 }
