@@ -39,11 +39,14 @@ dokumentacja mieści się w kontekście.
 
 ## 1b. Biblioteka: porty z holyc do `gems/`
 
-- [ ] `pqueue`: kopiec z jego konwencją priorytetów (1 pierwsze, 0 i ujemne na końcu), stabilny przy równych.
-- [ ] `events`: kolejka zdarzeń z tickiem (rodzaj, tick, dwie dane) do nagrywania i odtwarzania; zdarzenia jednego
-      ticku od razu.
+- [x] `pqueue`: kopiec z jego konwencją priorytetów (1 pierwsze, 0 i ujemne na końcu), stabilny przy równych
+      (`a1345ec`).
+- [x] `events`: `EventLog` (rodzaj, tick, dwie dane; nagrywanie i odtwarzanie, `at`, `since`) i `Schedule` (zdarzenia
+      na przyszłe ticki, wyjmowane po ticku) (`a1345ec`).
 - [ ] `fsm` i `hfsm` w gaelu: stany, przejścia, wejście i wyjście.
 - [ ] `rng` (PCG32), `noise`, `easing`, `curve`.
+- [ ] ECS dalej, gdy będzie potrzeba: `Changed` (znacznik zmiany kolumny, jak w Bevy), systemy równolegle na fgjob
+      (kompilator widzi, które kolumny pisze każde zapytanie), archetypy po generykach.
 
 ## 2. Jedna binarka i build system
 

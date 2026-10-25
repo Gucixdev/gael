@@ -133,7 +133,10 @@ potwierdzenia:
   pamięci (5 MB kontra 55 MB); w kodzie natywnym test bitu to kilka instrukcji, szukanie w mapie dziesiątki, więc
   różnica urośnie (do zmierzenia z JIT-em). Nazwa tagu jako dana (`(Game.bit "burning")`) zamienia się na bit raz.
   Na razie bez archetypów (tabel jak we flecs): bez generyków kolumny są stałe, a skan maski po ciągłej kolumnie
-  wystarcza do ~100 tys. encji; archetypy i więcej niż 64 komponenty i tagi - po generykach.
+  wystarcza do ~100 tys. encji; archetypy i więcej niż 64 komponenty i tagi - po generykach. Bevy (jego słowa:
+  „inspirowany też bevy, ale w naszym stylu, suckless”): system to zwykła funkcja z zapytaniem, `:with`/`:not` to
+  `With`/`Without`, resource to global, eventy to gem `events`, plugin to gem, schedule to funkcja wołająca systemy po
+  kolei; bez command buffera, bo despawn w trakcie zapytania jest bezpieczny. Później: `Changed`, systemy równolegle.
 - **Biblioteka z holyc (jego słowa, 2026-10-25):** „większy porządek, bo wszystko mogłoby być wrzucone z tamtego do
   lib”, „a nawet priority event queue tam było”. Gemy, które przychodzą z gaelem (`gems/`), to porty modułów z
   `holyc/base` na gaela: kolejka priorytetowa (jego konwencja: 1 najważniejsze, 0 i mniej na końcu), kolejka zdarzeń z
