@@ -1774,10 +1774,29 @@ static i32 arith_hook(Frame *f, Ty t)
 /* cmp_hook FRAME TYPE LINE: both values of a comparison are of TYPE, a struct or an enum, and on the stack: = and !=
  * call its equal, else its compare; < <= > >= call its compare, whose int is below 0 when the first comes first, 0
  * when they are equal and above 0 otherwise. 0 when it has neither and = compares an enum's values themselves */
+/* min, max, abs and clamp are built in but not reserved: a variable, a field, a macro or a function of that name comes
+ * first, so (let ((max 0)) ...) and (struct Rect (min : Vec2) (max : Vec2)) stay fine. Each use is rewritten into an
+ * if over < (soft_form, below), so they work on whatever < orders: numbers of one type, or a type with a compare hook */
+static const char *const g_soft_names[] = { "min", "max", "abs", "clamp" };
+#define SOFT_MARK 1000 /* the ival of the < and the if a soft form wrote: SOFT_MARK + its index in g_soft_names */
+static i32 g_soft_k; /* the soft form being rewritten */
+
+static i32 soft_of(const Frame *f) /* the soft form that wrote this < or if, -1 when the program did */
+{
+	i32 h = first_of(f->node);
+	return h >= 0 && g_nodes[h].kind == N_SYM && g_nodes[h].ival >= SOFT_MARK && g_nodes[h].ival < SOFT_MARK + (i64)GAEL_COUNT(g_soft_names)
+	       ? (i32)(g_nodes[h].ival - SOFT_MARK) : -1;
+}
+
+static const char *op_name(const Frame *f, const char *name) /* the name a message gives the comparison */
+{
+	return soft_of(f) >= 0 ? g_soft_names[soft_of(f)] : name;
+}
+
 static int cmp_hook(Frame *f, Ty t, i32 line)
 {
 	i32 eq = f->op >= 4 ? hook(t, "equal") : -1, cmp = eq < 0 ? hook(t, "compare") : -1, at = first_of(f->node), fi = eq >= 0 ? eq : cmp;
-	const char *what = g_cmp_names[f->op];
+	const char *what = op_name(f, g_cmp_names[f->op]);
 	if (fi < 0) {
 		if (is_enum(t) && f->op >= 4) return 0;
 		if (f->op >= 4)
@@ -1924,6 +1943,121 @@ static i32 method_on_value(i32 call, i32 e, i32 path)
 	g_nodes[body].first = mh;
 	g_nodes[mh].next = next_of(first_of(call)); /* the arguments */
 	return let;
+}
+
+typedef struct {
+	i32 node;  /* the value as written */
+	u32 stamp; /* the stamp of the local that holds it, 0 when it is used as written (a name or a literal) */
+} Opnd;
+
+static i32 node_copy(i32 n) /* N on its own: the same node with its siblings cut off; a list keeps its children */
+{
+	i32 c = new_node((NodeKind)g_nodes[n].kind, g_nodes[n].line, g_nodes[n].col);
+	g_nodes[c] = g_nodes[n];
+	g_nodes[c].next = -1;
+	return c;
+}
+
+static i32 mk_sym(const char *text, i32 at, u32 stamp) /* a symbol where node AT is */
+{
+	i32 s = new_node(N_SYM, g_nodes[at].line, g_nodes[at].col);
+	g_nodes[s].text = text;
+	g_nodes[s].len = (u32)strlen(text);
+	g_nodes[s].stamp = stamp;
+	if (!strcmp(text, "<") || !strcmp(text, "if") || !strcmp(text, "-")) g_nodes[s].ival = SOFT_MARK + g_soft_k; /* messages name the form */
+	return s;
+}
+
+static i32 mk_list(i32 at, i32 a, i32 b, i32 c, i32 d) /* (a b c d) where node AT is; -1 ends it early */
+{
+	i32 l = new_node(N_LIST, g_nodes[at].line, g_nodes[at].col), k[4], i, last = -1;
+	k[0] = a;
+	k[1] = b;
+	k[2] = c;
+	k[3] = d;
+	for (i = 0; i < 4 && k[i] >= 0; i++) {
+		if (last < 0) g_nodes[l].first = k[i];
+		else g_nodes[last].next = k[i];
+		last = k[i];
+	}
+	return l;
+}
+
+static Opnd opnd(i32 n) /* a name or a literal is read where it is needed, anything else once, into a local */
+{
+	Opnd o;
+	o.node = n;
+	o.stamp = g_nodes[n].kind == N_LIST || g_nodes[n].kind == N_STR ? ++g_stamps : 0;
+	return o;
+}
+
+static i32 opnd_use(Opnd o) { return o.stamp ? mk_sym(VALUE_NAME, o.node, o.stamp) : node_copy(o.node); }
+static int opnd_lit(Opnd o) { return g_nodes[o.node].kind == N_INT || g_nodes[o.node].kind == N_FLOAT; }
+
+/* pick AT MAX A B: (if (< b a) b a) for min, (if (< a b) b a) for max, a on a tie - with a literal in the else, where
+ * it takes the type of the other side, as it would in (< x 255) - inside a let for the operands that need a local */
+static i32 pick(i32 at, int max, Opnd a, Opnd b)
+{
+	i32 cond, iff, binds = -1, last = -1;
+	Opnd o[2];
+	int k;
+	if (opnd_lit(a) && !opnd_lit(b)) { /* the literal goes last, so that the if takes the other one's type */
+		Opnd t = a;
+		a = b;
+		b = t;
+	}
+	if (opnd_lit(b) && !opnd_lit(a)) /* min: (if (< a 9) a 9), max: (if (< 9 a) a 9) */
+		cond = max ? mk_list(at, mk_sym("<", at, 0), opnd_use(b), opnd_use(a), -1) : mk_list(at, mk_sym("<", at, 0), opnd_use(a), opnd_use(b), -1);
+	else /* min: (if (< b a) b a), max: (if (< a b) b a) */
+		cond = max ? mk_list(at, mk_sym("<", at, 0), opnd_use(a), opnd_use(b), -1) : mk_list(at, mk_sym("<", at, 0), opnd_use(b), opnd_use(a), -1);
+	if (opnd_lit(b) && !opnd_lit(a)) iff = mk_list(at, mk_sym("if", at, 0), cond, opnd_use(a), opnd_use(b));
+	else iff = mk_list(at, mk_sym("if", at, 0), cond, opnd_use(b), opnd_use(a));
+	o[0] = a;
+	o[1] = b;
+	for (k = 0; k < 2; k++) { /* (let ((the value a) (the value b)) iff), with one local each that needs it */
+		i32 bind;
+		if (!o[k].stamp) continue;
+		bind = mk_list(at, mk_sym(VALUE_NAME, at, o[k].stamp), node_copy(o[k].node), -1, -1);
+		if (last < 0) binds = mk_list(at, bind, -1, -1, -1);
+		else g_nodes[last].next = bind;
+		last = bind;
+	}
+	return binds < 0 ? iff : mk_list(at, mk_sym("let", at, 0), binds, iff, -1);
+}
+
+/* soft_form CALL NAME: (min a b ...), (max a b ...), (abs x), (clamp x lo hi) as the if they stand for; -1 when NAME is
+ * none of them, -2 after an error it reported */
+static i32 soft_form(i32 call, const char *s)
+{
+	i32 arg = next_of(first_of(call)), n = count_from(arg), x;
+	size_t k;
+	Opnd v;
+	for (k = 0; k < GAEL_COUNT(g_soft_names) && strcmp(s, g_soft_names[k]); k++) {}
+	if (k == GAEL_COUNT(g_soft_names)) return -1;
+	g_soft_k = (i32)k;
+	if (k < 2) { /* min, max: two or more values, folded from the left */
+		if (n < 2) { err_node(call, "%s takes two or more values: (%s a b)", s, s); return -2; }
+		v = opnd(arg);
+		for (arg = next_of(arg); arg >= 0; arg = next_of(arg)) {
+			x = pick(call, (int)k, v, opnd(arg));
+			v = opnd(x);
+		}
+		return v.node;
+	}
+	if (k == 2) { /* abs: (if (< x (- x)) (- x) x) */
+		i32 neg, iff;
+		if (n != 1) { err_node(call, "abs takes one value: (abs x)"); return -2; }
+		v = opnd(arg);
+		neg = mk_list(call, mk_sym("-", call, 0), opnd_use(v), -1, -1);
+		iff = mk_list(call, mk_sym("if", call, 0), mk_list(call, mk_sym("<", call, 0), opnd_use(v), neg, -1),
+		              mk_list(call, mk_sym("-", call, 0), opnd_use(v), -1, -1), opnd_use(v));
+		if (!v.stamp) return iff;
+		return mk_list(call, mk_sym("let", call, 0), mk_list(call, mk_list(call, mk_sym(VALUE_NAME, call, v.stamp), node_copy(arg), -1, -1), -1, -1, -1),
+		               iff, -1);
+	}
+	if (n != 3) { err_node(call, "clamp takes a value and its bounds: (clamp x lo hi)"); return -2; } /* (min (max x lo) hi) */
+	x = pick(call, 1, opnd(arg), opnd(next_of(arg)));
+	return pick(call, 0, opnd(x), opnd(next_of(next_of(arg))));
 }
 
 /* start_list FRAME: decide which form a list is, check its shape, and start it */
@@ -2182,7 +2316,14 @@ static o start_list(Frame *f)
 			f->a = t;
 			return;
 		}
-		if ((fi = find_fn(s)) < 0) {
+		if ((fi = find_fn(s)) < 0 && (t == T_NONE) && (fi = soft_form(f->node, s)) != -1) { /* min, max, abs, clamp */
+			if (fi == -2) { finish(T_ERR); return; }
+			f->node = fi;
+			f->cur = -1;
+			f->k = 0;
+			return;
+		}
+		if (fi < 0) {
 			if (t != T_NONE) err_node(head, NAME_FMT " is a type, not a function", s);
 			else if (find_local(s, g_nodes[head].stamp) >= 0 || find_global(s) >= 0) err_node(head, NAME_FMT " is a variable, not a function", s);
 			else if (!strcmp(s, "await")) err_node(head, "gael never waits: (poll co) gives (option T) at once, none while the coroutine runs");
@@ -2728,7 +2869,8 @@ static o run_work(i32 base)
 				t = pop_type();
 				patch(f->b, g_ncode);
 				if (t != t2 && t != T_ERR && t2 != T_ERR) { /* reported here, so the parent does not report it again */
-					err_node(f->cur, "if: the then branch is %s and the else branch is %s; they must match", tn(t), tn(t2));
+					if (soft_of(f) < 0) /* in min and the like, the < said it */
+						err_node(f->cur, "if: the then branch is %s and the else branch is %s; they must match", tn(t), tn(t2));
 					t = T_ERR;
 					t2 = T_ERR;
 				}
@@ -3088,12 +3230,15 @@ static o run_work(i32 base)
 				}
 			} else {
 				if (t != T_ERR && !numeric(t)) { /* after an error in this form, quiet: one mistake, one message */
+					char op[2];
+					op[0] = (char)f->op;
+					op[1] = 0;
 					if (f->phase == 1)
-						err_node(f->cur, "%c works on numbers, not %s", f->op, tn(t));
+						err_node(f->cur, "%s works on numbers, not %s", op_name(f, op), tn(t));
 					else if (f->rt != T_ERR && (is_struct(t) || is_enum(t)))
 						err_node(f->cur, "%c: %s and %s do not mix; with %s first, %c would call its function", f->op, tn(f->rt), tn(t), tn(t), f->op);
 					else if (f->rt != T_ERR)
-						err_node(f->cur, "%c works on numbers, not %s", f->op, tn(t));
+						err_node(f->cur, "%s works on numbers, not %s", op_name(f, op), tn(t));
 					t = T_ERR;
 				} else if (is_float(t) && f->op == '%') {
 					if (f->phase == 1 || f->rt != T_ERR) err_node(f->cur, "%% works on ints only; this is %s", a_type(t));
@@ -3148,12 +3293,15 @@ static o run_work(i32 base)
 			t2 = pop_type();
 			t = pop_type();
 			if (t != T_ERR && t2 != T_ERR) {
-				if (t != t2)
+				if (t != t2 && soft_of(f) >= 0)
+					err_node(f->cur, "%s takes values of one type, these are %s and %s; convert one, like (float x) or (int x)",
+					         op_name(f, "<"), tn(t2), tn(t));
+				else if (t != t2)
 					err_node(f->cur, "%s compares %s with %s; both sides need the same type", g_cmp_names[f->op], tn(t), tn(t2));
 				else if ((is_struct(t) || is_enum(t)) && cmp_hook(f, t, line))
 					; /* its type's equal or compare */
 				else if (f->op < 4 && !numeric(t))
-					err_node(f->cur, "%s orders numbers, not %s", g_cmp_names[f->op], tn(t));
+					err_node(f->cur, "%s orders numbers, not %s", op_name(f, g_cmp_names[f->op]), tn(t));
 				else if (t == T_UNIT)
 					err_node(f->cur, "%s: unit has no value to compare", g_cmp_names[f->op]);
 				else if (!comparable(t))

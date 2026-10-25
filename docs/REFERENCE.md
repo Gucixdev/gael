@@ -36,6 +36,7 @@ How the entries read:
 | `>=` | greater than or equal | [Comparing](#comparing) |
 | `NodePath` | the type of `$Player/Sprite` | [Types](#types) |
 | `_` | no name: matches anything in `match` arms and macro patterns; a `for` that only repeats | [match](#match), [for](#for), [Macros](#macros) |
+| `abs` | a value without its sign | [Comparing](#comparing) |
 | `acos` | arc cosine | [Math](#math) |
 | `and` | all true, stops at the first false | [Logic](#logic) |
 | `append-file` | add text to the end of a file | [Files and the system](#files-and-the-system) |
@@ -52,6 +53,7 @@ How the entries read:
 | `bool` | `true` or `false` | [Types](#types) |
 | `byte` | one byte of a string, as an int | [Strings](#strings) |
 | `ceil` | round up to a whole number | [Math](#math) |
+| `clamp` | a value kept between two bounds | [Comparing](#comparing) |
 | `chain` | hand a value through steps: `(chain x (f a) g)` | [Control](#control) |
 | `char` | the one-byte string of a byte | [Strings](#strings) |
 | `coroutine` | start a function in a coroutine, a function on a stack of its own; its type | [Coroutines](#coroutines) |
@@ -98,6 +100,8 @@ How the entries read:
 | `lookup` | a map's value or a pool's element, as an option | [Maps](#maps), [Pools](#pools) |
 | `map` | a map; the map type | [Maps](#maps) |
 | `match` | choose by a value's shape | [match](#match) |
+| `max` | the largest of values | [Comparing](#comparing) |
+| `min` | the smallest of values | [Comparing](#comparing) |
 | `name-of` | a name joined from a macro's parts, like C's `##` | [Macros](#macros) |
 | `nand` | not all true | [Logic](#logic) |
 | `none` | the empty option | [Options](#options) |
@@ -459,6 +463,16 @@ of operands.
 Exactly two values of one type; a `bool`. `<` and the like compare numbers. `=` and `!=` also compare bools, strings
 (by content), enum values, handles and node paths. For a struct or an enum with an `equal` or a `compare` function
 they call that ([Methods and hooks](#methods-and-hooks)). Anything else is a compile error.
+
+```
+(min a b...)   (max a b...)   (abs x)   (clamp x lo hi)
+```
+
+The smallest and the largest of values of one type that `<` orders (numbers, or a type with a `compare` hook), the
+first one on a tie; `x` without its sign; `x` kept between `lo` and `hi`. Each value is worked out once, and a literal
+takes the type of the others, as in `<`: `(min hp 100)` with `hp` a `u8`. The four names are built in but free: a
+variable, a field, a function or a macro named `min` comes first, so `(let ((max 0)) ...)` and a `Rect` with fields
+`min` and `max` are fine.
 
 ### Math
 

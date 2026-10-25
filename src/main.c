@@ -705,6 +705,7 @@ int main(int argc, char **argv)
 			for (j = 0; j < GAEL_COUNT(g_reserved) && strcmp(g_reserved[j], g_builtins[i].name); j++) {}
 			if (j == GAEL_COUNT(g_reserved)) puts(g_builtins[i].name);
 		}
+		for (i = 0; i < GAEL_COUNT(g_soft_names); i++) puts(g_soft_names[i]); /* min, max...: built in, not reserved */
 		for (i = T_UNIT; i < T_USER; i++) {
 			const NameSlot *sl = names_get(g_prim_tys[i].name);
 			if (sl && sl->type >= 0 && !sl->reserved) puts(g_prim_tys[i].name); /* NodePath: a type, not a reserved word */

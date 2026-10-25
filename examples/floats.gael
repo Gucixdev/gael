@@ -14,3 +14,10 @@
 (println "floor %f, ceil %f, as an int %d" (floor -2.5) (ceil -2.5) (int (floor 7.9)))
 (let ((nan (sqrt -1.0)))                       ; no error: nan, which is not even equal to itself
   (println "sqrt -1 = sqrt -1: %b" (= nan nan)))
+
+; min, max, abs and clamp work on any numbers of one type; each value is worked out once
+(def hp : u8 200)
+(println "min %d, max %f, abs %d, clamp %f, hp at most 100: %d" (min 3 -1 2) (max 0.5 (- 2.0) 1.5) (abs -7)
+         (clamp 1.25 0.0 1.0) (min hp 100))
+(let ((best (max 2 9)) (max 3))               ; the names stay free: a variable named max hides the form
+  (println "best %d, a local named max: %d" best max))

@@ -247,6 +247,7 @@ error. A comment starts with `;`.
 | `(xor a b...)`, `(xnor a b...)` | true when an odd number of the bools are true, and the opposite; every one is evaluated |
 | `(+ a b...)`, `-`, `*`, `/` | numbers of one type; `(- x)` negates |
 | `(% a b)` | the remainder of two ints |
+| `(min a b...)`, `(max a b...)`, `(abs x)`, `(clamp x lo hi)` | on anything `<` orders, each value worked out once; the names stay free for a variable or a field |
 | `(sqrt x)`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `(atan2 y x)`, `exp`, `ln`, `(pow x y)`, `floor`, `ceil` | the C library's functions of floats |
 | `<`, `<=`, `>`, `>=`, `=`, `!=` | compare two numbers of one type; `=` and `!=` also take bools, strings, enum values, handles and node paths |
 | `(bit-and a b...)`, `bit-or`, `bit-xor`, `(bit-not a)`, `(shl a n)`, `(shr a n)` | the bits of ints of one type; a shift count runs from 0 to the type's bits - 1 (anything else is a runtime error), and `shr` keeps the sign of a signed type. Ints can also be written `0xff` and `0b1010` |
@@ -511,7 +512,7 @@ tests/errors/div-zero.gael:1: runtime error: division by zero
 
 ## Status
 
-Version 0.3, tested on Linux x86-64 with gcc 13.3 and clang 18.1. `./test` passes 152 checks per build (43 examples, 80
+Version 0.3, tested on Linux x86-64 with gcc 13.3 and clang 18.1. `./test` passes 153 checks per build (43 examples, 81
 compile and runtime error cases, three warning cases, four gael test cases, the tests of each of the ten gems that come
 with gael, three REPL sessions, nine README examples)
 with gcc, clang, gcc with the plain switch dispatch and gcc with both sanitizers, every run with `GAEL_CHECK=1`. GitHub

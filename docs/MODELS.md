@@ -59,7 +59,8 @@ Types: `int` (i64), `float` (f64), `bool` (`true`, `false`), `string`, `unit`; `
 (assert (> hp 0)) (assert ok "why it must hold") ; a runtime error when false
 ```
 
-Compare with `=` `!=` `<` `<=` `>` `>=`; arithmetic `+` `-` `*` `/` `%`; `(- x)` negates.
+Compare with `=` `!=` `<` `<=` `>` `>=`; arithmetic `+` `-` `*` `/` `%`; `(- x)` negates. `(min a b...)` `(max a b...)`
+`(abs x)` `(clamp x lo hi)` on anything `<` orders; a local or field may still be called `min` or `max`.
 
 ## Data
 
