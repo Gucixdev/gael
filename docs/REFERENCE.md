@@ -810,6 +810,7 @@ The gems that come with gael:
 | `easing` | `lerp`, `lerp-clamped`, `unlerp`, `step`, `smooth`, `smoothstep`, and `ease-in-`, `ease-out-`, `ease-in-out-` `quad`, `cubic`, `sine`, `back`. Ported from holyc |
 | `wfc` | wave function collapse, the simple tiled model, up to 64 tiles: `(Wfc.new w h tiles)`, `(w.allow a dir b)` and `(w.allow-all a b)` for which tile may stand by which, `(w.weight t x)`, `(w.fix x y t)`, `(w.solve rng tries)` (true when solved), `(w.tile x y)`. Requires `rng`; `examples/wfc.gael` grows an island |
 | `curve` | on one number at a time: `bezier2`, `bezier3`, `hermite`, `catmull-rom`; `morton2` for a Z-order index. Ported from holyc; `examples/procgen.gael` uses these four |
+| `geometry` | `(Vec2 x y)` and `(Vec3 x y z)` (0.0 for what is left out) with `+ - *` (by a float) `=` and `(- v)`, `(a.dot b)`, `(v.length)`, `(v.length2)`, `(v.normal)`, `(a.distance b)`, `(a.lerp b t)`, `(Vec3.cross a b)`; `(Rect min max)`, a box from two corners: `(r.width)`, `(r.height)`, `(r.center)`, `(r.contains? p)`, `(r.overlaps? s)`. After holyc's mathx.h; `examples/ecs.gael` and `examples/pool.gael` use it |
 
 `(enable a b)` in the program reads only the manifests of the gems named and loads each one after the gems it
 requires. A requirement is met by the gem of that name or by one that provides it; when none is on, the gem of that

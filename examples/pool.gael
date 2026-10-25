@@ -1,7 +1,7 @@
 ; A pool has a fixed number of slots. spawn puts an element into a free slot and gives back a handle; the handle stays
 ; good until its element is removed. After that get on it is an error and lookup gives none, even once the slot holds
 ; a new element: a handle remembers the generation its slot had.
-(struct Vec2 (x : float) (y : float))
+(enable geometry)                               ; Vec2, and + on it
 (struct Particle (pos : Vec2) (vel : Vec2) (life : int) (name : string))
 
 (def particles : (pool Particle) (pool 4))
@@ -15,7 +15,7 @@
     (let ((p (get particles h)))
       (if (<= p.life 1)
           (remove particles h)
-          (put particles h (Particle (Vec2 (+ p.pos.x p.vel.x) (+ p.pos.y p.vel.y)) p.vel (- p.life 1) p.name))))))
+          (put particles h (Particle (+ p.pos p.vel) p.vel (- p.life 1) p.name))))))
 
 (let ((a (emit 1)) (b (emit 2)) (c (emit 3)))
   (println "%d of 4: %v %v %v" (len particles) a b c)

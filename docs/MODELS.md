@@ -159,6 +159,8 @@ on, `(disable name)` off. These come with gael:
 - `rng`: `(Rng.seed seed stream)`, `(r.next)`, `(r.float)`, `(r.range lo hi)`, `(r.chance p)`.
 - `noise`: `(noise2 seed x y)`, `(fbm2 seed x y octaves)`. `easing`: `lerp`, `smoothstep`, `ease-in-out-cubic`...
   `curve`: `bezier3`, `hermite`, `catmull-rom`, `morton2`.
+- `geometry`: `(Vec2 x y)` `(Vec3 x y z)` with `+ - * =`, `(a.dot b)` `(v.length)` `(v.normal)` `(a.distance b)`
+  `(a.lerp b t)` `(Vec3.cross a b)`; `(Rect min max)` with `(r.width)` `(r.height)` `(r.center)` `(r.contains? p)`.
 - `wfc` (wave function collapse): `(Wfc.new w h tiles)`, `(w.allow-all a b)`, `(w.allow a wfc-right b)`,
   `(w.weight t 3.0)`, `(w.fix x y t)`, `(w.solve (Rng.seed 1 0) 20)` true when solved, `(w.tile x y)`.
 

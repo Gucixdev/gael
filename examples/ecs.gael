@@ -1,10 +1,6 @@
 ; An entity component system from the ecs gem that comes with gael (gems/ecs.gael next to the binary). Components
 ; are columns, tags are bits, and a query names what it needs: (ecs-each World (e c...) :with (tags) :not (tags) body).
-(enable ecs)
-
-(struct Vec2 (x : float 0.0) (y : float 0.0))
-(defn Vec2.add ((a : Vec2) (b : Vec2)) : Vec2 (Vec2 (+ a.x b.x) (+ a.y b.y)))
-(defn Vec2.mul ((a : Vec2) (k : float)) : Vec2 (Vec2 (* a.x k) (* a.y k)))
+(enable ecs geometry)                           ; geometry gives Vec2, with + and * on it
 
 (ecs-world Game
   (components (pos : Vec2 (Vec2)) (vel : Vec2 (Vec2)) (hp : int 100) (name : string ""))

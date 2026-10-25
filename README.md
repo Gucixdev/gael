@@ -411,7 +411,8 @@ The gems that come with gael are in `gems/`. `ecs` is an entity component system
 queries that name what they need; `pqueue` (a priority queue) and `events` (a log and a schedule of events by tick)
 are ported from holyc, used in `examples/queues.gael`; `hfsm` is a hierarchical state machine whose state is an enum
 value, so `examples/guards.gael` keeps one in an ECS column; `rng` (PCG32), `noise`, `easing` and `curve` make the
-map of `examples/procgen.gael`; `wfc` is wave function collapse, which grows the island of `examples/wfc.gael`.
+map of `examples/procgen.gael`; `wfc` is wave function collapse, which grows the island of `examples/wfc.gael`;
+`geometry` has `Vec2`, `Vec3` and `Rect` with `+ - * =` on them.
 `examples/ecs.gael` runs a few ticks of an ECS:
 
 ```lisp
