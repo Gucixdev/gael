@@ -1,11 +1,12 @@
-; Coroutines: (async (f x)) runs f as a coroutine, which can wait - (sleep seconds), (yield) until the next step,
-; (await co) for another coroutine's result - without the functions on the way knowing it. A game's loop runs them
-; with (step-coroutines dt); a script or a server with (run-coroutines), which waits in real time.
+; Coroutines: (coroutine (f x)) runs f as a coroutine, which can pause - (sleep seconds), (yield) until the next
+; step - without the functions on the way knowing it. Nothing ever waits for one: (poll co) gives (some result) once
+; it has ended and none before. A game's loop runs them with (step-coroutines dt); a script or a server with
+; (run-coroutines), which goes on until none is left.
 
 (struct Guard (name : string) (x : float))
 (def guards : (vec Guard) (vec (Guard "north" 0.0) (Guard "south" 10.0)))
 
-(defn walk-to ((i : int) (x : float)) : unit       ; it waits, so the coroutine that calls it waits
+(defn walk-to ((i : int) (x : float)) : unit       ; it pauses, so the coroutine that calls it pauses
   (let ((g (get guards i)))
     (println "  %s walks to %f" g.name x)
     (sleep 1.0)
@@ -27,21 +28,22 @@
     (countdown (- n 1)))
   n)
 
-(defn report ((co : (coroutine string))) : string ; a coroutine can wait for another one
-  (format "north is done: %s" (await co)))
+(defn report ((co : (coroutine string))) : string ; one coroutine looks at another each step
+  (while (not (done? co)) (yield))
+  (match (poll co) ((some s) (format "north is done: %s" s)) (none "?")))
 
-(def north (async (patrol 0 1)))                  ; each runs at once, up to its first wait
-(def south (async (patrol 1 2)))
-(def cd (async (countdown 3)))
-(def rep (async (report north)))
+(def north (coroutine (patrol 0 1)))              ; each runs at once, up to its first pause
+(def south (coroutine (patrol 1 2)))
+(def cd (coroutine (countdown 3)))
+(def rep (coroutine (report north)))
 
 (let ((frame 0) (left 4))
   (while (> left 0)
-    (println "frame %d, time %f" frame (coroutine-time))
+    (println "frame %d, time %f, south %v" frame (coroutine-time) (poll south))
     (arena (set left (step-coroutines 1.0)))      ; what the coroutines make is theirs, not the frame's
     (set frame (+ frame 1))))
 
-(println "%s | %s | %d" (await rep) (await south) (await cd))
+(println "%v | %v | %v" (poll rep) (poll south) (poll cd))
 (println "done? %b %b" (done? north) (done? south))
 
 (defn later ((secs : float) (word : string)) : string
@@ -49,7 +51,7 @@
   (println "  %s" word)
   word)
 
-(def last-one (async (later 0.02 "second")))      ; real time this time
-(async (later 0.01 "first"))
+(def last-one (coroutine (later 0.02 "second")))  ; real time this time
+(coroutine (later 0.01 "first"))
 (run-coroutines)
-(println "%s, time >= 0.02: %b" (await last-one) (>= (coroutine-time) 0.02))
+(println "%v, time >= 0.02: %b" (poll last-one) (>= (coroutine-time) 0.02))

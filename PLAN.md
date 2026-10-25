@@ -12,6 +12,7 @@ dokumentacja mieści się w kontekście.
 - [x] Wyniki `./bench` po ostatnich zmianach w `benchmarks/RESULTS.md` (`1565df1`).
 - [x] `task` → `coroutine`: typ `(coroutine T)`, `step-coroutines`, `run-coroutines`, `coroutine-time`; `async`,
       `await`, `sleep`, `yield`, `done?` zostają.
+- [x] Bez `async`/`await`: `(coroutine (f x))` startuje, `(poll co)` daje `(option T)` od razu; nic nie czeka.
 - [x] `repldump.gael`: data i godzina przy każdej formie i które funkcje plików podmieniła; pliki nigdy nie są
       nadpisywane, zmiana na żywo żyje w programie i w dzienniku, jak plik changes w Smalltalku (`ba3b807`).
 
@@ -25,8 +26,8 @@ dokumentacja mieści się w kontekście.
       wycina: `@warn` i `@err` (komunikat przy linii i na liście, niczego nie blokuje), `@test` (blok, który uruchamia
       `gael test`), `@debug` (kod tylko w trakcie pracy). Nieznany znacznik albo w złym miejscu to błąd.
 - [ ] `(compile-error "...")` dla makr: błąd kompilacji z własnym komunikatem, gdy makro dostało złe argumenty.
-- [ ] Nawiasy: przy brakującym `)` wskazać linię, w której wcięcie mówi, że forma się skończyła („brakuje `)` na końcu
-      linii 2”); przy nadmiarowym - która forma już się zamknęła.
+- [x] Nawiasy: przy brakującym albo nadmiarowym `)` gael czyta wcięcia jak parinfer i wskazuje linię
+      (`a ')' is missing at the end of line 4: line 5 is indented as if the ( at 4:8 ended there`) (`0e3e2a2`).
 - [ ] Przegląd wszystkich komunikatów: plik:linia:kolumna, co jest źle, poprawna forma.
 - [ ] Ściąga dla modeli (`docs/MODELS.md`, 2-4 tys. tokenów) i skill `gael` w claude-config; test pilnuje, że każda
       nazwa z `gael -n` jest w ściądze.
@@ -46,7 +47,8 @@ dokumentacja mieści się w kontekście.
 - [ ] Biblioteka w gaelu na generykach: `sort`, `sort-by`, `min`, `max`, `range`.
 - [ ] Traity jako zbiór haków (`Typ.nazwa`), sprawdzane w kompilacji; comptime: kod wykonywany w trakcie kompilacji
       przez ten sam VM.
-- [ ] Wątki: masterslave i fgjob (fine-grained jobs) obok korutyn.
+- [ ] Wątki, cała prędkość z rdzeni: fgjob (pętla dzielona na kawałki na wszystkie rdzenie) i masterslave (wątek główny
+      rozdaje robotę); punkt zbiegu raz na klatkę; kompilator pilnuje, że kawałek pisze tylko do swojego elementu.
 
 ## 4. Kod natywny, w tej samej binarce
 

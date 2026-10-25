@@ -42,10 +42,8 @@ How the entries read:
 | `arena` | memory handed back at once when the body ends | [Memory](#memory) |
 | `args` | the command line after the file | [Files and the system](#files-and-the-system) |
 | `asin` | arc sine | [Math](#math) |
-| `async` | run a function as a coroutine | [Coroutines](#coroutines) |
 | `atan` | arc tangent | [Math](#math) |
 | `atan2` | the angle of a point (y, x) | [Math](#math) |
-| `await` | a coroutine's result, once it has ended | [Coroutines](#coroutines) |
 | `bit-and` | the bits set in all | [Bits](#bits) |
 | `bit-not` | every bit flipped | [Bits](#bits) |
 | `bit-or` | the bits set in any | [Bits](#bits) |
@@ -55,7 +53,7 @@ How the entries read:
 | `ceil` | round up to a whole number | [Math](#math) |
 | `chain` | hand a value through steps: `(chain x (f a) g)` | [Control](#control) |
 | `char` | the one-byte string of a byte | [Strings](#strings) |
-| `coroutine` | the type of a function running on a stack of its own | [Coroutines](#coroutines) |
+| `coroutine` | start a function in a coroutine, a function on a stack of its own; its type | [Coroutines](#coroutines) |
 | `coroutine-time` | the coroutines' clock | [Coroutines](#coroutines) |
 | `cos` | cosine | [Math](#math) |
 | `def` | a global | [Top level](#top-level) |
@@ -111,6 +109,7 @@ How the entries read:
 | `pipe` | commands joined like bash's `\|`, their output | [Files and the system](#files-and-the-system) |
 | `pipe-in` | the same, with text on the first one's stdin | [Files and the system](#files-and-the-system) |
 | `pool` | a fixed number of slots with generational handles | [Pools](#pools) |
+| `poll` | a coroutine's result if it has ended, at once: an option | [Coroutines](#coroutines) |
 | `pop` | take a vec's last element off | [Vecs](#vecs) |
 | `pow` | a number to a power | [Math](#math) |
 | `print` | print to stdout | [Printing](#printing) |
@@ -128,7 +127,7 @@ How the entries read:
 | `shl` | shift left | [Bits](#bits) |
 | `shr` | shift right | [Bits](#bits) |
 | `sin` | sine | [Math](#math) |
-| `sleep` | wait seconds | [Coroutines](#coroutines) |
+| `sleep` | pause a coroutine for seconds; in the main program, sleep | [Coroutines](#coroutines) |
 | `some` | an option with a value | [Options](#options) |
 | `spawn` | put an element into a pool | [Pools](#pools) |
 | `split` | the pieces between separators | [Strings](#strings) |
@@ -152,7 +151,7 @@ How the entries read:
 | `write-file` | write a whole file | [Files and the system](#files-and-the-system) |
 | `xnor` | an even number true | [Logic](#logic) |
 | `xor` | an odd number true | [Logic](#logic) |
-| `yield` | a coroutine waits for the next step | [Coroutines](#coroutines) |
+| `yield` | a coroutine pauses until the next step | [Coroutines](#coroutines) |
 
 Not names but syntax: `;` comments, `"..."` strings, `:keyword`, `$Node/Path`, `@export`, `a.b.c` field paths and
 `(expr).field` - see [Reading](#reading).
@@ -677,31 +676,34 @@ digits that read back as the same value.
 ## Coroutines
 
 ```
-(async (f x...))          ; (coroutine R) when f returns R
-(await co)   (sleep seconds)   (yield)   (step-coroutines dt)   (run-coroutines)   (done? co)   (coroutine-time)
+(coroutine (f x...))      ; start f in a coroutine: a (coroutine R) when f returns R
+(poll co)   (done? co)   (sleep seconds)   (yield)   (step-coroutines dt)   (run-coroutines)   (coroutine-time)
 (coroutine R)             ; the type
 ```
 
-`async` runs a named function as a coroutine: a function with a stack of its own, which can wait anywhere - also deep in
-the functions it calls - without them saying so. It runs at once, until it first waits, and gives a `(coroutine R)`.
+`(coroutine (f x...))` runs a named function as a coroutine: a function with a stack of its own, which can pause
+anywhere - also deep in the functions it calls - without them saying so. It runs at once, until it first pauses, and
+gives a `(coroutine R)`. Nothing ever waits for a coroutine:
 
-- `(await co)` gives the coroutine's result once it has ended, with the type `R`. In a coroutine it waits; in the main
-  program it runs the coroutines (in real time) until `co` has ended.
-- `(sleep s)` waits `s` seconds (a float) of coroutine time. In the main program it runs the coroutines meanwhile, in
-  real time.
-- `(yield)` waits until the next step. Only in a coroutine.
+- `(poll co)` gives `(some result)` once the coroutine has ended and `none` before, at once - an `(option R)`. A
+  coroutine whose function returns unit has no result to poll; `(done? co)` says whether one has ended.
+- `(sleep s)` pauses a coroutine for `s` seconds (a float) of coroutine time. In the main program it sleeps in real
+  time, running the coroutines meanwhile.
+- `(yield)` pauses a coroutine until the next step. Only in a coroutine.
 - `(step-coroutines dt)` - from the main program, e.g. once a frame - moves the coroutine time `dt` seconds on and lets
-  every coroutine that can go on run until it waits again; it gives how many coroutines are left.
-- `(run-coroutines)` runs the coroutines until none is left, sleeping in real time when they all sleep.
-- `(done? co)` says whether a coroutine has ended; `(coroutine-time)` gives the coroutine time in seconds.
+  every coroutine that can go on run until it pauses again; it gives how many coroutines are left.
+- `(run-coroutines)` runs the coroutines until none is left, sleeping in real time when they all sleep: the loop of a
+  script or a server.
+- `(coroutine-time)` gives the coroutine time in seconds.
 
-A coroutine does not make its strings and vecs in the arenas of the code that resumed it. Runtime errors: every
-coroutine waiting for another (`every coroutine waits for another one, so none can go on`), a coroutine awaiting itself,
-a coroutine waiting inside an `arena`, `yield` outside a coroutine, `step-coroutines` or `run-coroutines` from a
-coroutine, awaiting a coroutine stopped by a runtime error. Compile errors: `async` of anything but a call of a function
-by its name, `await` or `done?` of a non-coroutine, `sleep` or `step-coroutines` of a non-float. A coroutine cannot be
-cancelled from outside yet; a coroutine that never ends holds what it holds (and `GAEL_CHECK=1` counts that as not
-freed).
+One coroutine that needs another's result looks each step: `(while (not (done? co)) (yield))`, then `(poll co)`.
+A coroutine does not make its strings and vecs in the arenas of the code that resumed it. Runtime errors: a coroutine
+pausing inside an `arena`, `yield` outside a coroutine, `step-coroutines` or `run-coroutines` from a coroutine, a
+coroutine read from a global before its def ran, polling one stopped by a runtime error (in the REPL). Compile errors:
+`(coroutine ...)` of anything but a call of a function by its name, `poll` or `done?` of a non-coroutine, `poll` of a
+coroutine that returns unit, `sleep` or `step-coroutines` of a non-float; `await` and `async` say what to write
+instead. A coroutine cannot be cancelled from outside yet; one that never ends holds what it holds (and
+`GAEL_CHECK=1` counts that as not freed).
 
 ## Macros
 

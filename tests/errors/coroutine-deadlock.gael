@@ -1,8 +1,0 @@
-; two coroutines that wait for each other: run-coroutines sees that none can go on
-(def cs : (vec (coroutine int)) (vec))
-(defn a-side () : int (sleep 0.01) (await (get cs 1)))
-(defn b-side () : int (await (get cs 0)))
-(push cs (async (a-side)))
-(push cs (async (b-side)))
-(run-coroutines)
-(println "not reached")

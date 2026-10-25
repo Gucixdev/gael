@@ -115,6 +115,13 @@ potwierdzenia:
   które podmieniła (`;; 2026-10-25 16:28:57, replaces width (lib/shapes.gael:3)`); pliki nigdy nie są pisane - zmiana
   żyje w działającym programie i w dzienniku, jak plik changes w Smalltalku. Dalej: artemacs pokazuje zmiany z
   dziennika przy funkcjach i pozwala świadomie przenieść wybraną do pliku albo ją porzucić.
+- **Bez async/await (jego słowa, 2026-10-25):** „async await bardzo bym nie chciał, nie chcę czekać”. Zrobione: nic
+  nigdy nie czeka. `(coroutine (f x))` startuje korutynę (ta sama nazwa co typ, jak `vec`), `(poll co)` od razu daje
+  `(option T)` - `none`, póki działa; jedna korutyna, która potrzebuje wyniku innej, patrzy co krok (`done?`, `yield`).
+  `await` i `async` dają komunikat, co wpisać zamiast. Z VM-u zniknął stan czekania na inną korutynę i wykrywanie
+  zakleszczeń - nie ma już czego wykrywać. Prędkość ma przyjść z rdzeni: fgjob dzieli pętlę na kawałki na wszystkie
+  rdzenie, masterslave to wątek główny rozdający robotę; punkt zbiegu raz na klatkę (jak Unity DOTS i silnik Naughty
+  Dog), a kompilator pilnuje, że kawałek pisze tylko do swojego elementu - bez data race i bez locków.
 - **Comptime, traity, GPU (2026-10-25):** comptime - kod gaela wykonywany w trakcie kompilacji przez ten sam VM;
   traity - zbiór haków `Typ.nazwa` sprawdzany w kompilacji, wywołania statyczne; MLIR nie (ogromna zależność w C++),
   GPU później przez SPIR-V; FSM i HFSM jako gem napisany w gaelu, nie w jądrze.
@@ -557,7 +564,7 @@ Każdy punkt z notatek o godot-rs i gaelu, z tym, co się z nim stało. ✓ zrob
 - ✓ makra; ○ makra gemu ecs (`ecs-query`), traits, abstrakcje bez boilerplate i bez pułapek C++.
 - ✓ zasada nazw: typy i formy gemu z prefiksem systemu (`ECSEntity`, `(ecs-query ...)`, `DBQuery`).
 - ✓ x-macro dla opkodów (`src/ops.h`); ✓ x-makra w gaelu (`string-of`, `name-of`, `examples/xmacros.gael`).
-- ✓ async/await, korutyny ze stosem: `async`, `await`, `sleep`, `yield`, `step-coroutines`, `run-coroutines`;
+- ✓ korutyny ze stosem: `coroutine`, `poll`, `sleep`, `yield`, `step-coroutines`, `run-coroutines` (bez async/await);
   ○ anulowanie korutyn (mapy stosu), joby (fgjob, masterslave) na wątkach.
 - ○ typy deltatime, tick, tag, uuid; ○ typy SIMD i cache-friendly; ○ kluczowa matematyka z czasem do rdzenia w C.
 - ✓ `@export` przed `def` jak w GDScripcie, `gael -x` jako tekstowy inspektor; ○ „lazy export” (eksport bez pisania typu), adnotacje na polach i nodach.

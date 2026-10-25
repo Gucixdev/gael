@@ -116,12 +116,12 @@
 	X(ENV_LOAD, 2) /* -- x...      a value the running fn keeps in its closure (slot 0): a: its offset, b: its cells */ \
 	X(ENV_STORE, 2) /* x... --     a new value for it */ \
 	X(ENV_RELEASE, 2) /* --        it dies: b is its type */ \
-	X(ASYNC, 2)    /* args -- t    a coroutine runs function a (b: the coroutine type) until it first waits; then this goes on */ \
-	X(AWAIT, 1)    /* t -- r       the coroutine's result once it has ended (a: the coroutine type); a coroutine waits, the main program runs coroutines */ \
-	X(SLEEP, 0)    /* f --         wait f seconds of coroutine time; the main program runs coroutines meanwhile */ \
-	X(YIELD, 0)    /* --           a coroutine waits for the next pass of the scheduler */ \
-	X(CORO_STEP, 0) /* f -- i     coroutine time goes f seconds on; every coroutine that can go on runs until it waits again */ \
-	X(CORO_RUN, 0) /* --          run the coroutines until there are none, waiting in real time when they all sleep */ \
+	X(CORO_NEW, 2) /* args -- c    a coroutine runs function a (b: the coroutine type) until it first pauses; then this goes on */ \
+	X(CORO_POLL, 1) /* c -- o...   (option result): some once the coroutine has ended, none before; never waits. a: its type */ \
+	X(SLEEP, 0)    /* f --         a coroutine pauses for f seconds of coroutine time; the main program sleeps, running them */ \
+	X(YIELD, 0)    /* --           a coroutine pauses until the next pass of the scheduler */ \
+	X(CORO_STEP, 0) /* f -- i     coroutine time goes f seconds on; every coroutine that can go on runs until it pauses again */ \
+	X(CORO_RUN, 0) /* --          run the coroutines until there are none, sleeping in real time when they all sleep */ \
 	X(CORO_DONE, 0) /* t -- b      the coroutine has ended */ \
 	X(CORO_TIME, 0) /* -- f        the coroutine time in seconds */ \
 	X(CORO_END, 0) /* r... --      where a coroutine's function returns to: the result goes into the coroutine, which ends */ \

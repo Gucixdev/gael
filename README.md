@@ -242,10 +242,11 @@ error. A comment starts with `;`.
 | `(keep x)` | `x` with what it holds from the innermost arena copied out to the heap, so it outlives the arena |
 | `(defmacro name (pattern template)...)` | a macro: the first rule whose pattern matches a use rewrites it, before the types are checked (below) |
 | `(string-of x)`, `(name-of "print-" x)` | in a template: `x` written as a string, and a name joined from parts, as C's `#` and `##` |
-| `(async (f x...))` | run `f` as a coroutine, at once until it first waits; a `(coroutine type)` of what `f` returns |
-| `(await co)`, `(sleep 0.5)`, `(yield)` | wait for a coroutine's result, for seconds of coroutine time, or for the next step. In a coroutine they let the others run; in the main program `await` and `sleep` run the coroutines meanwhile |
-| `(step-coroutines dt)`, `(run-coroutines)` | from the main program: coroutine time goes `dt` seconds on and each coroutine that can goes on until it waits again (the number of coroutines left); run them until none is left, waiting in real time |
-| `(done? co)`, `(coroutine-time)` | whether a coroutine has ended; the coroutine time in seconds |
+| `(coroutine (f x...))` | run `f` as a coroutine, at once until it first pauses; a `(coroutine type)` of what `f` returns |
+| `(poll co)`, `(done? co)` | never waits: `(some result)` once the coroutine has ended, `none` before; whether it has ended |
+| `(sleep 0.5)`, `(yield)` | a coroutine pauses for seconds of coroutine time, or until the next step; the main program's `sleep` sleeps in real time, running the coroutines meanwhile |
+| `(step-coroutines dt)`, `(run-coroutines)` | from the main program: coroutine time goes `dt` seconds on and each coroutine that can goes on until it pauses again (the number of coroutines left); run them until none is left, as a script's or a server's loop |
+| `(coroutine-time)` | the coroutine time in seconds |
 | `(enable name...)`, `(disable name...)` | turn gems on, loading each one after what it requires, or off (below) |
 | `(some 5)`, `none` | the two kinds of `(option int)` value; `none` takes its type from where it goes: a declared binding, a parameter, a field, a return type, or the else branch of an `if` whose then branch has one |
 | `(match x (pattern body...)...)` | patterns are `_`, int and string literals, `true` and `false`, enum values (`north` or `Dir.north`), `(some name)` and `none`; every value must be covered, and an arm that can never run is an error |
@@ -335,22 +336,23 @@ is made (as a GDScript lambda does). Setting one inside changes the fn's own cop
 `(let ((n 0)) (fn () : int (set n (+ n 1)) n))` counts; a vec, a map or a pool is a reference, so what is in it is
 shared. A `fn` made in a loop keeps that turn's values. `examples/closures.gael` has more.
 
-A coroutine is a function running on a stack of its own (it is stackful): it can wait anywhere, also deep in the
-functions it calls, and they need no mark for it - no async colouring as in Rust or C#. `(await co)` has the type of
-what the coroutine's function returns, checked when compiling. A game's loop gives the coroutines a step each frame:
+A coroutine is a function running on a stack of its own (it is stackful): it can pause anywhere, also deep in the
+functions it calls, and they need no mark for it - no async colouring as in Rust or C#. Nothing ever waits for one:
+`(poll co)` gives `(some result)` once it has ended and `none` before, its type checked when compiling. A game's loop
+gives the coroutines a step each frame:
 
 ```
 (defn patrol ((i : int)) : unit
   (while true
-    (walk-to i 5.0)          ; walk-to sleeps, so patrol waits there
+    (walk-to i 5.0)          ; walk-to sleeps, so patrol pauses there
     (walk-to i 0.0)))
-(async (patrol 0))
+(coroutine (patrol 0))
 (while running
   (step-coroutines dt)
   (draw))
 ```
 
-A coroutine cannot wait inside an `(arena ...)` (the arena would end while other code runs), and what a coroutine makes
+A coroutine cannot pause inside an `(arena ...)` (the arena would end while other code runs), and what a coroutine makes
 is its own, not part of the arena of the code that resumed it. A coroutine that never ends holds what it holds: one
 stopped from outside (cancel) is not there yet. `examples/coroutines.gael` has more.
 

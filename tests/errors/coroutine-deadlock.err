@@ -1,1 +1,0 @@
-tests/errors/coroutine-deadlock.gael:7: runtime error: every coroutine waits for another one, so none can go on

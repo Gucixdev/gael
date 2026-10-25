@@ -371,12 +371,12 @@ static i32 effect(Op op, i32 a, i32 b)
 	case OP_POOL_NEW: case OP_POOL_LEN: case OP_POOL_NEXT: return 0;
 	case OP_ARENA_BEGIN: case OP_ARENA_END: case OP_KEEP: return 0;
 	case OP_SHPIPE: return 1 - a;
-	case OP_ASYNC: return 1 - g_fns[a].pcells;
+	case OP_CORO_NEW: return 1 - g_fns[a].pcells;
 	case OP_CLOSURE: return 1 - cells((Ty)b);
 	case OP_ENV_LOAD: return b;
 	case OP_ENV_STORE: return -b;
 	case OP_ENV_RELEASE: return 0;
-	case OP_AWAIT: return cells(elem_of((Ty)a)) - 1;
+	case OP_CORO_POLL: return cells(elem_of((Ty)a));
 	case OP_SLEEP: return -1;
 	case OP_YIELD: case OP_CORO_STEP: case OP_CORO_RUN: case OP_CORO_DONE: case OP_CORO_END: return 0;
 	case OP_CORO_TIME: return 1;
@@ -512,14 +512,14 @@ static const char *const g_reserved[] = {
 	"pop", "for", "use", ".", "map", "insert", "lookup", "has", "remove", "keys", "values", "chain", "pipe", "pipe-in",
 	"nand", "nor", "xor", "xnor", "bit-and", "bit-or", "bit-xor", "bit-not", "shl", "shr",
 	"pool", "spawn", "handle", "arena", "keep", "fn", "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64",
-	"defmacro", "...", "gem", "enable", "disable", "return", "coroutine", "async", "await", "sleep", "yield", "step-coroutines", "run-coroutines", "done?", "coroutine-time",
+	"defmacro", "...", "gem", "enable", "disable", "return", "coroutine", "poll", "sleep", "yield", "step-coroutines", "run-coroutines", "done?", "coroutine-time",
 	"string-of", "name-of"
 };
 
 
 /* the forms on coroutines, in the order of F_CORO's op */
-static const char *const g_coro_names[] = { "await", "sleep", "yield", "step-coroutines", "run-coroutines", "done?", "coroutine-time" };
-static const char *const g_coro_usage[] = { "(await co)", "(sleep 0.5)", "(yield)", "(step-coroutines dt)", "(run-coroutines)", "(done? co)", "(coroutine-time)" };
+static const char *const g_coro_names[] = { "poll", "sleep", "yield", "step-coroutines", "run-coroutines", "done?", "coroutine-time" };
+static const char *const g_coro_usage[] = { "(poll co)", "(sleep 0.5)", "(yield)", "(step-coroutines dt)", "(run-coroutines)", "(done? co)", "(coroutine-time)" };
 
 static int is_reserved(const char *s)
 {
@@ -1783,7 +1783,7 @@ static int method_word(const char *m)
 	for (k = 0; k < GAEL_COUNT(g_builtins); k++) if (!strcmp(m, g_builtins[k].name)) return 1;
 	for (k = 0; k < GAEL_COUNT(g_vecop_names); k++) if (!strcmp(m, g_vecop_names[k])) return 1;
 	for (k = 0; k < GAEL_COUNT(g_mapop_names); k++) if (!strcmp(m, g_mapop_names[k])) return 1;
-	return !strcmp(m, "await") || !strcmp(m, "done?") || find_fn(m) >= 0;
+	return !strcmp(m, "poll") || !strcmp(m, "done?") || find_fn(m) >= 0;
 }
 
 /* method_call FRAME HEAD: (v.m args...) where v (or a field path like v.pos) is a variable and m none of its fields.
@@ -1896,10 +1896,10 @@ static o start_list(Frame *f)
 		f->k = 0;
 		return;
 	}
-	else if (!strcmp(s, "async")) { /* (async (f args...)): the call, compiled to run in a coroutine */
+	else if (!strcmp(s, "coroutine")) { /* (coroutine (f args...)): the call, compiled to run in a new coroutine */
 		i32 call = f->cur, h = call >= 0 && g_nodes[call].kind == N_LIST ? first_of(call) : -1;
 		if (f->k != 1 || !is_sym(h) || (fi = find_fn(g_nodes[h].text)) < 0 || find_local(g_nodes[h].text, g_nodes[h].stamp) >= 0) {
-			err_node(call >= 0 ? call : f->node, "async takes a call of a function by its name: (async (patrol goblin))");
+			err_node(call >= 0 ? call : f->node, "coroutine takes a call of a function by its name: (coroutine (patrol goblin))");
 			finish(T_ERR);
 			return;
 		}
@@ -2022,6 +2022,8 @@ static o start_list(Frame *f)
 		if ((fi = find_fn(s)) < 0) {
 			if (t != T_NONE) err_node(head, NAME_FMT " is a type, not a function", s);
 			else if (find_local(s, g_nodes[head].stamp) >= 0 || find_global(s) >= 0) err_node(head, NAME_FMT " is a variable, not a function", s);
+			else if (!strcmp(s, "await")) err_node(head, "gael never waits: (poll co) gives (option T) at once, none while the coroutine runs");
+			else if (!strcmp(s, "async")) err_node(head, "gael has no async: (coroutine (f x)) starts f as a coroutine, and nothing waits for it");
 			else err_node(head, "unknown function " NAME_FMT, s);
 			finish(T_ERR);
 			return;
@@ -3154,9 +3156,9 @@ static o run_work(i32 base)
 					break;
 				}
 				f->k = 0;
-				if (f->cur < 0 && f->op) { /* async: a coroutine runs it */
+				if (f->cur < 0 && f->op) { /* (coroutine (f)): a coroutine runs it */
 					Ty tt = intern_wrap(K_CORO, fn->ret);
-					emit(OP_ASYNC, f->a, tt, line);
+					emit(OP_CORO_NEW, f->a, tt, line);
 					finish(tt);
 					break;
 				}
@@ -3176,9 +3178,9 @@ static o run_work(i32 base)
 			f->k++;
 			f->cur = next_of(f->cur);
 			if (f->cur >= 0) { push_child(f->cur, fn->params[f->k]); break; }
-			if (f->op) { /* async: a coroutine runs it */
+			if (f->op) { /* (coroutine (f x)): a coroutine runs it */
 				Ty tt = intern_wrap(K_CORO, fn->ret);
-				emit(OP_ASYNC, f->a, tt, line);
+				emit(OP_CORO_NEW, f->a, tt, line);
 				finish(tt);
 				break;
 			}
@@ -3217,8 +3219,8 @@ static o run_work(i32 base)
 			finish(T_ERR); /* it gives no value: it fits wherever it stands (what follows it never runs) */
 			break;
 
-		case F_CORO: { /* await, sleep, yield, step-coroutines, run-coroutines, done?, coroutine-time - in g_coro_names' order */
-			static const Op ops[] = { OP_AWAIT, OP_SLEEP, OP_YIELD, OP_CORO_STEP, OP_CORO_RUN, OP_CORO_DONE, OP_CORO_TIME };
+		case F_CORO: { /* poll, sleep, yield, step-coroutines, run-coroutines, done?, coroutine-time - in g_coro_names' order */
+			static const Op ops[] = { OP_CORO_POLL, OP_SLEEP, OP_YIELD, OP_CORO_STEP, OP_CORO_RUN, OP_CORO_DONE, OP_CORO_TIME };
 			static const u8 nargs[] = { 1, 1, 0, 1, 0, 1, 0 };
 			int secs = f->op == 1 || f->op == 3, coro = f->op == 0 || f->op == 5;
 			t = T_NONE;
@@ -3240,13 +3242,17 @@ static o run_work(i32 base)
 					t = T_ERR;
 				}
 				if (coro && !is_coro(t) && t != T_ERR) {
-					err_node(f->cur, "%s takes a coroutine, which (async (f ...)) makes; this is %s", g_coro_names[f->op], tn(t));
+					err_node(f->cur, "%s takes a coroutine, which (coroutine (f ...)) makes; this is %s", g_coro_names[f->op], tn(t));
+					t = T_ERR;
+				}
+				if (f->op == 0 && t != T_ERR && elem_of(t) == T_UNIT) {
+					err_node(f->node, "poll gives what a coroutine's function returns, and this one returns nothing; (done? co) says whether it ended");
 					t = T_ERR;
 				}
 				if (t == T_ERR) { finish(T_ERR); break; }
 			}
 			emit(ops[f->op], f->op == 0 ? (i32)t : 0, 0, line);
-			finish(f->op == 0 ? elem_of(t) : f->op == 3 ? (Ty)T_INT : f->op == 5 ? (Ty)T_BOOL : f->op == 6 ? (Ty)T_FLOAT : (Ty)T_UNIT);
+			finish(f->op == 0 ? intern_option(elem_of(t)) : f->op == 3 ? (Ty)T_INT : f->op == 5 ? (Ty)T_BOOL : f->op == 6 ? (Ty)T_FLOAT : (Ty)T_UNIT);
 			break;
 		}
 
@@ -4662,7 +4668,7 @@ static i32 expand_top(i32 top, int repl)
  * a local or a constant fed straight into arithmetic, a comparison straight into a jump, the step at the end of a for
  * loop. The rest of a run turns into NOPs that the superinstruction skips, so no instruction moves and no jump needs
  * to change. A run never has, after its start, a place code comes to from elsewhere: a jump's target, a function's
- * entry, the instruction after a call or after a coroutine's wait. Before that, a jump to a JMP goes where that one goes,
+ * entry, the instruction after a call or after a coroutine's pause. Before that, a jump to a JMP goes where that one goes,
  * and a JMP to a return becomes the return. */
 static const u8 g_bin_ops[] = { OP_ADD_I, OP_SUB_I, OP_MUL_I, OP_ADD_F, OP_SUB_F, OP_MUL_F, OP_DIV_F };
 static const u8 g_bin_fused[] = { OP_ADD_I_LL, OP_SUB_I_LL, OP_MUL_I_LL, OP_ADD_F_LL, OP_SUB_F_LL, OP_MUL_F_LL, OP_DIV_F_LL };
@@ -4723,7 +4729,7 @@ static o fuse(i32 from, i32 to)
 		const Ins *c = &g_code[i];
 		u8 op = c->op;
 		if (is_jump(op) && c->a >= from && c->a < to) tg[c->a - from] = 1;
-		if (op == OP_CALL || op == OP_CALL_V || op == OP_TAILCALL || op == OP_TAILCALL_V || op == OP_ASYNC || op == OP_AWAIT ||
+		if (op == OP_CALL || op == OP_CALL_V || op == OP_TAILCALL || op == OP_TAILCALL_V || op == OP_CORO_NEW ||
 		    op == OP_SLEEP || op == OP_YIELD || op == OP_CORO_STEP || op == OP_CORO_RUN)
 			tg[i + 1 - from] = 1;
 	}
