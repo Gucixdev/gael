@@ -236,7 +236,7 @@ static u8 *g_seen;      /* match: the variants an arm already covers */
 typedef enum {
 	F_START, F_CALL, F_CORO, F_RETURN, F_IF, F_WHEN, F_WHILE, F_DO, F_LET, F_SET, F_AND, F_OR, F_NOT, F_ARITH, F_CMP, F_PRINT,
 	F_CONV, F_BUILTIN, F_NEW, F_SOME, F_MATCH, F_VEC, F_VECOP, F_FOR, F_DOT, F_MAP, F_MAPOP, F_SHPIPE, F_POOL, F_ARENA,
-	F_KEEP, F_CALLV, F_LAMBDA, F_XOR, F_BITS, F_COND
+	F_KEEP, F_CALLV, F_LAMBDA, F_XOR, F_BITS, F_COND, F_ASSERT
 } Form;
 
 typedef struct {
@@ -261,7 +261,7 @@ static i32 g_nwork;
 
 /* Conditions (F_COND): the jumps a condition makes when it is false, and when it is true, waiting for their target */
 static i32 g_fjumps[MAX_WORK], g_nfjumps, g_tjumps[MAX_WORK], g_ntjumps;
-enum { CC_IF, CC_WHEN, CC_WHILE, CC_AND, CC_OR, CC_NOT, CC_NAND, CC_NOR }; /* whose words a condition's error uses */
+enum { CC_IF, CC_WHEN, CC_WHILE, CC_AND, CC_OR, CC_NOT, CC_NAND, CC_NOR, CC_ASSERT }; /* whose words a condition's error uses */
 static i32 g_unit_id; /* counts compiled units; node indices restart in each */
 
 #define NAME_FMT "%.64s"
@@ -513,7 +513,7 @@ static const char *const g_reserved[] = {
 	"nand", "nor", "xor", "xnor", "bit-and", "bit-or", "bit-xor", "bit-not", "shl", "shr",
 	"pool", "spawn", "handle", "arena", "keep", "fn", "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64",
 	"defmacro", "...", "gem", "enable", "disable", "return", "coroutine", "poll", "sleep", "yield", "step-coroutines", "run-coroutines", "done?", "coroutine-time",
-	"string-of", "name-of"
+	"string-of", "name-of", "assert"
 };
 
 
@@ -1896,6 +1896,7 @@ static o start_list(Frame *f)
 		f->k = 0;
 		return;
 	}
+	else if (!strcmp(s, "assert")) f->form = F_ASSERT;
 	else if (!strcmp(s, "coroutine")) { /* (coroutine (f args...)): the call, compiled to run in a new coroutine */
 		i32 call = f->cur, h = call >= 0 && g_nodes[call].kind == N_LIST ? first_of(call) : -1;
 		if (f->k != 1 || !is_sym(h) || (fi = find_fn(g_nodes[h].text)) < 0 || find_local(g_nodes[h].text, g_nodes[h].stamp) >= 0) {
@@ -2643,8 +2644,8 @@ static o run_work(i32 base)
 			}
 			t = pop_type(); /* a value: one jump */
 			if (t != T_BOOL && t != T_ERR) {
-				static const char *const forms[] = { "if", "when", "while", "and", "or", "not", "nand", "nor" };
-				if (f->c <= CC_WHILE) err_node(f->node, "%s: the condition is %s, it must be bool", forms[f->c], tn(t));
+				static const char *const forms[] = { "if", "when", "while", "and", "or", "not", "nand", "nor", "assert" };
+				if (f->c <= CC_WHILE || f->c == CC_ASSERT) err_node(f->node, "%s: the condition is %s, it must be bool", forms[f->c], tn(t));
 				else if (f->c == CC_NOT) err_node(f->node, "not takes a bool, this is %s", tn(t));
 				else err_node(f->node, "%s takes bool values, this one is %s%s", forms[f->c], tn(t),
 				              t == T_STR ? "; (run \"cmd\") is true when a command succeeds" : "");
@@ -2684,8 +2685,8 @@ static o run_work(i32 base)
 					f->cur = next_of(f->cur);
 					break;
 				}
-				if (is_reserved(g_nodes[name].text) || strchr(g_nodes[name].text, '.'))
-					err_node(name, NAME_FMT " cannot be a variable name", g_nodes[name].text);
+				if (strcmp(g_nodes[name].text, "_") && (is_reserved(g_nodes[name].text) || strchr(g_nodes[name].text, '.')))
+					err_node(name, NAME_FMT " cannot be a variable name", g_nodes[name].text); /* _: no name */
 				x = next_of(name);
 				f->rt = T_NONE;
 				if (sym_is(x, ":")) {
@@ -3217,6 +3218,36 @@ static o run_work(i32 base)
 			emit_ret(g_fn_ret, line);
 			g_depth = f->depth;
 			finish(T_ERR); /* it gives no value: it fits wherever it stands (what follows it never runs) */
+			break;
+
+		case F_ASSERT: /* (assert c) or (assert c "why"): when c is false, a runtime error with c's text, or with why */
+			if (f->phase == 0) {
+				i32 msg = next_of(f->cur);
+				if (f->k < 1 || f->k > 2 || (msg >= 0 && g_nodes[msg].kind != N_STR)) {
+					err_node(f->node, "assert takes a condition and a message if you like: (assert (> hp 0) \"hp went below zero\")");
+					finish(T_ERR);
+					break;
+				}
+				f->mark = g_ntjumps;
+				f->phase = 1;
+				push_cond(f->cur, 1, 1, CC_ASSERT); /* true: on, over the failure */
+				break;
+			}
+			{
+				char text[320];
+				i32 msg = next_of(f->cur);
+				size_t at;
+				if (msg >= 0) {
+					sprintf(text, "%.300s", g_nodes[msg].text);
+				} else {
+					strcpy(text, "assertion failed: ");
+					at = strlen(text);
+					nprint(g_nodes, f->cur, text, sizeof(text), &at);
+				}
+				emit(OP_FAIL, add_str(text, strlen(text)), 0, line);
+			}
+			aim_jumps(g_tjumps, &g_ntjumps, f->mark, g_ncode);
+			finish(T_UNIT);
 			break;
 
 		case F_CORO: { /* poll, sleep, yield, step-coroutines, run-coroutines, done?, coroutine-time - in g_coro_names' order */

@@ -42,6 +42,7 @@ How the entries read:
 | `arena` | memory handed back at once when the body ends | [Memory](#memory) |
 | `args` | the command line after the file | [Files and the system](#files-and-the-system) |
 | `asin` | arc sine | [Math](#math) |
+| `assert` | a runtime error when a condition is false | [Control](#control) |
 | `atan` | arc tangent | [Math](#math) |
 | `atan2` | the angle of a point (y, x) | [Math](#math) |
 | `bit-and` | the bits set in all | [Bits](#bits) |
@@ -383,6 +384,17 @@ Compile errors: `return` outside a function, inside an `arena` (let it end first
 values already worked out (`(+ 1 (return 2))`), among the fields of a struct being made by name, more than one value,
 a value in a unit function or none in another, a value of another type.
 
+### assert
+
+```
+(assert condition)
+(assert condition "what went wrong")
+```
+
+Unit. When the condition is false, the program stops with a runtime error: `assertion failed: (> hp 0)` - the
+condition as written - or the message given. It costs one test when the condition holds. Compile errors: a condition
+that is not a `bool`, a message that is not a string literal, more than two values.
+
 ### chain
 
 ```
@@ -714,7 +726,8 @@ instead. A coroutine cannot be cancelled from outside yet; one that never ends h
 A macro rewrites code before its types are checked, as Scheme's `syntax-rules`. The first rule whose pattern matches
 a use rewrites it; no match is a compile error that lists the patterns. In a pattern, the first element stands for the
 macro's name (write `_`); after it a symbol matches any one form and names it (a pattern variable), `_` matches
-anything, a keyword, a number or a string matches only itself, a list matches a list, and `...` after an element
+anything, a keyword, a number, a string or a built-in name (the `:` of `(name : type)`, `if`) matches only itself, a
+list matches a list, and `...` after an element
 matches it zero or more times - one `...` per list, with other elements allowed after it. In the template each
 pattern variable becomes a copy of what it matched, `x ...` repeats `x` once for each match of the variables in it,
 and everything else is copied as it is.
@@ -725,9 +738,9 @@ the top level, even where the use has a local of that name. A macro can be used 
 definition) and in the files that use it. At the top level it can make globals, functions, types and macros; what it
 makes with `(do ...)` there is spliced in as separate forms.
 
-Compile errors at the definition: a rule that is not `(pattern template)`, a pattern variable twice or with a built-in
-name, `...` with nothing before it or twice in a list, a variable used under fewer `...` than it was matched under, a
-`...` that repeats nothing. At a use: no rule matches, variables under one `...` that matched different numbers of
+Compile errors at the definition: a rule that is not `(pattern template)`, a pattern variable twice or with a dot in
+its name, `...` with nothing before it or twice in a list, a variable used under fewer `...` than it was matched under,
+a `...` that repeats nothing. At a use: no rule matches, variables under one `...` that matched different numbers of
 forms, a macro that keeps expanding into itself.
 
 ### string-of, name-of

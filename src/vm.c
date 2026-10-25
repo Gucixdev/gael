@@ -2504,6 +2504,7 @@ static int vm_run(i32 pc)
 			NEXT;
 		}
 		CASE(OP_CORO_TIME) s[sp++].f = g_coro_time; NEXT;
+		CASE(OP_FAIL) return vm_error(in->line, g_strs[in->a].p);
 		CASE(OP_SHOW)
 			sp -= cells((Ty)in->a);
 			g_sink = stdout;
@@ -2584,7 +2585,7 @@ static o disassemble(i32 from, i32 to)
 		}
 		if (in->op == OP_PUSH_I) printf("\t(%ld)", (long)g_ints[in->a]);
 		if (in->op == OP_PUSH_F) { g_sink = stdout; fputs("\t(", stdout); print_float(g_floats[in->a]); putchar(')'); }
-		if (in->op == OP_PUSH_S) printf("\t(\"%.40s\")", g_strs[in->a].p);
+		if (in->op == OP_PUSH_S || in->op == OP_FAIL) printf("\t(\"%.40s\")", g_strs[in->a].p);
 		if (in->op == OP_PRINT || in->op == OP_PRINTLN || in->op == OP_FORMAT) printf("\t(\"%.40s\")", g_strs[g_fmts[in->a].str].p);
 		if (in->op == OP_CALL || in->op == OP_TAILCALL || in->op == OP_CORO_NEW || in->op == OP_CLOSURE) printf("\t(%.40s)", g_fns[in->a].name);
 		if (in->op == OP_SHOW || in->op == OP_RETAIN || in->op == OP_DROP || in->op == OP_MAP_KEYS || in->op == OP_MAP_VALUES ||

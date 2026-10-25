@@ -216,6 +216,7 @@ error. A comment starts with `;`.
 | `(set x 5)`, `(set b.pos.x 3.0)` | assign to a variable or a field of one; the value must have its type |
 | `(if c then else)`, `(when c body...)`, `(while c body...)`, `(do body...)` | a condition must be a bool; `if` without `else` is unit |
 | `(return x)`, `(return)` | leave the function now, with `x` (none when it returns unit): `(when (< hp 0) (return false))` |
+| `(assert c)`, `(assert c "why")` | a runtime error when `c` is false: `assertion failed: (> hp 0)`, or the message |
 | `(and a b...)`, `(or a b...)`, `(not a)`, `(nand a b...)`, `(nor a b...)` | on bools; all but `not` stop at the first answer |
 | `(xor a b...)`, `(xnor a b...)` | true when an odd number of the bools are true, and the opposite; every one is evaluated |
 | `(+ a b...)`, `-`, `*`, `/` | numbers of one type; `(- x)` negates |

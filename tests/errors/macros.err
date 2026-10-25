@@ -1,5 +1,5 @@
 tests/errors/macros.gael:2:25: error: a is in this pattern twice
-tests/errors/macros.gael:3:23: error: if cannot be a pattern variable: it is a built-in name
+tests/errors/macros.gael:3:23: error: a.b cannot be a pattern variable: a pattern variable is a plain name
 tests/errors/macros.gael:4:24: error: ... comes right after the part of the pattern it repeats
 tests/errors/macros.gael:5:31: error: a list in a pattern can have one ...
 tests/errors/macros.gael:6:32: error: a matched a sequence (it is under ... in the pattern), so it needs ... after it here

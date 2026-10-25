@@ -234,10 +234,13 @@ static int check_pattern(i32 p)
 		s = g_nodes[c].text;
 		g_nodes[c].ival = 0;
 		if (!strcmp(s, "_")) continue;
-		if (is_reserved(s) || strchr(s, '.')) {
-			error_at(g_nodes[c].line, g_nodes[c].col, "%.64s cannot be a pattern variable: %s", s,
-			         strchr(s, '.') ? "a pattern variable is a plain name" : "it is a built-in name");
+		if (strchr(s, '.')) {
+			error_at(g_nodes[c].line, g_nodes[c].col, "%.64s cannot be a pattern variable: a pattern variable is a plain name", s);
 			return 0;
+		}
+		if (is_reserved(s)) { /* a built-in name matches only itself, like the : of (name : type) */
+			g_nodes[c].ival = -1;
+			continue;
 		}
 		{
 			i32 v;
@@ -433,6 +436,7 @@ static int match_one(i32 p, i32 x, i32 *sp)
 	const Node *pn = &g_mnodes[p], *xn = &g_nodes[x];
 	switch (pn->kind) {
 	case N_SYM:
+		if (pn->ival < 0) return xn->kind == N_SYM && !strcmp(pn->text, xn->text); /* a built-in name */
 		if (pn->ival > 0) g_binds[g_ctx[pn->ival - 1]].node = x;
 		return 1;
 	case N_KEY: return xn->kind == N_KEY && !strcmp(pn->text, xn->text);

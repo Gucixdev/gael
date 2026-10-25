@@ -1,6 +1,6 @@
 (defmacro swap ((_ a b) (let ((tmp a)) (set a b) (set b tmp))))
 (defmacro bad-dup ((_ a a) a))
-(defmacro bad-res ((_ if) 1))
+(defmacro bad-res ((_ a.b) 1))
 (defmacro bad-dots ((_ ... a) a))
 (defmacro bad-two ((_ a ... b ...) a))
 (defmacro bad-depth ((_ a ...) a))
