@@ -4,6 +4,7 @@
 # each build against:
 #   examples/NAME.gael      stdout must equal examples/NAME.out, exit 0; NAME.in is its stdin, NAME.args its arguments
 #   tests/errors/NAME.gael  every line of NAME.err must appear on stderr, exit 1; stdout must equal NAME.out if there is one
+#   tests/warnings/NAME.gael  it runs (exit 0) and stdout equals NAME.out; its warnings are exactly the lines of NAME.err
 #   (for both, NAME.env holds VAR=value words for its environment, like a smaller heap)
 #   tests/repl.in           the REPL's stdout must equal tests/repl.out, every line of tests/repl.err on stderr, and
 #                           what it saved to repldump.gael (its header lines aside, the time of each form as TIME)
@@ -88,6 +89,15 @@ for bin in "${builds[@]}"; do
 			grep -qxF -- "$line" "$out/stderr" || { ok=0; echo "  missing: $line"; }
 		done < "${f%.gael}.err"
 		grep -q 'Sanitizer\|runtime error: .*\.c:' "$out/stderr" && ok=0
+		check "$b $f" "$ok"
+	done
+	for f in tests/warnings/*.gael; do
+		ok=1
+		"$bin" "$f" > "$out/stdout" 2> "$out/stderr" || ok=0
+		cmp -s "$out/stdout" "${f%.gael}.out" || { ok=0; echo "  stdout differs"; }
+		grep ': warning: ' "$out/stderr" | sort > "$out/warnings"
+		sort "${f%.gael}.err" | cmp -s - "$out/warnings" || { ok=0; diff <(sort "${f%.gael}.err") "$out/warnings" | head -5; }
+		grep -q ': error: \|Sanitizer\|runtime error' "$out/stderr" && ok=0
 		check "$b $f" "$ok"
 	done
 	ok=1

@@ -32,10 +32,11 @@ typedef struct {
 	const char *file;
 	const char *src;
 	size_t len;
-	i32 nerrors;
+	i32 nerrors, nwarnings;
 } Unit;
 
 static Unit g_unit;
+static i32 g_nwarnings; /* every warning of the whole run: a release build refuses to go on with any */
 
 static o show_source_line(i32 line, i32 col)
 {
@@ -67,6 +68,25 @@ static o error_at(i32 line, i32 col, const char *fmt, ...)
 	vsprintf(msg, fmt, ap);
 	va_end(ap);
 	fprintf(stderr, "%s:%ld:%ld: error: %s\n", g_unit.file, (long)line, (long)col, msg);
+	show_source_line(line, col);
+}
+
+/* warning_at LINE COL FORMAT ...: "file:line:col: warning: ...", for code that runs but is almost surely a mistake. The
+ * program still runs; only a release build stops at one */
+static o warning_at(i32 line, i32 col, const char *fmt, ...)
+{
+	char msg[1024];
+	va_list ap;
+	g_unit.nwarnings++;
+	g_nwarnings++;
+	if (g_unit.nwarnings > MAX_ERRORS) {
+		if (g_unit.nwarnings == MAX_ERRORS + 1) fprintf(stderr, "%s: too many warnings, showing no more\n", g_unit.file);
+		return;
+	}
+	va_start(ap, fmt);
+	vsprintf(msg, fmt, ap);
+	va_end(ap);
+	fprintf(stderr, "%s:%ld:%ld: warning: %s\n", g_unit.file, (long)line, (long)col, msg);
 	show_source_line(line, col);
 }
 

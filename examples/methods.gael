@@ -47,7 +47,7 @@
   (println "a . b = %f, |b|^2 = %f" (a.dot b) (b.length2)))
 
 (let ((d Dir.north) (pos (Vec2)))
-  (for (i 0 5)
+  (for (_ 0 5)
     (set pos (+ pos (d.step)))
     (set d (d.turn)))                          ; a method gives a new value; set keeps it
   (println "walked to %v facing %v" pos d))

@@ -108,7 +108,7 @@ static i32 module_of(const char *path)
 static int read_source(const Source *so)
 {
 	g_unit.file = so->name;
-	g_unit.nerrors = 0;
+	g_unit.nerrors = g_unit.nwarnings = 0;
 	g_unit_arena.used = 0;
 	g_nnodes = 0;
 	if (so->src) {

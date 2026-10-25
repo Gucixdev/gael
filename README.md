@@ -92,6 +92,21 @@ tests/errors/three-errors.gael:4:6: error: set: unknown name nothing
        ^
 ```
 
+A warning is code that runs but is almost surely a mistake - a local nothing reads, a value worked out and thrown
+away, code after a `return`. gael says so and runs the program anyway; a release build will stop at one. A name that
+starts with `_` is on purpose:
+
+```
+$ ./gael tests/warnings/unreachable.gael
+tests/warnings/unreachable.gael:5:5: warning: this never runs: the return on line 4 comes first; remove it, or move it above
+      (println "never"))
+      ^
+tests/warnings/unreachable.gael:9:1: warning: this never runs: the exit on line 8 comes first; remove it, or move it above
+  (println "after the exit")
+  ^
+0 8
+```
+
 Structs are values: passing one to a function or storing it copies it, and nothing is allocated.
 
 ```lisp
@@ -432,10 +447,10 @@ tests/errors/div-zero.gael:1: runtime error: division by zero
 
 ## Status
 
-Version 0.3, tested on Linux x86-64 with gcc 13.3 and clang 18.1. `./test` passes 122 checks per build (38 examples,
-75 compile and runtime error cases, three REPL sessions, six README examples) with gcc, clang, gcc with the plain
-switch dispatch and gcc with both sanitizers, every run with `GAEL_CHECK=1`. GitHub Actions runs shellcheck on the scripts and `./test` on every push
-(`.github/workflows/test.yml`, ubuntu-24.04).
+Version 0.3, tested on Linux x86-64 with gcc 13.3 and clang 18.1. `./test` passes 126 checks per build (38 examples, 75
+compile and runtime error cases, three warning cases, three REPL sessions, seven README examples) with gcc, clang, gcc
+with the plain switch dispatch and gcc with both sanitizers, every run with `GAEL_CHECK=1`. GitHub Actions runs
+shellcheck on the scripts and `./test` on every push (`.github/workflows/test.yml`, ubuntu-24.04).
 
 Not in 0.3: versions of gems, calling C, and the editor. The fixed limits are 8 parameters per function, 65536
 functions, 65536 globals, 65536 types and 2^24 instructions; per unit (a file, or one REPL form) 2^21 syntax nodes and a

@@ -161,7 +161,13 @@ typedef struct {
 	i32 slot; /* the first of its slots in the frame */
 	u32 stamp; /* the stamp of the name that bound it: a symbol sees only locals with its own stamp (macro.c) */
 	u8 alias; /* a name for part of a value something else owns (the x of (some x)): never released by itself */
+	u8 kind;  /* LK_LET, LK_FOR, LK_SOME, LK_PARAM: what the warning about an unused one suggests */
+	u8 used;  /* read in its scope; a set alone does not count. A parameter counts as used */
+	u8 set;   /* given a new value by set */
+	i32 node; /* the name that bound it, -1 for none */
+	i32 errs; /* the unit's errors when it was bound: one reported since may have hidden a use */
 } Local;
+enum { LK_LET, LK_FOR, LK_SOME, LK_PARAM };
 
 /* a print's format: the string and the type of each value, so the VM can print values of any size */
 typedef struct {
@@ -268,6 +274,16 @@ static o err_node(i32 n, const char *fmt, ...)
 	vsprintf(msg, fmt, ap);
 	va_end(ap);
 	error_at(g_nodes[n].line, g_nodes[n].col, "%s", msg);
+}
+
+static o warn_node(i32 n, const char *fmt, ...)
+{
+	char msg[900];
+	va_list ap;
+	va_start(ap, fmt);
+	vsprintf(msg, fmt, ap);
+	va_end(ap);
+	warning_at(g_nodes[n].line, g_nodes[n].col, "%s", msg);
 }
 
 /* where FILE LINE: "line 3" in the file being compiled, "lib.gael:3" in another one */
@@ -1042,15 +1058,43 @@ static i32 new_slots(i32 n)
 	return s;
 }
 
-static o add_local(const char *name, u32 stamp, Ty type, i32 slot)
+/* add_local NODE KIND NAME STAMP TYPE SLOT: a local bound by the name NODE (-1: none) */
+static o add_local(i32 node, u8 kind, const char *name, u32 stamp, Ty type, i32 slot)
 {
+	Local *lc;
 	if (g_nlocals == MAX_LOCALS) die("too many local names in scope (MAX_LOCALS)");
-	g_locals[g_nlocals].name = name;
-	g_locals[g_nlocals].type = type;
-	g_locals[g_nlocals].slot = slot;
-	g_locals[g_nlocals].stamp = stamp;
-	g_locals[g_nlocals].alias = 0;
-	g_nlocals++;
+	lc = &g_locals[g_nlocals++];
+	lc->name = name;
+	lc->type = type;
+	lc->slot = slot;
+	lc->stamp = stamp;
+	lc->alias = 0;
+	lc->kind = kind;
+	lc->used = kind == LK_PARAM;
+	lc->set = 0;
+	lc->node = node;
+	lc->errs = g_unit.nerrors;
+}
+
+/* locals_end MARK: the scope of the locals from MARK on ends. One that was never read is a warning, unless its name
+ * starts with _, a macro made it, or an error since it was bound may have hidden its use */
+static o locals_end(i32 mark)
+{
+	i32 i;
+	for (i = mark; i < g_nlocals; i++) {
+		const Local *lc = &g_locals[i];
+		const char *s = lc->name;
+		if (lc->used || lc->node < 0 || lc->stamp || !s[0] || s[0] == '_' || lc->errs != g_unit.nerrors) continue;
+		if (lc->kind == LK_FOR)
+			warn_node(lc->node, NAME_FMT " is never used; write _ in its place when only the repeating matters, like (for (_ 0 3) ...)", s);
+		else if (lc->kind == LK_SOME)
+			warn_node(lc->node, NAME_FMT " is never used; write (some _) when only the some matters", s);
+		else if (lc->set)
+			warn_node(lc->node, NAME_FMT " is given values but never read; remove it, or call it _" NAME_FMT " if it must be there", s, s);
+		else
+			warn_node(lc->node, NAME_FMT " is never used; remove it, or call it _" NAME_FMT " if it must be there", s, s);
+	}
+	g_nlocals = mark;
 }
 
 /* the function being compiled: its first work frame (-1 at the top level) and its return type */
@@ -1171,6 +1215,50 @@ static o finish(Ty t)
 	push_type(t);
 	g_nwork--;
 }
+
+/* pure_form NODE: the form only works out a value - a name, a literal, arithmetic, a comparison, a read - so when its
+ * value is thrown away it did nothing. A call of a function may do something, so it is never pure (as in Go) */
+static int pure_form(i32 n)
+{
+	static const char *const pure[] = {
+		"+", "-", "*", "/", "%", "<", "<=", ">", ">=", "=", "!=", "bit-and", "bit-or", "bit-xor", "bit-not", "shl", "shr", "int", "float", "i8", "i16", "i32", "i64", "u8", "u16",
+		"u32", "u64", "f32", "f64", "len", "get", "lookup", "has", "some", "format", "keys", "values", "vec", "map", ".",
+		"fn", "done?", "coroutine-time", "parse-int", "parse-float", "substr", "byte", "find", "split", "join", "char",
+		"trim", "getenv", "env", "args", "sqrt", "sin", "cos", "tan", "asin", "acos", "atan", "exp", "ln", "floor",
+		"ceil", "atan2", "pow"
+	};
+	static const char *const logic[] = { "and", "or", "not", "nand", "nor", "xor", "xnor" };
+	size_t k;
+	i32 head, x;
+	if (n < 0 || g_nodes[n].stamp) return 0; /* a macro wrote it: not the program's mistake */
+	if (g_nodes[n].kind != N_LIST) return 1;
+	head = first_of(n);
+	if (!is_sym(head)) return 0;
+	for (k = 0; k < GAEL_COUNT(logic); k++) { /* (and (run "a") (run "b")) runs b when a succeeds, as bash's && does */
+		if (strcmp(g_nodes[head].text, logic[k])) continue;
+		for (x = next_of(head); x >= 0; x = next_of(x)) {
+			if (!pure_form(x)) return 0;
+		}
+		return 1;
+	}
+	for (k = 0; k < GAEL_COUNT(pure); k++) {
+		if (!strcmp(g_nodes[head].text, pure[k])) return 1;
+	}
+	return 0;
+}
+
+/* thrown_away NODE: the warning for a pure form whose value nothing takes */
+static o thrown_away(i32 n)
+{
+	char text[56];
+	size_t at = 0;
+	nprint(g_nodes, n, text, sizeof(text), &at);
+	if (at == sizeof(text) - 1) strcpy(text + sizeof(text) - 5, "...");
+	warn_node(n, "the value of %s is thrown away; use it, or remove it", text);
+}
+
+/* ends_flow NODE: nothing after this form in a body runs - it returns, or it ends the program */
+static int ends_flow(i32 n) { return head_is(n, "return") || head_is(n, "exit"); }
 
 static i32 line_of(Frame *f) { return f->node >= 0 ? g_nodes[f->node].line : (f->cur >= 0 ? g_nodes[f->cur].line : 0); }
 
@@ -1384,6 +1472,7 @@ static i32 capture(const char *name, u32 stamp)
 		}
 		if (i >= g_lambdas[lv].floor) {
 			c = cap_add(lv, name, stamp, g_locals[i].type, 0, g_locals[i].slot);
+			g_locals[i].used = 1; /* the closure copies it */
 			break;
 		}
 	}
@@ -1392,8 +1481,10 @@ static i32 capture(const char *name, u32 stamp)
 	return c;
 }
 
+static int g_place_set; /* resolve_place is finding the target of a set: not a read of the variable */
+
 /* resolve_place NODE PLACE: where a variable or a field path like v.pos.x lives, and its type. 1 when found, 0 after
- * an error it reported, -1 when the first part is not a variable */
+ * an error it reported, -1 when the first part is not a variable. Finding a local counts as reading it, but for set */
 static int resolve_place(i32 n, Place *pl)
 {
 	const char *s = g_nodes[n].text, *dot = strchr(s, '.');
@@ -1407,6 +1498,8 @@ static int resolve_place(i32 n, Place *pl)
 		pl->where = AT_LOCAL;
 		pl->at = g_locals[i].slot;
 		pl->type = g_locals[i].type;
+		if (g_place_set) g_locals[i].set = 1;
+		else g_locals[i].used = 1;
 	} else if ((i = capture(base, g_nodes[n].stamp)) >= 0) { /* a local of the code around: the closure keeps it */
 		const Capture *cp = &g_lambdas[g_nlambdas - 1].caps[i];
 		pl->where = AT_ENV;
@@ -1505,7 +1598,7 @@ static o compile_atom(i32 n, Ty want)
 		return;
 	}
 	if (!strcmp(s, "_")) {
-		err_node(n, "_ means \"anything\" only as a match pattern");
+		err_node(n, "_ stands for no name - a match pattern, or the variable of a for that only repeats - so it cannot be read");
 		push_type(T_ERR);
 		return;
 	}
@@ -2221,7 +2314,7 @@ static o start_arm(Frame *f)
 	if (shaped && is_option(t) && head_is(p, "some")) {
 		i32 name = next_of(first_of(p));
 		if (is_sym(name) && strcmp(g_nodes[name].text, "_")) {
-			add_local(g_nodes[name].text, g_nodes[name].stamp, g_tys[t].elem, f->a + 1);
+			add_local(name, LK_SOME, g_nodes[name].text, g_nodes[name].stamp, g_tys[t].elem, f->a + 1);
 			g_locals[g_nlocals - 1].alias = 1; /* the match holds the value */
 		}
 	}
@@ -2304,9 +2397,10 @@ static int lambda_begin(Frame *f)
 	g_slots = g_maxslots = 0;
 	g_depth = g_maxdepth = 0;
 	g_local_floor = g_nlocals; /* the locals around it belong to another frame: what it uses of them, its closure keeps */
-	add_local("", 0, intern_fn(g_fns[fi].params, g_fns[fi].nparams, g_fns[fi].ret), new_slots(1)); /* the closure, no name */
+	add_local(-1, LK_PARAM, "", 0, intern_fn(g_fns[fi].params, g_fns[fi].nparams, g_fns[fi].ret), new_slots(1)); /* the closure */
 	for (p = first_of(params), k = 0; p >= 0; p = next_of(p), k++)
-		add_local(g_nodes[first_of(p)].text, g_nodes[first_of(p)].stamp, g_fns[fi].params[k], new_slots(cells(g_fns[fi].params[k])));
+		add_local(first_of(p), LK_PARAM, g_nodes[first_of(p)].text, g_nodes[first_of(p)].stamp, g_fns[fi].params[k],
+		          new_slots(cells(g_fns[fi].params[k])));
 	f->phase = 1;
 	push_body(body, 1, g_fns[fi].ret);
 	g_work[g_nwork - 1].tail = 1;
@@ -2398,19 +2492,25 @@ static o run_work(i32 base)
 		}
 
 		switch (f->form) {
-		case F_DO:
+		case F_DO: /* f->k: the unit's errors when the form now compiling began */
 			if (f->phase == 0) {
 				if (f->cur < 0) { finish(T_UNIT); break; }
 				f->phase = 1;
+				f->k = g_unit.nerrors;
 				push_child(f->cur, next_of(f->cur) < 0 && f->keep ? f->want : (Ty)T_UNIT);
 				if (next_of(f->cur) < 0) g_work[g_nwork - 1].tail = f->tail;
 				break;
 			}
 			t = pop_type();
 			if (next_of(f->cur) < 0 && f->keep) { finish(t); break; }
+			if (t != T_UNIT && t != T_ERR && f->k == g_unit.nerrors && pure_form(f->cur)) thrown_away(f->cur);
 			emit_pop(t, g_nodes[f->cur].line);
 			if (next_of(f->cur) < 0) { finish(T_UNIT); break; }
+			if (ends_flow(f->cur) && !g_nodes[f->cur].stamp)
+				warn_node(next_of(f->cur), "this never runs: the %s on line %ld comes first; remove it, or move it above",
+				          head_is(f->cur, "exit") ? "exit" : "return", (long)g_nodes[f->cur].line);
 			f->cur = next_of(f->cur);
+			f->k = g_unit.nerrors;
 			push_child(f->cur, next_of(f->cur) < 0 && f->keep ? f->want : (Ty)T_UNIT);
 			if (next_of(f->cur) < 0) g_work[g_nwork - 1].tail = f->tail; /* without keep too: a unit call can end it */
 			break;
@@ -2613,7 +2713,7 @@ static o run_work(i32 base)
 				if (type == T_UNIT) err_node(f->a, NAME_FMT " would hold no value (unit)", name);
 				i = new_slots(cells(type));
 				emit_store(0, i, type, g_nodes[f->a].line);
-				add_local(name, g_nodes[f->a].stamp, type, i);
+				add_local(f->a, LK_LET, name, g_nodes[f->a].stamp, type, i);
 				f->cur = next_of(f->cur);
 				f->phase = 1;
 				break;
@@ -2621,7 +2721,7 @@ static o run_work(i32 base)
 			default:
 				t = pop_type();
 				for (i = g_nlocals - 1; i >= f->mark; i--) emit_release(0, g_locals[i].slot, g_locals[i].type, line);
-				g_nlocals = f->mark;
+				locals_end(f->mark);
 				g_slots = f->mark2;
 				finish(t);
 				break;
@@ -2639,7 +2739,9 @@ static o run_work(i32 base)
 				pl.where = AT_LOCAL;
 				pl.at = 0;
 				pl.type = T_ERR;
+				g_place_set = 1;
 				f->c = resolve_place(f->cur, &pl);
+				g_place_set = 0;
 				if (f->c < 0) err_node(f->cur, "set: unknown name " NAME_FMT, g_nodes[f->cur].text);
 				f->rt = f->c > 0 ? pl.type : (Ty)T_ERR;
 				f->op = (u8)pl.where;
@@ -3251,6 +3353,7 @@ static o run_work(i32 base)
 				start_arm(f);
 				break;
 			default: /* an arm's body is done */
+				locals_end(f->mark); /* the x of its (some x) */
 				t = pop_type();
 				if (f->want == T_UNIT) {
 					emit_pop(t, line);
@@ -3422,8 +3525,8 @@ static o run_work(i32 base)
 					finish(T_ERR);
 					break;
 				}
-				if (is_reserved(g_nodes[name].text) || strchr(g_nodes[name].text, '.'))
-					err_node(name, NAME_FMT " cannot be a variable name", g_nodes[name].text);
+				if (strcmp(g_nodes[name].text, "_") && (is_reserved(g_nodes[name].text) || strchr(g_nodes[name].text, '.')))
+					err_node(name, NAME_FMT " cannot be a variable name", g_nodes[name].text); /* _: no name, it only repeats */
 				f->op = (u8)(next_of(from) >= 0); /* 1: a range */
 				f->mark = g_nlocals;
 				f->mark2 = g_slots;
@@ -3459,7 +3562,7 @@ static o run_work(i32 base)
 					emit(OP_PUSH_I, add_int(0), 0, line);
 					emit(OP_GE_I, 0, 0, line);
 					f->b = emit(OP_JF, -1, 0, line);
-					add_local(g_nodes[name].text, g_nodes[name].stamp, f->rt, f->a + 2);
+					add_local(name, LK_FOR, g_nodes[name].text, g_nodes[name].stamp, f->rt, f->a + 2);
 					f->phase = 3;
 					push_body(next_of(b), 0, T_UNIT);
 					break;
@@ -3490,7 +3593,7 @@ static o run_work(i32 base)
 						emit(OP_LOAD_L, idx, 0, line);
 						emit(OP_CALL, fg, 0, line);
 						emit_store(0, idx + 1, f->rt, line);
-						add_local(g_nodes[name].text, g_nodes[name].stamp, f->rt, idx + 1);
+						add_local(name, LK_FOR, g_nodes[name].text, g_nodes[name].stamp, f->rt, idx + 1);
 						f->phase = 3;
 						push_body(next_of(b), 0, T_UNIT);
 						break;
@@ -3522,7 +3625,7 @@ static o run_work(i32 base)
 				emit(OP_LOAD_L, f->a + 1, 0, line);
 				emit(OP_VEC_GET, cells(f->rt), 1, line);
 				emit_store(0, f->a + 2, f->rt, line);
-				add_local(g_nodes[name].text, g_nodes[name].stamp, f->rt, f->a + 2);
+				add_local(name, LK_FOR, g_nodes[name].text, g_nodes[name].stamp, f->rt, f->a + 2);
 				f->phase = 3;
 				push_body(next_of(b), 0, T_UNIT);
 				break;
@@ -3537,7 +3640,7 @@ static o run_work(i32 base)
 				emit(OP_LOAD_L, f->a + 1, 0, line);
 				emit(OP_LT_I, 0, 0, line);
 				f->b = emit(OP_JF, -1, 0, line);
-				add_local(g_nodes[name].text, g_nodes[name].stamp, T_INT, f->a);
+				add_local(name, LK_FOR, g_nodes[name].text, g_nodes[name].stamp, T_INT, f->a);
 				f->phase = 3;
 				push_body(next_of(f->cur), 0, T_UNIT);
 				break;
@@ -3550,7 +3653,7 @@ static o run_work(i32 base)
 				emit(OP_JMP, f->c, 0, line);
 				patch(f->b, g_ncode);
 				if (f->op != 1) emit_release(0, f->a, f->res, line); /* the vec, the pool, the struct */
-				g_nlocals = f->mark;
+				locals_end(f->mark);
 				g_slots = f->mark2;
 				finish(T_UNIT);
 				break;
@@ -4216,7 +4319,8 @@ static o fn_body(i32 fi, i32 params, i32 body, i32 at, const char *field)
 	g_depth = g_maxdepth = 0;
 	g_local_floor = g_nlocals; /* the top level's locals live in another frame */
 	for (p = params >= 0 ? first_of(params) : -1; p >= 0; p = next_of(p), k++)
-		add_local(g_nodes[first_of(p)].text, g_nodes[first_of(p)].stamp, g_fns[fi].params[k], new_slots(cells(g_fns[fi].params[k])));
+		add_local(first_of(p), LK_PARAM, g_nodes[first_of(p)].text, g_nodes[first_of(p)].stamp, g_fns[fi].params[k],
+		          new_slots(cells(g_fns[fi].params[k])));
 	rt = g_fns[fi].ret;
 	push_body(body, 1, rt);
 	g_work[g_nwork - 1].tail = 1;
@@ -4698,7 +4802,7 @@ static struct {
  * of the unit stays). In the REPL the value of the last form is shown. */
 static i32 compile_unit(i32 top, int repl)
 {
-	i32 n, entry, i;
+	i32 n, entry, i, ended = 0; /* ended: the line of an (exit ...) at the top level; what runs after it never does */
 	int exported = 0; /* an @export was just read */
 	Ty t;
 	g_snap.ncode = g_ncode;
@@ -4760,6 +4864,11 @@ static i32 compile_unit(i32 top, int repl)
 			continue;
 		}
 		if (head_is(n, "defn")) { compile_fn(n); continue; }
+		if (ended > 0 && (head_is(n, "def") || !(head_is(n, "struct") || head_is(n, "enum") || head_is(n, "defmacro") ||
+		    head_is(n, "gem") || head_is(n, "enable") || head_is(n, "disable") || head_is(n, "use")))) {
+			warn_node(n, "this never runs: the exit on line %ld comes first; remove it, or move it above", (long)ended);
+			ended = -1; /* once */
+		}
 		if (head_is(n, "def")) { compile_def(n, repl, exported); exported = 0; continue; }
 		if (head_is(n, "struct")) { compile_defaults(n); continue; }
 		if (head_is(n, "enum") || head_is(n, "defmacro")) continue;
@@ -4776,10 +4885,15 @@ static i32 compile_unit(i32 top, int repl)
 			if (arg < 0 || g_nodes[arg].kind != N_STR || next_of(arg) >= 0) err_node(n, "use takes one file name: (use \"lib.gael\")");
 			continue;
 		}
+		i = g_unit.nerrors;
 		compile_expr(n, shown ? (Ty)T_NONE : (Ty)T_UNIT);
 		t = pop_type();
 		if (shown && t != T_UNIT && t != T_ERR) emit(OP_SHOW, t, 0, g_nodes[n].line);
-		else emit_pop(t, g_nodes[n].line);
+		else {
+			if (t != T_UNIT && t != T_ERR && i == g_unit.nerrors && pure_form(n)) thrown_away(n);
+			emit_pop(t, g_nodes[n].line);
+		}
+		if (!ended && head_is(n, "exit") && !g_nodes[n].stamp) ended = g_nodes[n].line;
 	}
 	emit(OP_HALT, 0, 0, 0);
 	g_code[entry].a = g_maxslots;

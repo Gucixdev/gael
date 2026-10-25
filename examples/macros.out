@@ -7,7 +7,7 @@ one: 1
 three: 3
 none: 0
 clicks: 2
-halve: 21
+halve: 21, half here: 1000
 bump: 2
 reset: true new
 countdown: 0

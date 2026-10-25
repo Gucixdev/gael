@@ -35,7 +35,7 @@ How the entries read:
 | `>` | greater than | [Comparing](#comparing) |
 | `>=` | greater than or equal | [Comparing](#comparing) |
 | `NodePath` | the type of `$Player/Sprite` | [Types](#types) |
-| `_` | matches anything: `match` arms, macro patterns | [match](#match), [Macros](#macros) |
+| `_` | no name: matches anything in `match` arms and macro patterns; a `for` that only repeats | [match](#match), [for](#for), [Macros](#macros) |
 | `acos` | arc cosine | [Math](#math) |
 | `and` | all true, stops at the first false | [Logic](#logic) |
 | `append-file` | add text to the end of a file | [Files and the system](#files-and-the-system) |
@@ -329,8 +329,9 @@ runs it while the condition is true. Both are unit.
 (for (x s) body...)            ; a struct or an enum with len and get: (get s 0), (get s 1)... up to (len s)
 ```
 
-Unit. `x`, `k`, `h` and `i` are locals of the body. Compile errors: not one of these shapes, a range end or start that
-is not an int, something else to go over ([Methods and hooks](#methods-and-hooks)).
+Unit. `x`, `k`, `h` and `i` are locals of the body; `_` in their place gives no name, for a loop that only repeats:
+`(for (_ 0 3) (println "hi"))`. Compile errors: not one of these shapes, a range end or start that is not an int,
+something else to go over ([Methods and hooks](#methods-and-hooks)).
 
 ### match
 
@@ -779,6 +780,23 @@ Compile errors: no such gem; a requirement that no gem provides; gems that requi
 provide the same thing (`gems ecs-archetype and ecs-sparse both provide ecs; turn on one of them`); a gem that excludes
 another one that is on; a manifest that is not first, names another gem, or has an unknown key; a file of one gem used
 by another; a gem using a name of a gem it does not require; disabling a gem another gem on needs; `enable` in a gem.
+
+## Warnings
+
+A warning is code that runs but is almost surely a mistake. The program still runs, and stderr gets
+`FILE:LINE:COL: warning: MESSAGE` with the source line under it, like an error. The set is fixed, with no flags to
+turn one on or off; a release build will stop at any of them.
+
+| message | |
+|---|---|
+| `x is never used; remove it, or call it _x if it must be there` | a `let` binding nothing reads; `x is given values but never read` when only `set` writes it |
+| `i is never used; write _ in its place when only the repeating matters, like (for (_ 0 3) ...)` | the variable of a `for` |
+| `x is never used; write (some _) when only the some matters` | the `x` of a `(some x)` pattern |
+| `the value of (+ x 1) is thrown away; use it, or remove it` | a value worked out and dropped: a name, a literal, arithmetic, a comparison, a read such as `get` or `len`. A call is not one, since it may do something, nor an `and` or an `or` of commands, which run as bash's `&&` and `\|\|` |
+| `this never runs: the return on line N comes first; remove it, or move it above` | forms after a `return` in the same body, or after an `exit` |
+
+Never warned about: a name that starts with `_`, a parameter (a hook or a callback has a fixed shape), what a macro
+writes, and a form whose own compile error was reported.
 
 ## Runtime errors
 

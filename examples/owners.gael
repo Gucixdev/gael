@@ -46,7 +46,7 @@
     ("pet-7" (println "seven"))
     (_ (println "other"))))
 
-; vecs: put, pop, get, a vec of structs, values left in a dropped expression
+; vecs: put, pop, get, a vec of structs
 (let ((v (vec (named 8) (named 9) (named 10))) (pets : (vec Pet) (vec)))
   (put v 0 (format "%s+" (get v 0)))
   (match (pop v)
@@ -57,8 +57,6 @@
   (put pets 0 (rename (get pets 0) (named 110)))
   (println "%v" v)
   (println "%s %s" (. (get pets 0) name) (longest (. (get pets 1) tags)))
-  (get v 1)
-  (when true (get v 0))
   (if (> (len v) 0) (println "kept %d" (len v))))
 
 ; maps: new values for a key, lookups, removals, keys and values, a for over the keys

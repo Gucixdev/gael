@@ -16,7 +16,7 @@
   "nobody")
 
 (defn valid? ((hp : int)) : bool
-  (let ((label (format "hp %d" hp)))
+  (let ((_label (format "hp %d" hp)))           ; made only for the returns to let go of
     (when (< hp 0) (return false))
     (if (> hp 100) (return false) true)))
 

@@ -14,8 +14,6 @@
                     (set bad (+ bad 1))
                     (println "%s: value %b %s, condition %b %s" name v vlog c clog))))))
 (defn try-all ((a : bool) (b : bool) (c : bool))
-  (let ((A (if a (t "a") (f "a"))) (B (if b (t "b") (f "b"))))
-    (set log (vec)))
   (same "and" (and (if a (t "a") (f "a")) (if b (t "b") (f "b"))))
   (same "or" (or (if a (t "a") (f "a")) (if b (t "b") (f "b"))))
   (same "not and" (not (and (if a (t "a") (f "a")) (if b (t "b") (f "b")))))

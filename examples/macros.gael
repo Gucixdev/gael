@@ -53,7 +53,7 @@
 (click!)
 (println "clicks: %d" clicks)
 (let ((half 1000))                             ; a local named like the function the macro calls
-  (println "halve: %d" (halve 42)))
+  (println "halve: %d, half here: %d" (halve 42) half))
 (let ((n 1))
   (bump n)
   (println "bump: %d" n))
