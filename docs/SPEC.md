@@ -28,6 +28,10 @@ Z notatek: "najpierw język, potem edytor", "edytor emacslike w samym gaelu, dod
 
 ## Kierunek (2026-10-25)
 
+**Filozofia, jego słowami:** tyle abstrakcji, co w Go, wolność Ziga, ale abstrakcje mają być spójne i dobrze działać
+razem. Więcej przez mniej: nowa rzecz musi pasować do reszty, zamiast dokładać drugi sposób na to samo - haki to
+zwykłe funkcje `Typ.nazwa`, generyki będą zwykłymi funkcjami z typem w miejscu typu, x-makra to zwykłe makra.
+
 Z braindumpu z 2026-10-25 i trzech wiadomości po nim („język do gier wydajniejszy od GDScriptu”, „edytor jak Emacs,
 nazwijmy go artemacs: vectormode, rastermode, nawet 3D”, „gemy bardziej jak w Emacsie niż w Rubym”). Propozycja do
 potwierdzenia:
@@ -49,6 +53,18 @@ potwierdzenia:
   ma kompilator C; wywołanie funkcji z C to wywołanie w C (FFI bez narzutu - albo żadnego, jak chce braindump); kod
   maszynowy zamiast bytecode'u Godota utrudnia reverse engineering; bez LLVM, libgccjit i Cranelifta. VM zostaje do
   REPL-a i podmiany na żywo, gra wychodzi natywnie.
+- **Wydajność jak C/Rust/C++, bez ich bólu głowy (2026-10-25, jego słowa):** cel to kod natywny na poziomie C, bez
+  undefined behavior i z aliasowaniem, które kompilator zna. Bez UB już jest: int się zawija, dzielenie przez zero,
+  indeks poza vecem i przesunięcie poza zakres to błędy czasu działania, wiszącej referencji nie ma (liczniki, uchwyty
+  z generacją, kontrola aren). Aliasowanie: struct to wartość, więc dwie zmienne nigdy nie dzielą pól; vec i mapa to
+  referencje, a kompilator wie, gdzie która jest - z tym gael → C może pisać `restrict` tam, gdzie wolno, zamiast
+  zgadywać jak kompilator C. Ownership (owned/borrowed/shared) opcjonalnie dołoży resztę gwarancji. Generowany C też
+  bez UB: arytmetyka bez znaku tam, gdzie gael się zawija, sprawdzenia, które kompilator może wyciąć, gdy udowodni.
+- **Pomiar (2026-10-25, `./bench`, wyniki w `benchmarks/RESULTS.md`):** VM gaela jest szybszy od samego GDScriptu
+  (Godot 4.7.2) na wszystkich sześciu programach (1,1-6,5 raza) i od Pythona na pięciu; Lua 5.4 (VM na rejestrach) jest
+  1,2-3,9 raza szybsza od gaela, C 8-47 razy. Start 1,6 ms (C 1,4, Godot 0,9 s). Do poprawy: bool w vecu zajmuje 8 bajtów
+  (sito: 104 MB, C 6 MB). Z tego: VM da się przyspieszyć (rejestry zamiast stosu, jak Lua), ale do C dojdzie się tylko
+  przez gael → C.
 - **`@` = dla narzędzi, nie dla programu:** adnotacje, które nie wychodzą poza edytor i build deweloperski (`@export`,
   później `@debug`, `@test`); build wydania je pomija.
 - **Kolejność, język najpierw:** zmiana nazw zadań na korutyny; `gael -m` (macroexpand - przejrzystość makr);

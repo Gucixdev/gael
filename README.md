@@ -17,10 +17,14 @@ You need bash and a C compiler that accepts C89 (gcc or clang).
 ./gael                      # the REPL
 ./run examples/fib.gael     # rebuild when a source changed, then run with these arguments
 ./test                      # the examples, the error cases and a REPL session, on every build
+./bench                     # time gael against other languages on the same programs
 ```
 
 `./test` builds with gcc and with clang (`-std=c89 -pedantic -Wall -Wextra -Werror`), and once more with
-AddressSanitizer and UndefinedBehaviorSanitizer when one of the compilers has their runtime installed.
+AddressSanitizer and UndefinedBehaviorSanitizer when one of the compilers has their runtime installed. `./bench` runs
+the programs in `benchmarks/` (function calls, a tight loop, a sieve, n-body, particles, a hash map, and an empty
+program for the start) in gael and in each of C, Python, Lua, LuaJIT, Guile, Chez Scheme, Chicken, SBCL, Node and
+GDScript that is installed, checks that they print the same, and appends the medians to `benchmarks/RESULTS.md`.
 
 Command line:
 
