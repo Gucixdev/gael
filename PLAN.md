@@ -72,8 +72,8 @@ dokumentacja mieści się w kontekście.
       `i32`, `u32`), pola elementu, wartości spoza jako stałe kernela, matematyka, `if` `let` `set`, bez alokacji,
       zapis tylko do swojego elementu. Bez karty (albo bez wgpu) to samo na VM, z tym samym wynikiem (`bd45dda`).
 - [x] Emiter WGSL z drzewa po kontroli typów (`gael -g`); kolumny vec-a (SoA) jako osobne bufory, bez przepakowywania.
-- [ ] Na GPU te same błędy co na VM: dzielenie inta przez zero, float za duży na int, przesunięcie poza bity - kernel
-      zapisuje znacznik, gael zgłasza błąd z linią (dziś WGSL daje wynik, a VM błąd).
+- [x] Na GPU te same błędy co na VM: dzielenie inta przez zero, float za duży na int, przesunięcie poza bity - kernel
+      zapisuje znacznik, nic nie wraca, VM powtarza pętlę i zgłasza błąd z linią (`01c2255`).
 - [ ] Dane, które zostają na karcie między klatkami, żeby nie kopiować co klatkę.
 - [ ] Okno i klatka na Waylandzie (powierzchnia wgpu z `wl_surface`); wierzchołki i fragmenty pisane w gaelu.
 - [ ] Android, Apple (Metal przez wgpu), przeglądarka (WASM i WebGPU, ten sam WGSL).

@@ -532,7 +532,7 @@ tests/errors/div-zero.gael:1: runtime error: division by zero
 
 ## Status
 
-Version 0.3, tested on Linux x86-64 with gcc 13.3 and clang 18.1. `./test` passes 155 checks per build (44 examples, 82
+Version 0.3, tested on Linux x86-64 with gcc 13.3 and clang 18.1. `./test` passes 157 checks per build (44 examples, 83
 compile and runtime error cases, three warning cases, four gael test cases, the tests of each of the ten gems that come
 with gael, one WGSL case, three REPL sessions, nine README examples), the C89 mirror of WebGPU's structs against
 `webgpu.h`, and with `GAEL_WGPU` set the GPU runs of `gpu-each` (tested on Mesa's lavapipe, Vulkan on the CPU)
