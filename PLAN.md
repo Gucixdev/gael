@@ -40,7 +40,8 @@ dokumentacja mieści się w kontekście.
 - [ ] Przegląd wszystkich komunikatów: plik:linia:kolumna, co jest źle, poprawna forma.
 - [x] Ściąga dla modeli `docs/MODELS.md` (~2,5 tys. tokenów, `gael doc` ją drukuje); test pilnuje, że jest w niej
       każda nazwa z `gael -n` i że ma mniej niż 16 KB.
-- [ ] Skill `gael` w claude-config.
+- [x] Skill `gael` w claude-config (`ed4a92f` tam): pętla check-fix-test, pułapki, gdzie idzie kod, co sprawdza
+      `./test`, jego decyzje.
 - [x] `gael -m`: plik z rozwiniętymi makrami (także w funkcjach), ułożony do czytania - to, co sprawdza kompilator.
 - [x] Metoda na wartości wyrażenia: `((Vec3 1.0 0.0 0.0).cross b)` jak `(v.cross b)` - pisałem to sam, więc model też
       napisze; bez nawiasów `(expr).cross` błąd mówi, że to funkcja i jak ją wywołać.
