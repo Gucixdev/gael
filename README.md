@@ -31,10 +31,14 @@ Command line:
 ```
 gael                   the REPL
 gael FILE ARGS...      compile FILE; when there are no errors, run it; (args) gives it ARGS
-gael -c FILE           only compile: report every type error, run nothing
+gael run FILE ARGS...  the same
+gael check FILE        only compile: report every error and warning, run nothing (also gael -c)
+gael test FILE...      compile the files, run their defs (not the rest of their top level), then each
+                       (@test "name" ...) in them: ok or FAIL for each; exit 1 when one failed
 gael -d FILE           compile and print the bytecode
 gael -e CODE ARGS...   compile and run CODE
-gael -x FILE           compile FILE and list its @export globals: name : type = value
+gael -x FILE           compile FILE and list its @export globals (name : type = value) and its
+                       (@warn ...) and (@err ...) marks, the way an editor shows them
 gael -h                this help
 GAEL_HEAP=SIZE  the heap for strings, vecs, maps and pools, and as much again for arenas and for the program's
                 own text (default 1G; K, M, G; the system gives pages only where they are written)
@@ -105,6 +109,20 @@ tests/warnings/unreachable.gael:9:1: warning: this never runs: the exit on line 
   (println "after the exit")
   ^
 0 8
+```
+
+Tests sit next to the code they test: `(@test "name" body...)` at the top level, with `assert` inside. `gael FILE`
+runs the program and leaves the tests be; `gael test FILE` runs the defs, then each test in a run of its own, so a
+failing one stops only itself. Everything that starts with `@` is for the tools and for while you work on the program
+- `(@warn "...")` and `(@err "...")` are marks an editor shows at their line, `(@debug ...)` is code for while
+working - and a release build leaves it all out:
+
+```
+$ ./gael test examples/testing.gael
+ok clamp keeps a value inside
+ok clamp cuts both ends
+ok words counts the words
+3 passed, 0 failed
 ```
 
 Structs are values: passing one to a function or storing it copies it, and nothing is allocated.
@@ -472,10 +490,10 @@ tests/errors/div-zero.gael:1: runtime error: division by zero
 
 ## Status
 
-Version 0.3, tested on Linux x86-64 with gcc 13.3 and clang 18.1. `./test` passes 134 checks per build (42 examples, 79
-compile and runtime error cases, three warning cases, three REPL sessions, seven README examples) with gcc, clang, gcc
-with the plain switch dispatch and gcc with both sanitizers, every run with `GAEL_CHECK=1`. GitHub Actions runs
-shellcheck on the scripts and `./test` on every push (`.github/workflows/test.yml`, ubuntu-24.04).
+Version 0.3, tested on Linux x86-64 with gcc 13.3 and clang 18.1. `./test` passes 137 checks per build (43 examples, 79
+compile and runtime error cases, three warning cases, one gael test case, three REPL sessions, eight README examples)
+with gcc, clang, gcc with the plain switch dispatch and gcc with both sanitizers, every run with `GAEL_CHECK=1`. GitHub
+Actions runs shellcheck on the scripts and `./test` on every push (`.github/workflows/test.yml`, ubuntu-24.04).
 
 Not in 0.3: versions of gems, calling C, and the editor. The fixed limits are 8 parameters per function, 65536
 functions, 65536 globals, 65536 types and 2^24 instructions; per unit (a file, or one REPL form) 2^21 syntax nodes and a

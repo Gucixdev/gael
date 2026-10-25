@@ -165,6 +165,23 @@ static const char *code_file(i32 pc)
 	return g_unit.file;
 }
 
+/* Marks for the tools: (@warn "...") and (@err "...") produce no code; gael -x lists them, an editor shows them at
+ * their line. Tests: each (@test "name" body...) is compiled as a function, run only by gael test */
+#define MAX_MARKS 4096
+static struct {
+	const char *file, *text;
+	i32 line;
+	u8 err;
+} g_marks[MAX_MARKS];
+static i32 g_nmarks;
+#define MAX_TESTS 4096
+static struct {
+	const char *name, *file;
+	i32 line;
+} g_tests[MAX_TESTS];
+static i32 g_ntests;
+static int g_test_mode; /* gael test: the top level's own forms are compiled but jumped over; defs run, then tests */
+
 static Gem g_gems[MAX_GEMS]; /* zero until used, so it costs the binary nothing; gem 0 is set in compile_init */
 static i32 g_ngems = 1;
 static int g_unit_main; /* the unit is a gem's main file: it starts with the manifest */
@@ -1869,6 +1886,61 @@ static int method_call(Frame *f, i32 head)
 }
 
 /* start_list FRAME: decide which form a list is, check its shape, and start it */
+/* mark_note NODE: (@warn "text") or (@err "text") - recorded for the tools, no code */
+static o mark_note(i32 n)
+{
+	i32 head = first_of(n), text = next_of(head);
+	if (text < 0 || g_nodes[text].kind != N_STR || next_of(text) >= 0) {
+		err_node(n, NAME_FMT " takes one string: (" NAME_FMT " \"what to look at\")", g_nodes[head].text, g_nodes[head].text);
+		return;
+	}
+	if (g_nmarks == MAX_MARKS) return;
+	g_marks[g_nmarks].file = g_unit.file;
+	g_marks[g_nmarks].line = g_nodes[n].line;
+	g_marks[g_nmarks].err = g_nodes[head].text[1] == 'e';
+	g_marks[g_nmarks].text = arena_strndup(&g_perm, g_nodes[text].text, g_nodes[text].len);
+	g_nmarks++;
+}
+
+/* test_fn NODE: (@test "name" body...) at the top level becomes (defn @test:K () : unit body...), a function that
+ * gael test calls and nothing else does; 0 after an error it reported */
+static int test_fn(i32 n)
+{
+	i32 head = first_of(n), name = next_of(head), line = g_nodes[n].line, col = g_nodes[n].col, fname, params, colon, ty;
+	char buf[40];
+	if (name < 0 || g_nodes[name].kind != N_STR) {
+		err_node(n, "@test takes a name and a body: (@test \"adds\" (assert (= (+ 1 2) 3)))");
+		g_nodes[head].text = "do"; /* reported once: what is left of it is (do) */
+		g_nodes[head].len = 2;
+		g_nodes[head].next = -1;
+		return 0;
+	}
+	if (g_ntests == MAX_TESTS) die("too many tests (MAX_TESTS)");
+	sprintf(buf, "@test:%ld", (long)g_ntests);
+	fname = new_node(N_SYM, line, col);
+	g_nodes[fname].text = arena_strndup(&g_unit_arena, buf, strlen(buf));
+	g_nodes[fname].len = (u32)strlen(buf);
+	params = new_node(N_LIST, line, col);
+	colon = new_node(N_SYM, line, col);
+	g_nodes[colon].text = ":";
+	g_nodes[colon].len = 1;
+	ty = new_node(N_SYM, line, col);
+	g_nodes[ty].text = "unit";
+	g_nodes[ty].len = 4;
+	g_nodes[ty].next = next_of(name); /* the body */
+	g_nodes[colon].next = ty;
+	g_nodes[params].next = colon;
+	g_nodes[fname].next = params;
+	g_nodes[head].next = fname;
+	g_nodes[head].text = "defn";
+	g_nodes[head].len = 4;
+	g_tests[g_ntests].name = arena_strndup(&g_perm, g_nodes[name].text, g_nodes[name].len);
+	g_tests[g_ntests].file = g_unit.file;
+	g_tests[g_ntests].line = line;
+	g_ntests++;
+	return 1;
+}
+
 static o start_list(Frame *f)
 {
 	i32 head = first_of(f->node), fi;
@@ -1890,6 +1962,14 @@ static o start_list(Frame *f)
 	s = g_nodes[head].text;
 	f->cur = next_of(head);
 	f->k = count_from(f->cur);
+	if (s[0] == '@') { /* marks for the tools, and code only while working on the program */
+		if (!strcmp(s, "@warn") || !strcmp(s, "@err")) { mark_note(f->node); finish(T_UNIT); return; }
+		if (!strcmp(s, "@debug")) { f->form = F_DO; return; } /* its forms, their values dropped */
+		if (!strcmp(s, "@test")) err_node(f->node, "@test goes at the top level: (@test \"name\" body...)");
+		else err_node(head, "unknown annotation " NAME_FMT "; gael knows @export, (@warn \"...\"), (@err \"...\"), (@debug ...) and (@test \"name\" ...)", s);
+		finish(T_ERR);
+		return;
+	}
 	if (!strcmp(s, "if")) f->form = F_IF;
 	else if (!strcmp(s, ".")) f->form = F_DOT;
 	else if (!strcmp(s, "when")) f->form = F_WHEN;
@@ -4849,7 +4929,7 @@ static o fuse(i32 from, i32 to)
 /* everything a failed unit may have added, so the REPL can forget it */
 static struct {
 	i32 ncode, nints, nfloats, nstrs, nfns, nglobals, nglobal_cells, ntys, nfields, nvariants, nfmts, nfmt_tys, nleaves, nguards,
-	    ntparams, nmacros, nrules, nmnodes;
+	    ntparams, nmacros, nrules, nmnodes, nmarks, ntests;
 	size_t perm, text, mtext;
 } g_snap;
 
@@ -4878,6 +4958,8 @@ static i32 compile_unit(i32 top, int repl)
 	g_snap.perm = g_perm.used;
 	g_snap.text = g_text.used;
 	g_snap.nmacros = g_nmacros;
+	g_snap.nmarks = g_nmarks;
+	g_snap.ntests = g_ntests;
 	g_snap.nrules = g_nrules;
 	g_snap.nmnodes = g_nmnodes;
 	g_snap.mtext = g_mtext.used;
@@ -4902,6 +4984,9 @@ static i32 compile_unit(i32 top, int repl)
 		}
 	}
 	top = expand_top(top, repl);
+	for (n = top; n >= 0; n = next_of(n)) { /* each (@test "name" body...) becomes a function, declared with the rest */
+		if (head_is(n, "@test")) (void)test_fn(n);
+	}
 	for (n = top; n >= 0; n = next_of(n)) { /* types first, so signatures and bodies can use them */
 		if (head_is(n, "struct")) declare_struct(n, repl);
 		else if (head_is(n, "enum")) declare_enum(n, repl);
@@ -4913,7 +4998,8 @@ static i32 compile_unit(i32 top, int repl)
 	for (n = top; n >= 0; n = next_of(n)) {
 		int shown = repl && next_of(n) < 0;
 		if (is_sym(n) && g_nodes[n].text[0] == '@') { /* an annotation, for the form after it */
-			if (strcmp(g_nodes[n].text, "@export")) err_node(n, "unknown annotation " NAME_FMT "; gael knows @export", g_nodes[n].text);
+			if (strcmp(g_nodes[n].text, "@export"))
+				err_node(n, "unknown annotation " NAME_FMT "; gael knows @export, (@warn \"...\"), (@err \"...\"), (@debug ...) and (@test \"name\" ...)", g_nodes[n].text);
 			else if (!head_is(next_of(n), "def")) err_node(next_of(n) < 0 ? n : next_of(n), "@export goes before a def, like @export (def speed : float 10.0)");
 			else exported = 1;
 			continue;
@@ -4941,12 +5027,16 @@ static i32 compile_unit(i32 top, int repl)
 			continue;
 		}
 		i = g_unit.nerrors;
-		compile_expr(n, shown ? (Ty)T_NONE : (Ty)T_UNIT);
-		t = pop_type();
-		if (shown && t != T_UNIT && t != T_ERR) emit(OP_SHOW, t, 0, g_nodes[n].line);
-		else {
-			if (t != T_UNIT && t != T_ERR && i == g_unit.nerrors && pure_form(n)) thrown_away(n);
-			emit_pop(t, g_nodes[n].line);
+		{
+			i32 skip = g_test_mode && !repl ? emit(OP_JMP, -1, 0, g_nodes[n].line) : -1; /* gael test: checked, not run */
+			compile_expr(n, shown ? (Ty)T_NONE : (Ty)T_UNIT);
+			t = pop_type();
+			if (shown && t != T_UNIT && t != T_ERR) emit(OP_SHOW, t, 0, g_nodes[n].line);
+			else {
+				if (t != T_UNIT && t != T_ERR && i == g_unit.nerrors && pure_form(n)) thrown_away(n);
+				emit_pop(t, g_nodes[n].line);
+			}
+			if (skip >= 0) patch(skip, g_ncode);
 		}
 		if (!ended && head_is(n, "exit") && !g_nodes[n].stamp) ended = g_nodes[n].line;
 	}
@@ -4982,6 +5072,8 @@ static i32 compile_unit(i32 top, int repl)
 	g_perm.used = g_snap.perm;
 	g_text.used = g_snap.text;
 	g_nmacros = g_snap.nmacros;
+	g_nmarks = g_snap.nmarks;
+	g_ntests = g_snap.ntests;
 	g_nrules = g_snap.nrules;
 	g_nmnodes = g_snap.nmnodes;
 	g_mtext.used = g_snap.mtext;

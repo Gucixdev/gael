@@ -41,10 +41,14 @@
 static const char *const g_usage[] = {
 	"usage: gael                   the REPL\n",
 	"       gael FILE ARGS...      compile FILE; when there are no errors, run it; (args) gives it ARGS\n",
-	"       gael -c FILE           only compile: report every type error, run nothing\n",
+	"       gael run FILE ARGS...  the same\n",
+	"       gael check FILE        only compile: report every error and warning, run nothing (also gael -c)\n",
+	"       gael test FILE...      compile the files, run their defs (not the rest of their top level), then each\n",
+	"                              (@test \"name\" ...) in them: ok or FAIL for each; exit 1 when one failed\n",
 	"       gael -d FILE           compile and print the bytecode\n",
 	"       gael -e CODE ARGS...   compile and run CODE\n",
-	"       gael -x FILE           compile FILE and list its @export globals: name : type = value\n",
+	"       gael -x FILE           compile FILE and list its @export globals (name : type = value) and its\n",
+	"                              (@warn ...) and (@err ...) marks, the way an editor shows them\n",
 	"       gael -n                the built-in names, one a line (docs/REFERENCE.md explains each)\n",
 	"       gael -h                this help\n",
 	0
@@ -578,6 +582,40 @@ static int repl(void)
 	}
 }
 
+/* run_tests N FILES: gael test - compile the files with their top level's own forms jumped over (their defs run),
+ * then call each (@test "name" ...) of them in turn, each in a run of its own, so one that fails stops only itself */
+static int run_tests(int n, char **files)
+{
+	i32 k, pass = 0, fail = 0;
+	int st, i;
+	char name[40];
+	g_test_mode = 1;
+	for (i = 0; i < n; i++) {
+		if ((st = load(files[i], 0, 0, 0, RUN)) != 0) return st;
+	}
+	for (k = 0; k < g_ntests; k++) {
+		i32 fi, stub;
+		sprintf(name, "@test:%ld", (long)k);
+		if ((fi = find_fn(name)) < 0) continue;
+		stub = g_ncode;
+		emit(OP_ENTER, 0, 0, g_tests[k].line);
+		emit(OP_CALL, fi, 0, g_tests[k].line);
+		emit(OP_HALT, 0, 0, g_tests[k].line);
+		st = vm_run(stub);
+		fflush(stderr);
+		if (!st) {
+			printf("ok %s\n", g_tests[k].name);
+			pass++;
+		} else {
+			printf("FAIL %s (%s:%ld)\n", g_tests[k].name, g_tests[k].file, (long)g_tests[k].line);
+			fail++;
+		}
+		fflush(stdout);
+	}
+	printf("%ld passed, %ld failed\n", (long)pass, (long)fail);
+	return fail ? 1 : 0;
+}
+
 int main(int argc, char **argv)
 {
 	int st, k;
@@ -603,9 +641,14 @@ int main(int argc, char **argv)
 		}
 		return 0;
 	}
-	if (argv[1][0] != '-') {
-		args_init(argc - 2, argv + 2);
-		st = load(argv[1], 0, 0, 0, RUN);
+	if (argc >= 3 && !strcmp(argv[1], "test")) {
+		st = run_tests(argc - 2, argv + 2);
+	} else if (argc == 3 && !strcmp(argv[1], "check")) {
+		st = load(argv[2], 0, 0, 0, CHECK);
+	} else if (argv[1][0] != '-') {
+		k = argc >= 3 && !strcmp(argv[1], "run"); /* gael run FILE is gael FILE */
+		args_init(argc - 2 - k, argv + 2 + k);
+		st = load(argv[1 + k], 0, 0, 0, RUN);
 		if (!st) st = leaks();
 	} else if (argc == 3 && (!strcmp(argv[1], "-c") || !strcmp(argv[1], "-d"))) {
 		st = load(argv[2], 0, 0, 0, argv[1][1] == 'c' ? CHECK : DIS);
@@ -619,6 +662,8 @@ int main(int argc, char **argv)
 			if (gl->value) printf(gl->type == T_STR ? " = \"%s\"" : " = %s", gl->value);
 			printf("\t%s:%ld\n", gl->file, (long)gl->line);
 		}
+		for (i = 0; !st && i < g_nmarks; i++)
+			printf("%s:%ld: @%s: %s\n", g_marks[i].file, (long)g_marks[i].line, g_marks[i].err ? "err" : "warn", g_marks[i].text);
 	} else if (argc >= 3 && !strcmp(argv[1], "-e")) {
 		args_init(argc - 3, argv + 3);
 		st = load("<-e>", argv[2], strlen(argv[2]), 0, RUN);

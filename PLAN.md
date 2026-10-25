@@ -26,9 +26,11 @@ dokumentacja mieści się w kontekście.
       początku nazwy ucisza, `(for (_ 0 3) ...)` powtarza bez nazwy), wartość wyliczona i wyrzucona, kod po `return`
       i `exit`. Program działa dalej; bez flag; `tests/warnings` (`1cfe8c0`).
 - [ ] `gael build` (wydanie) z ostrzeżeniem we własnym kodzie się nie buduje - razem z `gael build` w sekcji 2.
-- [ ] Znaczniki `@` żyją tylko w środowisku deweloperskim (REPL, `run`, `check`, `test`, edytor), `gael build` je
-      wycina: `@warn` i `@err` (komunikat przy linii i na liście, niczego nie blokuje), `@test` (blok, który uruchamia
-      `gael test`), `@debug` (kod tylko w trakcie pracy). Nieznany znacznik albo w złym miejscu to błąd.
+- [x] Znaczniki `@`: `(@warn "...")` i `(@err "...")` (bez kodu; `gael -x` je listuje), `(@debug ...)` (kod na czas
+      pracy), `(@test "nazwa" ...)` (funkcja, którą woła tylko `gael test`); nieznany znacznik to błąd. `gael build`
+      wytnie je, gdy powstanie.
+- [x] `gael test PLIK...` (definicje się wykonują, reszta najwyższego poziomu nie; każdy test osobno, ok/FAIL, kod 1
+      przy porażce), `gael run`, `gael check`; `examples/testing.gael`.
 - [ ] `(compile-error "...")` dla makr: błąd kompilacji z własnym komunikatem, gdy makro dostało złe argumenty.
 - [x] Nawiasy: przy brakującym albo nadmiarowym `)` gael czyta wcięcia jak parinfer i wskazuje linię
       (`a ')' is missing at the end of line 4: line 5 is indented as if the ( at 4:8 ended there`) (`0e3e2a2`).

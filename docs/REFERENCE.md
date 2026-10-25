@@ -181,7 +181,9 @@ Not names but syntax: `;` comments, `"..."` strings, `:keyword`, `$Node/Path`, `
   Right after a closing parenthesis, `.y.z` reads as `(. (...) y.z)`, so `(get bodies 0).pos.x` is the field of an
   expression's value.
 - `$Player/Sprite` is a node path, a value of type `NodePath`.
-- `@export` before a `def` marks it for an editor's inspector; see [Top level](#top-level).
+- `@` starts what is for the tools and for while working on the program, never part of a release: `@export` before a
+  `def` (see [Top level](#top-level)), and the forms `(@warn "...")`, `(@err "...")`, `(@debug ...)` and
+  `(@test "name" ...)` (see [Tests and marks](#tests-and-marks)).
 - `:` gives a type: `(def hp : int 100)`, `(x : float)`, `(defn f () : int ...)`.
 
 ## Types
@@ -814,6 +816,24 @@ provide the same thing (`gems ecs-archetype and ecs-sparse both provide ecs; tur
 another one that is on; a manifest that is not first, names another gem, or has an unknown key; a file of one gem used
 by another; a gem using a name of a gem it does not require; disabling a gem another gem on needs; `enable` in a gem.
 
+## Tests and marks
+
+```
+(@test "name" body...)     ; at the top level: a test, with assert in it
+(@debug body...)           ; code for while working on the program
+(@warn "text") (@err "text")   ; marks for the tools
+```
+
+A test is compiled with the rest of the file - its errors show in every run - and runs only under `gael test FILE...`:
+that runs the files' defs (but not the rest of their top level, the program's own run), then each test in a run of its
+own, and prints `ok name` or `FAIL name (file:line)` for each and a count; the exit status is 1 when one failed. A
+test fails on a runtime error, an `assert` above all. `(@debug ...)` runs its forms while you work on the program;
+`(@warn "...")` and `(@err "...")` give no code at all: `gael -x` lists them, as `file:line: @warn: text`, and an
+editor shows them at their line. A release build leaves out everything that starts with `@`.
+
+Compile errors: an annotation gael does not know, `@test` anywhere but the top level or without a name, a mark
+without one string.
+
 ## Warnings
 
 A warning is code that runs but is almost surely a mistake. The program still runs, and stderr gets
@@ -855,10 +875,12 @@ Each stops the program (in the REPL, the form) with the line: `FILE:LINE: runtim
 ```
 gael                   the REPL
 gael FILE ARGS...      compile FILE and run it when there are no errors; (args) gives ARGS
-gael -c FILE           only compile: report every error, run nothing
+gael run FILE ARGS...  the same
+gael check FILE        only compile: report every error and warning, run nothing (also gael -c)
+gael test FILE...      run the files' defs, then each of their (@test "name" ...): ok or FAIL each
 gael -d FILE           compile and print the bytecode
 gael -e CODE ARGS...   compile and run CODE
-gael -x FILE           list FILE's @export globals
+gael -x FILE           list FILE's @export globals and its (@warn ...) and (@err ...) marks
 gael -n                the built-in names, one a line
 gael -h                the help
 ```
