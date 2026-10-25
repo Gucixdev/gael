@@ -34,4 +34,7 @@
 (B "x")
 (B :hp 1)
 (C 1)
-(def w ((Vec2 1.0 2.0).heal 1.0))
+((Vec2 1.0 2.0).heal 1.0)
+(println "%v" (Vec2 1.0 2.0).heal)
+((Vec2 1.0 2.0).x)
+((Vec2 1.0 2.0).nope)

@@ -42,8 +42,8 @@ dokumentacja mieści się w kontekście.
       każda nazwa z `gael -n` i że ma mniej niż 16 KB.
 - [ ] Skill `gael` w claude-config.
 - [x] `gael -m`: plik z rozwiniętymi makrami (także w funkcjach), ułożony do czytania - to, co sprawdza kompilator.
-- [ ] Metoda na wartości wyrażenia: `((Vec3 1.0 0.0 0.0).cross b)` jak `(v.cross b)` - piszę to sam, więc model też
-      napisze; dziś błąd podaje `(Vec3.cross expr ...)`.
+- [x] Metoda na wartości wyrażenia: `((Vec3 1.0 0.0 0.0).cross b)` jak `(v.cross b)` - pisałem to sam, więc model też
+      napisze; bez nawiasów `(expr).cross` błąd mówi, że to funkcja i jak ją wywołać.
 - [ ] Testy gemu w jego pliku: `gael test gems/NAZWA.gael` włącza ten gem i uruchamia jego `(@test ...)`; `./test`
       robi to dla każdego gemu z `gems/`.
 

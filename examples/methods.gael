@@ -70,3 +70,4 @@
 
 (def by-length Vec2.length2)                   ; a type's function is a value like any other
 (println "%f" (by-length (Vec2 3.0 4.0)))
+(println "%f" ((Vec2 3.0 4.0).length2))        ; a method on an expression's value, in parens

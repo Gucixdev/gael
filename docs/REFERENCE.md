@@ -555,6 +555,7 @@ keys and print as their name.
 (defn Type.name ((x : Type) ...) ...)   ; a function of a struct or an enum
 (Type.name x ...)                       ; called like any function; Type.name is a function value too
 (x.name ...)                            ; a method call: (Type.name x ...)
+((expr).name ...)                       ; the same on an expression's value: ((get ps 0).hurt 3)
 (v.push 4)   (s.len)                    ; no function of the type: (push v 4), (len s)
 ```
 
@@ -562,7 +563,8 @@ A function whose name is a type, a dot and a name belongs to that struct or enum
 program) that declares the type, and it takes no hidden `self`: the value is its first parameter, written out.
 `(x.name args...)`, where `x` is a variable or a field path like `p.pos` and `name` is none of its fields, calls
 `(Type.name x args...)` when `x`'s type has that function, and else `(name x args...)` with a builtin or a function
-of that name. A field of the same name comes first. Values are copied into a call, so a method cannot change the
+of that name. A field of the same name comes first. `((expr).name args...)` does the same with the value of any
+expression, worked out once, before the arguments. Values are copied into a call, so a method cannot change the
 variable it was called on; it gives a new value, which `set` keeps: `(set p (p.hurt 10))`. Calling such a method as a
 statement, where its new value would be dropped, is a compile error.
 

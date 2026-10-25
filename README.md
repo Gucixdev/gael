@@ -328,8 +328,8 @@ the way Python calls `__add__` but with words instead of underscores:
   (println "%v %f" (+ a b) (a.dot b)))      ; <4.0 2.0> 3.0
 ```
 
-`(a.dot b)` is `(Vec2.dot a b)`; a value goes into a call as a copy, so a method gives a new value instead of changing
-its own (`(set p (p.hurt 10))`). `init` makes `(Player "Ann")` call `Player.init`, and a field can have a default
+`(a.dot b)` is `(Vec2.dot a b)`, and `((get bodies 0).dot b)` the same on an expression's value; a value goes into a
+call as a copy, so a method gives a new value instead of changing its own (`(set p (p.hurt 10))`). `init` makes `(Player "Ann")` call `Player.init`, and a field can have a default
 value. `examples/methods.gael` has every hook.
 
 A macro rewrites code before its types are checked, as Scheme's `syntax-rules` does:

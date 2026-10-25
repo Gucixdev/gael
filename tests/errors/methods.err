@@ -24,4 +24,7 @@ tests/errors/methods.gael:33:1: error: B has 3 fields (name, hp, mp), got 0 valu
 tests/errors/methods.gael:34:1: error: B has 3 fields (name, hp, mp), got 1 value; mp has no default, so it must be given
 tests/errors/methods.gael:35:1: error: B: missing fields name, mp
 tests/errors/methods.gael:36:2: error: C.init must return C: (C ...) calls it to make one
-tests/errors/methods.gael:37:24: error: Vec2 has no field heal; a method on an expression is called by its full name: (Vec2.heal expr ...)
+tests/errors/methods.gael:37:17: error: Vec2.heal gives a new Vec2 and this drops it; keep what it gives in a variable, or pass it on
+tests/errors/methods.gael:38:30: error: Vec2 has no field heal; Vec2.heal is a function, called in parens: ((expr).heal ...)
+tests/errors/methods.gael:39:17: error: x is a field (float), not a function: (expr).x without the parens around it reads it
+tests/errors/methods.gael:40:17: error: the value is Vec2; it has no field nope and Vec2 has no function nope; its fields are x, y

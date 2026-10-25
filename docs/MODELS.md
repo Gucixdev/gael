@@ -15,8 +15,8 @@ macros; `docs/REFERENCE.md` has every detail; `examples/` has a working program 
   (set p.hp (- p.hp 1)) p)` and `(set hero (hurt hero))`. A `vec`, a `map` and a `pool` are references: changing one
   changes it for everyone who has it.
 - `none` needs to know its type: from a declared binding, a parameter, a return type or the other branch.
-- Methods: `(v.len)` is `(len v)`, `(p.hurt 3)` is `(Player.hurt p 3)` - always in parens. `(expr).field` works, a
-  method on an expression does not: write `(Type.name expr)`.
+- Methods: `(v.len)` is `(len v)`, `(p.hurt 3)` is `(Player.hurt p 3)`, `((get ps 0).hurt 3)` on an expression's
+  value - always in parens; `(expr).field` without them reads a field.
 - A local nothing reads, a value thrown away, code after `return` are warnings: fix them. A name that starts with `_`
   is unused on purpose; `(for (_ 0 3) ...)` repeats without a name.
 - Nothing waits: there is no `async` or `await`. Coroutines pause themselves; `(poll co)` looks at a result at once.

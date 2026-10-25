@@ -1823,6 +1823,8 @@ static int method_word(const char *m)
 	return !strcmp(m, "poll") || !strcmp(m, "done?") || find_fn(m) >= 0;
 }
 
+#define VALUE_NAME "the value" /* the local that a method on an expression's value is called on: ((get ps 0).hurt 3) */
+
 /* method_call FRAME HEAD: (v.m args...) where v (or a field path like v.pos) is a variable and m none of its fields.
  * It stands for (T.m v args...) when the type T of v has a function m, else for (m v args...) with a builtin or a
  * function m, and the frame starts over on that call. 1 when it rewrote the call or reported an error, 0 when HEAD is
@@ -1862,8 +1864,11 @@ static int method_call(Frame *f, i32 head)
 		return 1;
 	}
 	if (fi >= 0 && f->want == T_UNIT && g_fns[fi].ret == t && g_fns[fi].nparams > 0 && g_fns[fi].params[0] == t) {
-		err_node(head, "%s gives a new %s and this drops it; it cannot change %.64s, which it got a copy of, so keep what it gives: (set %.64s (%.64s ...))",
-		         g_fns[fi].name, tn(t), g_nodes[recv].text, g_nodes[recv].text, s);
+		if (!strncmp(s, VALUE_NAME ".", sizeof(VALUE_NAME))) /* ((get ps 0).heal 1.0): no variable to set */
+			err_node(head, "%s gives a new %s and this drops it; keep what it gives in a variable, or pass it on", g_fns[fi].name, tn(t));
+		else
+			err_node(head, "%s gives a new %s and this drops it; it cannot change %.64s, which it got a copy of, so keep what it gives: (set %.64s (%.64s ...))",
+			         g_fns[fi].name, tn(t), g_nodes[recv].text, g_nodes[recv].text, s);
 		finish(T_ERR);
 		return 1;
 	}
@@ -1885,6 +1890,39 @@ static int method_call(Frame *f, i32 head)
 	f->cur = -1;
 	f->k = 0;
 	return 1;
+}
+
+/* method_on_value CALL E PATH: ((. e path) args...), a method or a function field of an expression's value, as
+ * (let ((the value e)) (the value.path args...)) - the local's stamp is its own, so no name of the program sees it and
+ * it sees none of theirs; method_call then does the rest. The tree of CALL is left as it is, for gael -m */
+static i32 method_on_value(i32 call, i32 e, i32 path)
+{
+	u32 stamp = ++g_stamps;
+	i32 line = g_nodes[call].line, col = g_nodes[call].col;
+	i32 let = new_node(N_LIST, line, col), lh = new_node(N_SYM, line, col), binds = new_node(N_LIST, line, col);
+	i32 bind = new_node(N_LIST, line, col), name = new_node(N_SYM, line, col), value = new_node(N_LIST, line, col);
+	i32 body = new_node(N_LIST, line, col), mh = new_node(N_SYM, g_nodes[path].line, g_nodes[path].col);
+	char buf[300];
+	g_nodes[value] = g_nodes[e]; /* e itself, without the path after it */
+	g_nodes[value].next = -1;
+	g_nodes[lh].text = "let";
+	g_nodes[lh].len = 3;
+	g_nodes[name].text = VALUE_NAME;
+	g_nodes[name].len = (u32)strlen(VALUE_NAME);
+	g_nodes[name].stamp = stamp;
+	sprintf(buf, VALUE_NAME ".%.250s", g_nodes[path].text);
+	g_nodes[mh].text = arena_strndup(&g_unit_arena, buf, strlen(buf));
+	g_nodes[mh].len = (u32)strlen(buf);
+	g_nodes[mh].stamp = stamp;
+	g_nodes[let].first = lh;
+	g_nodes[lh].next = binds;
+	g_nodes[binds].first = bind;
+	g_nodes[bind].first = name;
+	g_nodes[name].next = value;
+	g_nodes[binds].next = body;
+	g_nodes[body].first = mh;
+	g_nodes[mh].next = next_of(first_of(call)); /* the arguments */
+	return let;
 }
 
 /* start_list FRAME: decide which form a list is, check its shape, and start it */
@@ -1951,6 +1989,13 @@ static o start_list(Frame *f)
 	Ty t;
 	if (head < 0) { err_node(f->node, "empty list: a list starts with a form, an operator or a function"); finish(T_ERR); return; }
 	if (g_nodes[head].kind == N_LIST) { /* ((get handlers 0) x): the function comes from an expression */
+		i32 dot = first_of(head), e = dot >= 0 ? next_of(dot) : -1, path = e >= 0 ? next_of(e) : -1;
+		if (sym_is(dot, ".") && is_sym(path) && next_of(path) < 0) {
+			f->node = method_on_value(f->node, e, path); /* ((Vec3 1.0 0.0 0.0).cross b), ((get ps 0).hurt 3) */
+			f->cur = -1;
+			f->k = 0;
+			return;
+		}
 		f->form = F_CALLV;
 		f->op = 3;
 		f->cur = next_of(head);
@@ -2079,7 +2124,11 @@ static o start_list(Frame *f)
 			r = resolve_place(head, &pl);
 			if (r == 0) { finish(T_ERR); return; }
 			if (r > 0 && !is_fn(pl.type)) {
-				if (pl.type != T_ERR) err_node(head, NAME_FMT " is %s, not a function", s, tn(pl.type));
+				if (pl.type == T_ERR) ;
+				else if (!strncmp(s, VALUE_NAME ".", sizeof(VALUE_NAME))) /* ((get v 0).x) */
+					err_node(head, "%.64s is a field (%s), not a function: (expr).%.64s without the parens around it reads it",
+					         s + sizeof(VALUE_NAME), tn(pl.type), s + sizeof(VALUE_NAME));
+				else err_node(head, NAME_FMT " is %s, not a function", s, tn(pl.type));
 				finish(T_ERR);
 				return;
 			}
@@ -4103,9 +4152,8 @@ static o run_work(i32 base)
 					char seg[64];
 					sprintf(seg, "%.*s", (int)(len < 63 ? len : 63), p);
 					if (g_tys[ft].broken) ;
-					else if (!end && hook(ft, seg) >= 0) /* ((Vec3 ...).cross b): a method, not a field */
-						err_node(path, "%s has no field %s; a method on an expression is called by its full name: (%s.%s expr ...)",
-						         tn(ft), seg, tn(ft), seg);
+					else if (!end && hook(ft, seg) >= 0) /* (v).normal: a method, called in parens */
+						err_node(path, "%s has no field %s; %s.%s is a function, called in parens: ((expr).%s ...)", tn(ft), seg, tn(ft), seg, seg);
 					else
 						err_node(path, "%s has no field %.*s; its fields are %s", tn(ft), (int)(len < 64 ? len : 64), p,
 						         names_of(ft, names, sizeof(names)));

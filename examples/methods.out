@@ -9,3 +9,4 @@ ann > bob: true
 30 4 1 2 | len 4, first 30
 (vec 10 20 30) has 3
 25.0
+25.0
