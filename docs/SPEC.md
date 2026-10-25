@@ -26,6 +26,36 @@ Z notatek: "najpierw język, potem edytor", "edytor emacslike w samym gaelu, dod
 4. GUI edytora - układ Godota/GDStudio, inspektor, drzewo sceny, viewport jako bufor 3D.
 5. Twoje elementy - GAS, MATS, record/replay/rollback, gemy gameplayowe, integracje narzędzi.
 
+## Kierunek (2026-10-25)
+
+Z braindumpu z 2026-10-25 i trzech wiadomości po nim („język do gier wydajniejszy od GDScriptu”, „edytor jak Emacs,
+nazwijmy go artemacs: vectormode, rastermode, nawet 3D”, „gemy bardziej jak w Emacsie niż w Rubym”). Propozycja do
+potwierdzenia:
+
+- **gael** - statycznie typowany, data-oriented Lisp do gier: szybszy od GDScriptu (do zmierzenia, nie do
+  założenia), błędy w kompilacji, makra i x-makra zamiast klas, pamięć przez areny, pule i liczniki, żywa podmiana kodu.
+  „Wszystko dla solodeva”, nie wszystko dla wszystkich: tyle, ile trzeba, spójnie.
+- **artemacs** - edytor na gaelu: Emacs dla tekstu i sztuki. Bufor trzyma tekst, ścieżki wektorowe, warstwy rastra,
+  siatki 3D; tryby (`vectormode`, `rastermode`, `3dmode`...) to gemy z komendami, keymapami i hakami. Rdzeń w C (okno,
+  wejście, rysowanie), reszta w gaelu: tego, co w Ruście, nie da się redefiniować na żywo, więc edytor w Ruście
+  przestałby być Emacsem. Jedna binarka.
+- **Gemy** jak pakiety Emacsa, nie jak gemy Rubiego: włączane i wyłączane w trakcie działania, wpinane w gniazda
+  (socket = punkt rozszerzenia: hak, tryb, komenda), wymienne (`:provides`/`:excludes`), osobny plik albo folder.
+- **REPL zostaje.** Statycznym typom nie przeszkadza: każda linia przechodzi przez ten sam kompilator i te same
+  sprawdzenia co plik. Dynamika Lispa, która się liczy, to podmiana funkcji na żywo i makra - obie działają z typami,
+  dopóki sygnatura i układ structa się nie zmieniają (wtedy restart). Bez tego artemacs nie byłby Emacsem.
+- **Statyczny kompilowany Lisp nie jest za trudny** - gael już nim jest (bytecode); są też inne (Carp: statyczny Lisp
+  bez GC kompilowany do C, z REPL-em). Kod natywny przez **gael → C89 → dowolny kompilator C**: działa na wszystkim, co
+  ma kompilator C; wywołanie funkcji z C to wywołanie w C (FFI bez narzutu - albo żadnego, jak chce braindump); kod
+  maszynowy zamiast bytecode'u Godota utrudnia reverse engineering; bez LLVM, libgccjit i Cranelifta. VM zostaje do
+  REPL-a i podmiany na żywo, gra wychodzi natywnie.
+- **`@` = dla narzędzi, nie dla programu:** adnotacje, które nie wychodzą poza edytor i build deweloperski (`@export`,
+  później `@debug`, `@test`); build wydania je pomija.
+- **Kolejność, język najpierw:** zmiana nazw zadań na korutyny; `gael -m` (macroexpand - przejrzystość makr);
+  `load`/`reload` w działającym programie; generyki (kopia na każdy typ, zero kosztu) i `result`; biblioteka w gaelu
+  na generykach (`sort`, `min`, `max`, `range`); pomiar względem GDScriptu; gael → C; wątki (masterslave, fgjob);
+  potem artemacs.
+
 ## Do rozstrzygnięcia
 
 1. **Rdzeń w Ruście czy w C - rozstrzygnięte: C89.** Jądro (gael: reader, typy, kompilator, VM; potem bufor i okno)
@@ -485,8 +515,19 @@ Każdy punkt z notatek o godot-rs i gaelu, z tym, co się z nim stało. ✓ zrob
   Quake'u, kryptografia, obfuskacja, ftl+, kalkulator, email, rss, circuitboard, druk 3D, dystrybucja gier, gry
   terminalowe.
 
+**Braindump 2026-10-25**
+- ✓ s-wyrażenia, statyczne typy, dobre błędy, makra higieniczne i x-makra, `def`/`defn`/`struct`, `option`, magiczne
+  funkcje (haki), areny, pule z uchwytami (slot map), refcount, AoS → SoA, korutyny i async/await, REPL, gemy.
+- → generyki, `result`, `macroexpand`, `min`/`max`/`range`, traits (zestawy haków), przeciążanie funkcji jako ostatnia
+  abstrakcja (może niepotrzebne przy generykach i hakach), żywa podmiana w działającym programie, gael → C (AOT).
+- ○ ownership opcjonalnie (owned/borrowed/shared), borrow checker jako dodatek; alokator jako część składni jak w Zigu
+  (dziś `arena`); SIMD sam z siebie; JIT; gorutyny na wątkach (masterslave, fgjob); gael jako shell; build system;
+  ochrona przed reverse engineeringiem (natywny kod).
+- ? komentarze `# ...` i `#< ... >#` zamiast `;` - do potwierdzenia, zmienia każdy plik; edytor w Ruście - patrz
+  Kierunek; zero-cost FFI albo żadnego - przez C.
+
 **Edytor**
-- ✓ kolejność: najpierw język, potem edytor emacslike w samym gaelu, częściami.
+- ✓ kolejność: najpierw język, potem edytor emacslike w samym gaelu, częściami; nazwa: artemacs (2026-10-25).
 - ○ bufor uniwersalny: tekst, 3D, dźwięk, wideo, nody; bufor tekstu podrasowany, bufor 3D jako gem.
 - ○ magit, evil, org, mail, todo, dired, shell, tryb gamedev, hooki; ○ AI/LLM od początku (Claude Code, Cursor, Ollama).
 - ○ natywne GUI dla początkujących (układ Godota/GDStudio) i plugin Emacsa dla zaawansowanych.
