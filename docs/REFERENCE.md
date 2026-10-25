@@ -798,6 +798,10 @@ The gems that come with gael:
 | `pqueue` | a priority queue, a binary heap in a vec: `(PQ)`, `(q.push id priority)`, `(q.pop)` and `(q.peek)` give an option, `(len q)`, `(q.clear)`. Priority 1 comes out first, 0 or less after everything; ties in the order they went in. Ported from holyc |
 | `events` | events with their tick: `(EventLog)` keeps what happened in order (`add`, `at`, `since`, a `for` over it), to record a run and play it back; `(Schedule)` holds what will happen, and `(s.due tick)` takes out everything up to a tick, by tick. Ported from holyc; `examples/queues.gael` uses both |
 | `hfsm` | a hierarchical state machine: `(hfsm Mood (e : Ctx) (alive -) (calm alive) ... :enter ((calm code)...) :exit (...))` makes the enum `Mood` and `(Mood.start s e)`, `(s.go to e)` - exits up to the state the two share, enters down to `to` - `(s.in? t)` and `(s.parent)`. A flat machine is one where every parent is `-`. `examples/guards.gael` gives each entity of an ecs world one |
+| `rng` | PCG32: `(Rng.seed seed stream)`, `(r.next)` (0 to 2^32 - 1), `(r.float)` ([0, 1)), `(r.range lo hi)`, `(r.chance p)`. The same seed gives the same numbers everywhere. Ported from holyc |
+| `noise` | Perlin's improved gradient noise in 2D: `(noise2 seed x y)`, about -1 to 1, 0 at whole points; `(fbm2 seed x y octaves)`. Ported from holyc |
+| `easing` | `lerp`, `lerp-clamped`, `unlerp`, `step`, `smooth`, `smoothstep`, and `ease-in-`, `ease-out-`, `ease-in-out-` `quad`, `cubic`, `sine`, `back`. Ported from holyc |
+| `curve` | on one number at a time: `bezier2`, `bezier3`, `hermite`, `catmull-rom`; `morton2` for a Z-order index. Ported from holyc; `examples/procgen.gael` uses these four |
 
 `(enable a b)` in the program reads only the manifests of the gems named and loads each one after the gems it
 requires. A requirement is met by the gem of that name or by one that provides it; when none is on, the gem of that
