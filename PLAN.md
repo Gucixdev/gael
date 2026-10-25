@@ -66,12 +66,14 @@ dokumentacja mieści się w kontekście.
 
 ## 1c. GPU (jego priorytet: „kluczowe mega”, jak w Mojo + wgpu)
 
-- [ ] Prototyp w C: wgpu-native (v29) przez `dlopen` liczy kernel WGSL na lavapipe (Vulkan na CPU) - urządzenie,
-      bufory, potok, dispatch, odczyt; ABI wgpu w C89 sprawdzane w `./test` względem oryginalnego `webgpu.h`.
-- [ ] `(gpu-each (p v) body...)`: ciało na GPU raz na element vec struktur; w kompilacji: liczby 32-bit (`f32`,
-      `i32`, `u32`, `bool`), pola elementu, wartości spoza jako stałe kernela, matematyka, `if` `let` `set`, bez
-      alokacji, zapis tylko do swojego elementu. Bez karty (albo bez wgpu) to samo na VM, z tym samym wynikiem.
-- [ ] Emiter WGSL z drzewa po kontroli typów; kolumny vec-a (SoA) jako osobne bufory, bez przepakowywania.
+- [x] Prototyp w C: wgpu-native (v29) przez `dlopen` liczy kernel WGSL na lavapipe (Vulkan na CPU) - urządzenie,
+      bufory, potok, dispatch, odczyt; ABI wgpu w C89 (`src/wgpu89.h`) sprawdzane w `./test` względem `webgpu.h`.
+- [x] `(gpu-each (p v) body...)`: ciało na GPU raz na element vec struktur; w kompilacji: liczby 32-bit (`f32`,
+      `i32`, `u32`), pola elementu, wartości spoza jako stałe kernela, matematyka, `if` `let` `set`, bez alokacji,
+      zapis tylko do swojego elementu. Bez karty (albo bez wgpu) to samo na VM, z tym samym wynikiem (`bd45dda`).
+- [x] Emiter WGSL z drzewa po kontroli typów (`gael -g`); kolumny vec-a (SoA) jako osobne bufory, bez przepakowywania.
+- [ ] Na GPU te same błędy co na VM: dzielenie inta przez zero, float za duży na int, przesunięcie poza bity - kernel
+      zapisuje znacznik, gael zgłasza błąd z linią (dziś WGSL daje wynik, a VM błąd).
 - [ ] Dane, które zostają na karcie między klatkami, żeby nie kopiować co klatkę.
 - [ ] Okno i klatka na Waylandzie (powierzchnia wgpu z `wl_surface`); wierzchołki i fragmenty pisane w gaelu.
 - [ ] Android, Apple (Metal przez wgpu), przeglądarka (WASM i WebGPU, ten sam WGSL).
