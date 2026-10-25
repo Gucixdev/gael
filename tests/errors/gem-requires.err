@@ -1,1 +1,1 @@
-tests/errors/gems/fsm.gael:1:1: error: gem fsm requires ecs, and no gem provides it: none is on, and there is no gems/ecs.gael or gems/ecs/main.gael
+tests/errors/gems/fsm.gael:1:1: error: gem fsm requires store, and no gem provides it: none is on, and there is no gems/store.gael or gems/store/main.gael

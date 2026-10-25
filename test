@@ -22,6 +22,7 @@ export GAEL_CHECK=1
 out=$(mktemp -d "${TMPDIR:-/tmp}/gael-test.XXXXXX") || exit 1
 trap 'rm -rf -- "$out"' EXIT
 export GAEL_HOME="$out/home" # gael's own folder: never the real ~/.gael
+ln -s "$PWD/gems" "$out/gems" # the gems that come with gael sit next to each build, as next to an installed gael
 flags=(-std=c89 -pedantic -Wall -Wextra -Werror)
 builds=()
 pass=0 fail=0

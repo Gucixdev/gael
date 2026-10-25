@@ -787,7 +787,14 @@ parenthesis, quote or `;` in it, or it starts like a number); text longer than 4
 ```
 
 A gem is a package by name: `gems/NAME.gael`, or a folder `gems/NAME/` whose `main.gael` uses the rest, looked for
-next to the program, then in gael's own folder. Its main file starts with the manifest; the keys are optional.
+next to the program, then in gael's own folder, then in the `gems/` that comes with gael, next to its binary. Its main
+file starts with the manifest; the keys are optional.
+
+The gems that come with gael:
+
+| gem | what it is |
+|---|---|
+| `ecs` | an entity component system the way flecs and the C ones go: 64-bit entity ids with a generation, a column per component, tags and components as bits of one mask per entity, queries `(ecs-each World (e c...) :with (tags) :not (tags) body...)`. The header of `gems/ecs.gael` has the whole of it; `examples/ecs.gael` uses it |
 
 `(enable a b)` in the program reads only the manifests of the gems named and loads each one after the gems it
 requires. A requirement is met by the gem of that name or by one that provides it; when none is on, the gem of that

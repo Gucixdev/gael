@@ -1,2 +1,2 @@
-; fsm requires ecs, and no gem that provides it is on
+; fsm requires store, and no gem that provides it is on
 (enable fsm)

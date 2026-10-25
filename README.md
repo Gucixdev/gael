@@ -358,7 +358,8 @@ is its own, not part of the arena of the code that resumed it. A coroutine that 
 stopped from outside (cancel) is not there yet. `examples/coroutines.gael` has more.
 
 A gem is a package by name: `gems/NAME.gael`, or a folder `gems/NAME/` whose `main.gael` uses the rest, next to the
-program or in gael's own folder. Its main file starts with a manifest:
+program, in gael's own folder, or in the `gems/` that comes with gael, next to its binary. Its main file starts with a
+manifest:
 
 ```
 (gem inventory :version "0.2.0" :requires (ecs) :provides (bags) :excludes (inventory-legacy))
@@ -372,6 +373,24 @@ those of the gems it requires, checked at each use when compiling: `gem sneaky u
 it does not require; add ecs-flat to its :requires`. The program uses every gem that is on. In the REPL
 `(enable name)` compiles a gem into the running program, and `(disable name)` turns one off: its names cannot be used
 until it is on again (code compiled before goes on working). `examples/gems.gael` uses two gems.
+
+The gems that come with gael are in `gems/`. `ecs` is an entity component system the way flecs and the C ones go:
+64-bit entity ids with a generation, a column per component, components and tags as bits of one mask per entity, and
+queries that name what they need. `examples/ecs.gael` runs a few ticks of one:
+
+```lisp
+(enable ecs)
+(ecs-world Game
+  (components (pos : Vec2 (Vec2)) (vel : Vec2 (Vec2)) (hp : int 100) (name : string ""))
+  (tags player enemy burning))
+
+(defn burn () : unit                            ; burning enemies lose 10 hp a tick
+  (ecs-each Game (e hp name) :with (burning enemy)
+    (set hp (- hp 10))
+    (when (<= hp 0)
+      (println "  %s burns up" name)
+      (e.despawn))))
+```
 
 `@export` before a `def` marks a global the way GDScript's `@export` marks a variable, for an editor's inspector to
 show and change; an annotation gael does not know is a compile error. `gael -x` lists them, with the value when it is
@@ -450,7 +469,7 @@ tests/errors/div-zero.gael:1: runtime error: division by zero
 
 ## Status
 
-Version 0.3, tested on Linux x86-64 with gcc 13.3 and clang 18.1. `./test` passes 126 checks per build (38 examples, 75
+Version 0.3, tested on Linux x86-64 with gcc 13.3 and clang 18.1. `./test` passes 130 checks per build (39 examples, 78
 compile and runtime error cases, three warning cases, three REPL sessions, seven README examples) with gcc, clang, gcc
 with the plain switch dispatch and gcc with both sanitizers, every run with `GAEL_CHECK=1`. GitHub Actions runs
 shellcheck on the scripts and `./test` on every push (`.github/workflows/test.yml`, ubuntu-24.04).

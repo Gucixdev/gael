@@ -19,8 +19,9 @@
  * A file can use others: (use "lib.gael") at its top level, the path relative to the file. Every file is compiled
  * once, the used ones first, and the program runs only when none of them has an error.
  *
- * Gems are files by name: (enable name...) loads gems/NAME.gael or gems/NAME/main.gael, from the program's folder or
- * else from gael's own, each after the gems its manifest requires; a gem's main file starts with the manifest,
+ * Gems are files by name: (enable name...) loads gems/NAME.gael or gems/NAME/main.gael, from the program's folder,
+ * else from gael's own, else from the gems that come with gael (gems/ next to the binary), each after the gems its
+ * manifest requires; a gem's main file starts with the manifest,
  * (gem name :requires (...) :provides (...) :excludes (...)). Only the gems named are read.
  *
  * Exit status: 0 fine, 1 a compile or runtime error, 2 bad usage; (exit n) ends with n.
@@ -190,12 +191,27 @@ static int load_failed(void)
 static char g_gem_root[PATH_MAX]; /* the folder of the program being loaded: its gems/ is looked at first */
 static int gael_home(char *path);
 
+/* exe_dir PATH: the folder of the running gael binary, into PATH (PATH_MAX bytes): the gems that come with gael are in
+ * its gems/. 0 when the system cannot tell (Linux's /proc/self/exe) */
+static int exe_dir(char *path)
+{
+	ssize_t n = readlink("/proc/self/exe", path, PATH_MAX - 1);
+	char *slash;
+	if (n <= 0) return 0;
+	path[n] = 0;
+	if (!(slash = strrchr(path, '/'))) return 0;
+	*slash = 0;
+	return 1;
+}
+
 /* gem_path NAME OUT: the main file of gem NAME into OUT (PATH_MAX bytes) - gems/NAME.gael or gems/NAME/main.gael in
- * the program's folder, then in gael's own folder; 0 when there is none */
+ * the program's folder, then in gael's own folder, then next to the gael binary (the gems that come with it); 0 when
+ * there is none */
 static int gem_path(const char *name, char *out)
 {
+	static char exe[PATH_MAX];
 	char home[1024];
-	const char *dirs[2];
+	const char *dirs[3];
 	i32 nd = 0, i;
 	const char *c;
 	for (c = name; *c; c++) { /* a gem's name is its file's: letters, digits, - and _ */
@@ -203,6 +219,7 @@ static int gem_path(const char *name, char *out)
 	}
 	dirs[nd++] = g_gem_root;
 	if (gael_home(home)) dirs[nd++] = home;
+	if (exe_dir(exe)) dirs[nd++] = exe;
 	for (i = 0; i < nd; i++) {
 		if (strlen(dirs[i]) + 2 * strlen(name) + 24 > PATH_MAX) continue;
 		sprintf(out, "%s/gems/%s.gael", dirs[i], name);
@@ -303,7 +320,7 @@ static i32 next_gem(i32 top, const Source *so)
 	for (i = 0; i < n; i++) { /* every manifest first, so a requirement can be met by a gem named later in the list */
 		if (gem_find(names[i]) >= 0) continue;
 		if (!gem_path(names[i], path)) {
-			error_at(pos[i][0], pos[i][1], "there is no gem %.64s: no gems/%.64s.gael or gems/%.64s/main.gael here or in gael's folder",
+			error_at(pos[i][0], pos[i][1], "there is no gem %.64s: no gems/%.64s.gael or gems/%.64s/main.gael here, in gael's folder or with gael itself",
 			         names[i], names[i], names[i]);
 			return -2;
 		}

@@ -1,2 +1,2 @@
-(gem fsm :requires (ecs) :excludes (legacy))
+(gem fsm :requires (store) :excludes (legacy))
 (defn fsm-make () : int 10)
