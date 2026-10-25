@@ -47,5 +47,62 @@ The bytecode VM against the script alone in Godot 4.7.2: gael is faster on all s
 1.1 on map, 4.8 on nbody, 6.5 on particles, 1.6 on sieve; faster than Python on five and level on map. Lua 5.4's
 interpreter (registers, not a stack) is 1.2 to 3.9 times faster than gael, LuaJIT and Node much more; C is 8 to 47
 times faster (8 on the map, whose work is in C in both), the distance a VM keeps and gael → C is for. gael starts
-almost as fast as C (1.6 ms against 1.4); Godot's engine takes 0.9 s. Memory: as small as C, but for the sieve (a bool takes a whole 8-byte cell in a vec, and the vec doubles: 104 MB
-against C's 6) and the map (67 MB against 36).
+almost as fast as C (1.6 ms against 1.4); Godot's engine takes 0.9 s. Memory: as small as C, but for the sieve (a
+bool takes a whole 8-byte cell in a vec, and the vec doubles: 104 MB against C's 6) and the map (67 MB against 36).
+
+## 2026-10-25 88e71bd
+
+Intel(R) Xeon(R) Processor @ 2.80GHz, 2 cores, 8 GB; 10 runs after 1 warmup, median wall time.
+
+- gael: gael 88e71bd
+- c: gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0
+- python: Python 3.13.16
+- lua: Lua 5.4.6
+- luajit: LuaJIT 2.1.1703358377
+- guile: guile (GNU Guile) 3.0.9
+- chez: Chez Scheme 9.5.8
+- chicken: Chicken 5.3.0
+- sbcl: SBCL 2.2.9.debian
+- node: Node v22.22.0
+- godot: Godot 4.7.2.stable.official.ed1daf0bf
+
+| ms | gael | c | python | lua | luajit | guile | chez | chicken | sbcl | node | godot | gdscript |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| start | 1.5 | 1.4 | 18.6 | 2.1 | 1.8 | 13.6 | 72.6 | 4.0 | 6.9 | 36.0 | 944.4 | 0.0 |
+| fib | 324.8 | 12.8 | 956.9 | 483.8 | 70.9 | 214.1 | 127.4 | 553.2 | 110.2 | 101.4 | 4156.0 | 3211.6 |
+| loop | 281.3 | 27.7 | 2564.3 | 293.0 | 88.0 | 384.9 | 333.1 | 1413.4 | 232.1 | 105.2 | 2512.6 | 1568.2 |
+| map | 340.1 | 81.9 | 689.7 | 223.0 | 54.6 | 1027.1 | 428.8 | - | 319.2 | 459.8 | 1729.7 | 785.3 |
+| nbody | 421.9 | 19.8 | 1129.8 | 503.9 | 59.8 | 2468.9 | 458.6 | 1059.7 | 556.7 | 62.1 | 3634.1 | 2689.7 |
+| particles | 320.4 | 11.4 | 1777.3 | 425.2 | 45.0 | 1719.8 | 297.3 | 890.3 | 473.0 | 73.1 | 4979.0 | 4034.6 |
+| sieve | 320.9 | 26.3 | 1041.6 | 524.1 | 163.5 | 367.6 | 318.3 | 578.5 | 158.1 | 185.6 | 2152.9 | 1208.5 |
+
+| MB | gael | c | python | lua | luajit | guile | chez | chicken | sbcl | node | godot | gdscript |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| start | 1 | 1 | 9 | 2 | 2 | 9 | 48 | 6 | 18 | 39 | 203 | 203 |
+| fib | 1 | 2 | 8 | 3 | 2 | 9 | 48 | 9 | 22 | 47 | 203 | 203 |
+| loop | 1 | 2 | 9 | 3 | 2 | 9 | 48 | 6 | 24 | 49 | 203 | 203 |
+| map | 67 | 36 | 111 | 28 | 16 | 63 | 96 | - | 111 | 105 | 205 | 205 |
+| nbody | 2 | 2 | 9 | 3 | 3 | 10 | 48 | 18 | 80 | 49 | 204 | 204 |
+| particles | 2 | 2 | 11 | 4 | 4 | 12 | 48 | 18 | 82 | 53 | 203 | 203 |
+| sieve | 3 | 6 | 47 | 130 | 66 | 47 | 58 | 45 | 64 | 86 | 205 | 205 |
+
+Instructions each program ran, counted by callgrind (`valgrind --tool=callgrind`), for gael built at the first run's
+commit and at this one; unlike wall time, the count does not change with the load on the machine:
+
+| millions | 4021b68 | 88e71bd | fewer |
+|---|---:|---:|---:|
+| fib | 4956 | 2317 | 2.14x |
+| loop | 8572 | 2410 | 3.56x |
+| map | 1262 | 651 | 1.94x |
+| nbody | 6673 | 3574 | 1.87x |
+| particles | 7034 | 3297 | 2.13x |
+| sieve | 6485 | 3475 | 1.87x |
+
+After computed goto, superinstructions, conditions compiled to jumps, the new map and bools as bits, the VM runs 1.9
+to 3.6 times fewer instructions. Against the script alone in Godot 4.7.2 gael is 2.3 (map) to 12.6 (particles) times
+faster, against Python 2.0 to 9.1. Against Lua 5.4 gael is faster on five of the six (fib 1.5 times, nbody 1.2,
+particles 1.3, sieve 1.6; loop level at 1.04, within the noise), and Lua is 1.5 times faster on the map, where most of
+the keys land in its array part. LuaJIT and Node compile to machine code and are 1.7 to 7 times faster, but for Node on
+the map, which is 1.35 times slower than gael; C is 4 to 28 times faster. Start: 1.5 ms (C 1.4, Lua 2.1). Memory:
+the sieve takes 3 MB, half of C's 6 (C stores a byte per number, gael a bit); the map 67 MB, against C's 36 and Lua's
+28.
