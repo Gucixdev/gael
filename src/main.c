@@ -45,6 +45,7 @@ static const char *const g_usage[] = {
 	"       gael check FILE        only compile: report every error and warning, run nothing (also gael -c)\n",
 	"       gael test FILE...      compile the files, run their defs (not the rest of their top level), then each\n",
 	"                              (@test \"name\" ...) in them: ok or FAIL for each; exit 1 when one failed\n",
+	"       gael doc               the cheat sheet for writing gael (docs/MODELS.md next to the binary)\n",
 	"       gael -d FILE           compile and print the bytecode\n",
 	"       gael -m FILE           print FILE with its macros expanded: the code the compiler checks\n",
 	"       gael -e CODE ARGS...   compile and run CODE\n",
@@ -645,6 +646,20 @@ int main(int argc, char **argv)
 	}
 	if (argc >= 3 && !strcmp(argv[1], "test")) {
 		st = run_tests(argc - 2, argv + 2);
+	} else if (argc == 2 && !strcmp(argv[1], "doc")) { /* the cheat sheet for models, the one that came with this gael */
+		char path[PATH_MAX];
+		FILE *f;
+		int c;
+		st = 1;
+		if (exe_dir(path) && strlen(path) + 20 < sizeof(path)) {
+			strcat(path, "/docs/MODELS.md");
+			if ((f = fopen(path, "r")) != 0) {
+				while ((c = getc(f)) != EOF) putchar(c);
+				fclose(f);
+				st = 0;
+			}
+		}
+		if (st) fprintf(stderr, "gael: no docs/MODELS.md next to the gael binary\n");
 	} else if (argc == 3 && !strcmp(argv[1], "check")) {
 		st = load(argv[2], 0, 0, 0, CHECK);
 	} else if (argv[1][0] != '-') {

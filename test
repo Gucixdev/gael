@@ -13,6 +13,7 @@
 #                           the REPL with a main.gael, and with a gem from gael's folder turned on and off
 #   README.md               every "$ ./gael ARGS" example prints exactly the lines shown under it
 #   docs/REFERENCE.md       its index has every built-in name gael -n lists
+#   docs/MODELS.md          the cheat sheet for models has every built-in name too, and stays under 16 KB
 # Every run has GAEL_CHECK=1: freed memory is overwritten, so a stale read shows, and a program that ends normally
 # must have freed every string, vec and map it made.
 # Exit 0 when everything passed. Build outputs go to a temp folder; the checkout is not touched.
@@ -24,6 +25,7 @@ out=$(mktemp -d "${TMPDIR:-/tmp}/gael-test.XXXXXX") || exit 1
 trap 'rm -rf -- "$out"' EXIT
 export GAEL_HOME="$out/home" # gael's own folder: never the real ~/.gael
 ln -s "$PWD/gems" "$out/gems" # the gems that come with gael sit next to each build, as next to an installed gael
+ln -s "$PWD/docs" "$out/docs" # and its docs, for gael doc
 flags=(-std=c89 -pedantic -Wall -Wextra -Werror)
 builds=()
 pass=0 fail=0
@@ -154,6 +156,13 @@ if [ "${#builds[@]}" -gt 0 ]; then # docs/REFERENCE.md: every built-in name (gae
 		grep -qF -- "\`$name\`" <<< "$index" || { ok=0; echo "  not in the index of docs/REFERENCE.md: $name"; }
 	done < <("${builds[0]}" -n)
 	check "docs/REFERENCE.md has every built-in name" "$ok"
+	ok=1
+	tr '()[]{}`"'"'"';,\t ' '\n' < docs/MODELS.md | sort -u > "$out/tokens"
+	while IFS= read -r name; do
+		grep -qxF -- "$name" "$out/tokens" || { ok=0; echo "  not in docs/MODELS.md: $name"; }
+	done < <("${builds[0]}" -n)
+	[ "$(wc -c < docs/MODELS.md)" -lt 16000 ] || { ok=0; echo "  docs/MODELS.md is 16 KB or more: too big for a small model's context"; }
+	check "docs/MODELS.md has every built-in name and fits a small model" "$ok"
 fi
 
 echo "$pass passed, $fail failed (${#builds[@]} builds)"

@@ -35,6 +35,7 @@ gael run FILE ARGS...  the same
 gael check FILE        only compile: report every error and warning, run nothing (also gael -c)
 gael test FILE...      compile the files, run their defs (not the rest of their top level), then each
                        (@test "name" ...) in them: ok or FAIL for each; exit 1 when one failed
+gael doc               the cheat sheet for writing gael (docs/MODELS.md next to the binary)
 gael -d FILE           compile and print the bytecode
 gael -m FILE           print FILE with its macros expanded: the code the compiler checks
 gael -e CODE ARGS...   compile and run CODE
@@ -214,7 +215,9 @@ and the source line it came from.
 
 ## The language in 0.3
 
-A tour; `docs/REFERENCE.md` has the exact entry for each name (`gael -n` lists them all).
+A tour; `docs/REFERENCE.md` has the exact entry for each name (`gael -n` lists them all). gael is written mostly by
+models, so `docs/MODELS.md` (`gael doc` prints it) is all of it in under 3000 tokens, small enough for the context of
+a model on a home machine: the mistakes to avoid, every form with an example, the gems and the commands.
 
 Types: `int` (64-bit, arithmetic wraps around), `float` (64-bit), `bool`, `string`, `unit` (no value), structs, enums,
 `(option type)`, `(vec type)`, `(map key value)`, `(pool type)`, `(handle type)`, `(fn (types) type)`,
