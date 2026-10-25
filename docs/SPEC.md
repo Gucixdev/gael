@@ -122,6 +122,14 @@ potwierdzenia:
   zakleszczeń - nie ma już czego wykrywać. Prędkość ma przyjść z rdzeni: fgjob dzieli pętlę na kawałki na wszystkie
   rdzenie, masterslave to wątek główny rozdający robotę; punkt zbiegu raz na klatkę (jak Unity DOTS i silnik Naughty
   Dog), a kompilator pilnuje, że kawałek pisze tylko do swojego elementu - bez data race i bez locków.
+- **GPU (jego słowa, 2026-10-25):** „a dostęp do GPU? a wgpu? kluczowe mega, tak jak w Mojo”, „głównie zależy mi na
+  Wayland, Vulkan i mobile i Metal”, a po pytaniu, od czego zacząć: „wszystkie 3 opcje myślę, chociaż chciałbym
+  bardziej podejście jak w Mojo + wgpu”. Decyzja: kod na kartę pisze się w gaelu, jak w Mojo - `(gpu-each (p v) ...)`,
+  ciało raz na element, sprawdzane w kompilacji tą samą regułą co fgjob (pisze tylko do swojego elementu), a bez karty
+  to samo leci na VM. gael sam emituje WGSL, a wgpu-native ładuje przez `dlopen` w trakcie działania: Vulkan na
+  Linuksie z Waylandem i na Androidzie, Metal na Apple, DX12, GL - i ten sam WGSL na WebGPU w przeglądarce (WASM).
+  Potem dwie pozostałe drogi za tym samym API gaela: własny SPIR-V z Vulkanem przez `dlopen` (bez cudzego kodu) i SDL3
+  GPU (SPIR-V i MSL). Koszt: `dlopen` wymaga libc linkowanego dynamicznie.
 - **ECS jako gem, który przychodzi z gaelem (2026-10-25; jego słowa: „ecs z tagami albo hashtagami, co lepsze i
   szybsze, jako gem, bo to będzie bardzo kluczowy gem w gamedev”, „konkurencja: flecs i inne ECS w surowym C z tagami
   i query”):** `gems/ecs.gael` obok binarki - gael szuka gemu obok programu, potem w swoim folderze, potem w `gems/`

@@ -64,6 +64,19 @@ dokumentacja mieści się w kontekście.
 - [ ] ECS dalej, gdy będzie potrzeba: `Changed` (znacznik zmiany kolumny, jak w Bevy), systemy równolegle na fgjob
       (kompilator widzi, które kolumny pisze każde zapytanie), archetypy po generykach.
 
+## 1c. GPU (jego priorytet: „kluczowe mega”, jak w Mojo + wgpu)
+
+- [ ] Prototyp w C: wgpu-native (v29) przez `dlopen` liczy kernel WGSL na lavapipe (Vulkan na CPU) - urządzenie,
+      bufory, potok, dispatch, odczyt; ABI wgpu w C89 sprawdzane w `./test` względem oryginalnego `webgpu.h`.
+- [ ] `(gpu-each (p v) body...)`: ciało na GPU raz na element vec struktur; w kompilacji: liczby 32-bit (`f32`,
+      `i32`, `u32`, `bool`), pola elementu, wartości spoza jako stałe kernela, matematyka, `if` `let` `set`, bez
+      alokacji, zapis tylko do swojego elementu. Bez karty (albo bez wgpu) to samo na VM, z tym samym wynikiem.
+- [ ] Emiter WGSL z drzewa po kontroli typów; kolumny vec-a (SoA) jako osobne bufory, bez przepakowywania.
+- [ ] Dane, które zostają na karcie między klatkami, żeby nie kopiować co klatkę.
+- [ ] Okno i klatka na Waylandzie (powierzchnia wgpu z `wl_surface`); wierzchołki i fragmenty pisane w gaelu.
+- [ ] Android, Apple (Metal przez wgpu), przeglądarka (WASM i WebGPU, ten sam WGSL).
+- [ ] Dwie pozostałe drogi za tym samym API: SPIR-V z gaela i Vulkan przez `dlopen`; SDL3 GPU (SPIR-V i MSL).
+
 ## 2. Jedna binarka i build system
 
 - [ ] `gael build`: jeden plik wykonywalny - kopia gaela z doklejonym programem; działa bez gaela i bez gcc.
@@ -95,7 +108,7 @@ dokumentacja mieści się w kontekście.
 - [ ] artemacs: rdzeń w C (okno, wejście, rysowanie), reszta w gaelu; bufory i tryby jako gemy - inspektor jak w
       Godocie (wartości `@export` działającej gry, zmiana od razu w grze; dziś tekstowo `gael -x`), drzewo sceny,
       viewport 3D, wektor, raster, tekst, terminal.
-- [ ] GPU (SPIR-V).
+- [ ] GPU: sekcja 1c.
 - [ ] Ownership (owned / borrowed / shared) - opcjonalny, jeśli liczniki, areny i uchwyty nie wystarczą.
 
 ## Zrobione ostatnio
