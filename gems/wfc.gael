@@ -93,6 +93,8 @@
 (defn wfc--run ((w : Wfc) (r : Rng)) : bool
   (let ((all (wfc--all w.n)) (ok true) (done false))
     (for (c 0 (* w.w w.h)) (put w.cells c all))
+    (for (c 0 (* w.w w.h))                        ; first, out with every tile no tile allows beside it
+      (when ok (set ok (wfc--spread w c))))
     (for (c 0 (* w.w w.h))
       (let ((f (get w.fixed c)))
         (when (and ok (>= f 0))
