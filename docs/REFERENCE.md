@@ -42,10 +42,10 @@ How the entries read:
 | `arena` | memory handed back at once when the body ends | [Memory](#memory) |
 | `args` | the command line after the file | [Files and the system](#files-and-the-system) |
 | `asin` | arc sine | [Math](#math) |
-| `async` | run a function as a task | [Tasks](#tasks) |
+| `async` | run a function as a coroutine | [Coroutines](#coroutines) |
 | `atan` | arc tangent | [Math](#math) |
 | `atan2` | the angle of a point (y, x) | [Math](#math) |
-| `await` | a task's result, once it has ended | [Tasks](#tasks) |
+| `await` | a coroutine's result, once it has ended | [Coroutines](#coroutines) |
 | `bit-and` | the bits set in all | [Bits](#bits) |
 | `bit-not` | every bit flipped | [Bits](#bits) |
 | `bit-or` | the bits set in any | [Bits](#bits) |
@@ -55,13 +55,15 @@ How the entries read:
 | `ceil` | round up to a whole number | [Math](#math) |
 | `chain` | hand a value through steps: `(chain x (f a) g)` | [Control](#control) |
 | `char` | the one-byte string of a byte | [Strings](#strings) |
+| `coroutine` | the type of a function running on a stack of its own | [Coroutines](#coroutines) |
+| `coroutine-time` | the coroutines' clock | [Coroutines](#coroutines) |
 | `cos` | cosine | [Math](#math) |
 | `def` | a global | [Top level](#top-level) |
 | `defmacro` | a macro | [Macros](#macros) |
 | `defn` | a function | [Top level](#top-level) |
 | `disable` | turn a gem off | [Gems](#gems) |
 | `do` | forms in order, the last one's value | [Control](#control) |
-| `done?` | whether a task has ended | [Tasks](#tasks) |
+| `done?` | whether a coroutine has ended | [Coroutines](#coroutines) |
 | `enable` | turn gems on, loading them | [Gems](#gems) |
 | `enum` | a type with named values | [Enums](#enums) |
 | `env` | an environment variable, `""` when unset | [Files and the system](#files-and-the-system) |
@@ -120,26 +122,24 @@ How the entries read:
 | `remove` | take out a map entry or a pool element | [Maps](#maps), [Pools](#pools) |
 | `return` | leave the function now, with a value | [Control](#control) |
 | `run` | run a command; true when it succeeds | [Files and the system](#files-and-the-system) |
+| `run-coroutines` | run the coroutines until none is left | [Coroutines](#coroutines) |
 | `set` | give a variable or a field a new value | [Control](#control) |
 | `sh` | run a command, get its output | [Files and the system](#files-and-the-system) |
 | `shl` | shift left | [Bits](#bits) |
 | `shr` | shift right | [Bits](#bits) |
 | `sin` | sine | [Math](#math) |
-| `sleep` | wait seconds | [Tasks](#tasks) |
+| `sleep` | wait seconds | [Coroutines](#coroutines) |
 | `some` | an option with a value | [Options](#options) |
 | `spawn` | put an element into a pool | [Pools](#pools) |
 | `split` | the pieces between separators | [Strings](#strings) |
 | `sqrt` | square root | [Math](#math) |
+| `step-coroutines` | one step of the coroutines | [Coroutines](#coroutines) |
 | `string` | the string type | [Types](#types) |
 | `string-of` | a macro's parts as a string, like C's `#` | [Macros](#macros) |
 | `struct` | a type with fields | [Structs](#structs) |
 | `substr` | bytes from one index up to another | [Strings](#strings) |
 | `system` | run a command, its output passing through; its status | [Files and the system](#files-and-the-system) |
 | `tan` | tangent | [Math](#math) |
-| `task` | the type of a running function | [Tasks](#tasks) |
-| `task-time` | the tasks' clock | [Tasks](#tasks) |
-| `tasks-run` | run the tasks until none is left | [Tasks](#tasks) |
-| `tasks-step` | one step of the tasks | [Tasks](#tasks) |
 | `trim` | a string without the space around it | [Strings](#strings) |
 | `true` | the bool | [Types](#types) |
 | `u16` `u32` `u64` `u8` | unsigned int types; convert to them | [Types](#types), [Numbers](#numbers) |
@@ -152,7 +152,7 @@ How the entries read:
 | `write-file` | write a whole file | [Files and the system](#files-and-the-system) |
 | `xnor` | an even number true | [Logic](#logic) |
 | `xor` | an odd number true | [Logic](#logic) |
-| `yield` | a task waits for the next step | [Tasks](#tasks) |
+| `yield` | a coroutine waits for the next step | [Coroutines](#coroutines) |
 
 Not names but syntax: `;` comments, `"..."` strings, `:keyword`, `$Node/Path`, `@export`, `a.b.c` field paths and
 `(expr).field` - see [Reading](#reading).
@@ -201,14 +201,14 @@ Not names but syntax: `;` comments, `"..."` strings, `:keyword`, `$Node/Path`, `
 | `(pool T)` | 1 | a reference to a fixed number of slots | no | no | no | no |
 | `(handle T)` | 1 | a slot of a `(pool T)` and its generation | yes | no | yes | no |
 | `(fn (T...) R)` | 1 | a function or a closure | no | no | no | no |
-| `(task T)` | 1 | a running function | no | no | no | no |
+| `(coroutine T)` | 1 | a running function | no | no | no | no |
 
 - Nothing converts on its own: `(+ 1 2.0)` and `(+ x y)` with an `int` and an `i32` are compile errors. The number
   types convert on purpose: `(float x)`, `(int x)`, `(u8 x)`... (see [Numbers](#numbers)).
 - A struct is a value: assigning, passing or putting it in a vec copies it. A vec, a map, a pool, a function value
-  and a task are references: copying one shares what it refers to.
-- A `(vec ...)`, `(map ...)`, `(pool ...)`, `(option ...)` or `(handle ...)` of `unit` is a compile error; `(task unit)`
-  is fine (a task that returns nothing).
+  and a coroutine are references: copying one shares what it refers to.
+- A `(vec ...)`, `(map ...)`, `(pool ...)`, `(option ...)` or `(handle ...)` of `unit` is a compile error;
+  `(coroutine unit)` is fine (a coroutine that returns nothing).
 - An unknown type name is a compile error: `unknown type X`.
 
 ## Top level
@@ -617,7 +617,7 @@ Compile error: a handle of another pool's element type.
 
 ## Memory
 
-Strings made at run time, vecs, maps, pools, closures and tasks count their owners; the compiler puts the counting
+Strings made at run time, vecs, maps, pools, closures and coroutines count their owners; the compiler puts the counting
 in, and when the last owner lets go the object is freed on the spot, with what it holds. A read that only looks
 (`len`, `get`, `=`, `lookup`) borrows and counts nothing. A cycle - a vec that holds itself - is never freed.
 
@@ -669,32 +669,34 @@ digits that read back as the same value.
 | `(pipe-in text "cmd"...)` | `string` | the same, with `text` on the first command's stdin |
 | `(exit status)` | unit | end the program with this exit status |
 
-## Tasks
+## Coroutines
 
 ```
-(async (f x...))          ; (task R) when f returns R
-(await t)   (sleep seconds)   (yield)   (tasks-step dt)   (tasks-run)   (done? t)   (task-time)
-(task R)                  ; the type
+(async (f x...))          ; (coroutine R) when f returns R
+(await co)   (sleep seconds)   (yield)   (step-coroutines dt)   (run-coroutines)   (done? co)   (coroutine-time)
+(coroutine R)             ; the type
 ```
 
-`async` runs a named function as a task: a function with a stack of its own, which can wait anywhere - also deep in
-the functions it calls - without them saying so. It runs at once, until it first waits, and gives a `(task R)`.
+`async` runs a named function as a coroutine: a function with a stack of its own, which can wait anywhere - also deep in
+the functions it calls - without them saying so. It runs at once, until it first waits, and gives a `(coroutine R)`.
 
-- `(await t)` gives the task's result once it has ended, with the type `R`. In a task it waits; in the main program
-  it runs the tasks (in real time) until `t` has ended.
-- `(sleep s)` waits `s` seconds (a float) of task time. In the main program it runs the tasks meanwhile, in real time.
-- `(yield)` waits until the next step. Only in a task.
-- `(tasks-step dt)` - from the main program, e.g. once a frame - moves the task time `dt` seconds on and lets every
-  task that can go on run until it waits again; it gives how many tasks are left.
-- `(tasks-run)` runs the tasks until none is left, sleeping in real time when they all sleep.
-- `(done? t)` says whether a task has ended; `(task-time)` gives the task time in seconds.
+- `(await co)` gives the coroutine's result once it has ended, with the type `R`. In a coroutine it waits; in the main
+  program it runs the coroutines (in real time) until `co` has ended.
+- `(sleep s)` waits `s` seconds (a float) of coroutine time. In the main program it runs the coroutines meanwhile, in
+  real time.
+- `(yield)` waits until the next step. Only in a coroutine.
+- `(step-coroutines dt)` - from the main program, e.g. once a frame - moves the coroutine time `dt` seconds on and lets
+  every coroutine that can go on run until it waits again; it gives how many coroutines are left.
+- `(run-coroutines)` runs the coroutines until none is left, sleeping in real time when they all sleep.
+- `(done? co)` says whether a coroutine has ended; `(coroutine-time)` gives the coroutine time in seconds.
 
-A task does not make its strings and vecs in the arenas of the code that resumed it. Runtime errors: every task
-waiting for another (`every task waits for another task, so none can go on`), a task awaiting itself, a task waiting
-inside an `arena`, `yield` outside a task, `tasks-step` or `tasks-run` from a task, awaiting a task stopped by a runtime
-error. Compile errors: `async` of anything but a call of a function by its name, `await` or `done?` of a non-task,
-`sleep` or `tasks-step` of a non-float. A task cannot be cancelled from outside yet; a task that never ends holds what
-it holds (and `GAEL_CHECK=1` counts that as not freed).
+A coroutine does not make its strings and vecs in the arenas of the code that resumed it. Runtime errors: every
+coroutine waiting for another (`every coroutine waits for another one, so none can go on`), a coroutine awaiting itself,
+a coroutine waiting inside an `arena`, `yield` outside a coroutine, `step-coroutines` or `run-coroutines` from a
+coroutine, awaiting a coroutine stopped by a runtime error. Compile errors: `async` of anything but a call of a function
+by its name, `await` or `done?` of a non-coroutine, `sleep` or `step-coroutines` of a non-float. A coroutine cannot be
+cancelled from outside yet; a coroutine that never ends holds what it holds (and `GAEL_CHECK=1` counts that as not
+freed).
 
 ## Macros
 
@@ -791,11 +793,11 @@ Each stops the program (in the REPL, the form) with the line: `FILE:LINE: runtim
 | `T of a float that does not fit in it (RANGE)` | a float to an int conversion |
 | `a shift by N does not fit a B-bit int` | `shl`, `shr` |
 | `stack overflow (recursion too deep?)`, `stack overflow` | too many nested calls, or a frame too big |
-| `this vec, map or pool was never made: a global read before its def ran` | and the same for a function value or a task |
+| `this vec, map or pool was never made: a global read before its def ran` | and the same for a function value or a coroutine |
 | `a stale handle: its element was removed from the pool`, `the pool is full (N elements)`, `a pool holds 1 to 2147483647 elements, not N` | pools |
 | `N strings ... made in this arena are still held when it ends ...`, `arenas nested deeper than 64` | arenas |
 | `out of memory (the heap is full)`, `out of memory for strings (the text arena is full)`, `keep: out of memory ...` | memory; `GAEL_HEAP` sets the sizes |
-| task errors | see [Tasks](#tasks) |
+| coroutine errors | see [Coroutines](#coroutines) |
 
 ## Command line
 
@@ -826,5 +828,5 @@ replaces the old), a struct or an enum with the same fields or values, a macro f
 
 8 parameters per function; 65536 functions, globals and types; 2^24 instructions; in one file 2^21 forms and 64 MiB of
 source and names; 256 nested lists; at run time a stack of 65536 cells and 4096 nested calls (tail calls do not nest),
-the same for each task; 64 nested arenas; 64 nested `fn`s and 64 locals a `fn` keeps; 63 pattern variables a macro
+the same for each coroutine; 64 nested arenas; 64 nested `fn`s and 64 locals a `fn` keeps; 63 pattern variables a macro
 rule; 1024 gems. Running out of one is an error that names it.

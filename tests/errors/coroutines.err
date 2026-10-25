@@ -1,0 +1,9 @@
+tests/errors/coroutines.gael:2:8: error: await takes a coroutine, which (async (f ...)) makes; this is int
+tests/errors/coroutines.gael:3:8: error: sleep takes seconds as a float, like (sleep 0.5); this is int
+tests/errors/coroutines.gael:4:8: error: async takes a call of a function by its name: (async (patrol goblin))
+tests/errors/coroutines.gael:5:8: error: async takes a call of a function by its name: (async (patrol goblin))
+tests/errors/coroutines.gael:6:11: error: f: argument 1 is string, it must be int
+tests/errors/coroutines.gael:7:1: error: yield takes nothing: (yield)
+tests/errors/coroutines.gael:8:8: error: done? takes a coroutine, which (async (f ...)) makes; this is (vec int)
+tests/errors/coroutines.gael:9:59: error: +: int and float do not mix; convert one, like (int x) or (float x)
+tests/errors/coroutines.gael:10:6: error: u is declared (coroutine unit), its value is (coroutine int)

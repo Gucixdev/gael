@@ -179,14 +179,14 @@ and the source line it came from.
 
 A tour; `docs/REFERENCE.md` has the exact entry for each name (`gael -n` lists them all).
 
-Types: `int` (64-bit, arithmetic wraps around), `float` (64-bit), `bool`, `string`, `unit` (no value), structs,
-enums, `(option type)`, `(vec type)`, `(map key value)`, `(pool type)`, `(handle type)`, `(fn (types) type)`, `(task type)`, and numbers with a size:
-`i8`, `i16`, `i32`, `i64` (the same as `int`), `u8`, `u16`, `u32`, `u64`, `f32`, `f64` (the same as `float`). Arithmetic
-stays in its size and wraps around; a number literal takes the size expected where it stands (a declared type, a
-parameter, a field, the other operand) and must fit in it, so `(def b : u8 300)` is a compile error. Nothing converts
-on its own: `(+ 1 2.0)` is a compile error, and `(float x)`, `(int x)`, `(u8 x)`, `(f32 x)` and the like convert on
-purpose: between ints the value wraps around, a float to an int that cannot hold it is a runtime error. A comment
-starts with `;`.
+Types: `int` (64-bit, arithmetic wraps around), `float` (64-bit), `bool`, `string`, `unit` (no value), structs, enums,
+`(option type)`, `(vec type)`, `(map key value)`, `(pool type)`, `(handle type)`, `(fn (types) type)`,
+`(coroutine type)`, and numbers with a size: `i8`, `i16`, `i32`, `i64` (the same as `int`), `u8`, `u16`, `u32`, `u64`,
+`f32`, `f64` (the same as `float`). Arithmetic stays in its size and wraps around; a number literal takes the size expected where it
+stands (a declared type, a parameter, a field, the other operand) and must fit in it, so `(def b : u8 300)` is a compile
+error. Nothing converts on its own: `(+ 1 2.0)` is a compile error, and `(float x)`, `(int x)`, `(u8 x)`, `(f32 x)` and
+the like convert on purpose: between ints the value wraps around, a float to an int that cannot hold it is a runtime
+error. A comment starts with `;`.
 
 | Form | Meaning |
 |---|---|
@@ -224,10 +224,10 @@ starts with `;`.
 | `(keep x)` | `x` with what it holds from the innermost arena copied out to the heap, so it outlives the arena |
 | `(defmacro name (pattern template)...)` | a macro: the first rule whose pattern matches a use rewrites it, before the types are checked (below) |
 | `(string-of x)`, `(name-of "print-" x)` | in a template: `x` written as a string, and a name joined from parts, as C's `#` and `##` |
-| `(async (f x...))` | run `f` as a task, at once until it first waits; a `(task type)` of what `f` returns |
-| `(await t)`, `(sleep 0.5)`, `(yield)` | wait for a task's result, for seconds of task time, or for the next step. In a task they let the others run; in the main program `await` and `sleep` run the tasks meanwhile |
-| `(tasks-step dt)`, `(tasks-run)` | from the main program: task time goes `dt` seconds on and each task that can goes on until it waits again (the number of tasks left); run them until none is left, waiting in real time |
-| `(done? t)`, `(task-time)` | whether a task has ended; the task time in seconds |
+| `(async (f x...))` | run `f` as a coroutine, at once until it first waits; a `(coroutine type)` of what `f` returns |
+| `(await co)`, `(sleep 0.5)`, `(yield)` | wait for a coroutine's result, for seconds of coroutine time, or for the next step. In a coroutine they let the others run; in the main program `await` and `sleep` run the coroutines meanwhile |
+| `(step-coroutines dt)`, `(run-coroutines)` | from the main program: coroutine time goes `dt` seconds on and each coroutine that can goes on until it waits again (the number of coroutines left); run them until none is left, waiting in real time |
+| `(done? co)`, `(coroutine-time)` | whether a coroutine has ended; the coroutine time in seconds |
 | `(enable name...)`, `(disable name...)` | turn gems on, loading each one after what it requires, or off (below) |
 | `(some 5)`, `none` | the two kinds of `(option int)` value; `none` takes its type from where it goes: a declared binding, a parameter, a field, a return type, or the else branch of an `if` whose then branch has one |
 | `(match x (pattern body...)...)` | patterns are `_`, int and string literals, `true` and `false`, enum values (`north` or `Dir.north`), `(some name)` and `none`; every value must be covered, and an arm that can never run is an error |
@@ -317,9 +317,9 @@ is made (as a GDScript lambda does). Setting one inside changes the fn's own cop
 `(let ((n 0)) (fn () : int (set n (+ n 1)) n))` counts; a vec, a map or a pool is a reference, so what is in it is
 shared. A `fn` made in a loop keeps that turn's values. `examples/closures.gael` has more.
 
-A task is a function running on a stack of its own (a stackful coroutine): it can wait anywhere, also deep in the
-functions it calls, and they need no mark for it - no async colouring as in Rust or C#. `(await t)` has the type of
-what the task's function returns, checked when compiling. A game's loop gives the tasks a step each frame:
+A coroutine is a function running on a stack of its own (it is stackful): it can wait anywhere, also deep in the
+functions it calls, and they need no mark for it - no async colouring as in Rust or C#. `(await co)` has the type of
+what the coroutine's function returns, checked when compiling. A game's loop gives the coroutines a step each frame:
 
 ```
 (defn patrol ((i : int)) : unit
@@ -328,13 +328,13 @@ what the task's function returns, checked when compiling. A game's loop gives th
     (walk-to i 0.0)))
 (async (patrol 0))
 (while running
-  (tasks-step dt)
+  (step-coroutines dt)
   (draw))
 ```
 
-A task cannot wait inside an `(arena ...)` (the arena would end while other code runs), and what a task makes is its
-own, not part of the arena of the code that resumed it. A task that never ends holds what it holds: one stopped from
-outside (cancel) is not there yet. `examples/tasks.gael` has more.
+A coroutine cannot wait inside an `(arena ...)` (the arena would end while other code runs), and what a coroutine makes
+is its own, not part of the arena of the code that resumed it. A coroutine that never ends holds what it holds: one
+stopped from outside (cancel) is not there yet. `examples/coroutines.gael` has more.
 
 A gem is a package by name: `gems/NAME.gael`, or a folder `gems/NAME/` whose `main.gael` uses the rest, next to the
 program or in gael's own folder. Its main file starts with a manifest:
@@ -387,10 +387,10 @@ tests/errors/div-zero.gael:1: runtime error: division by zero
 - A function value is one cell: minus the function's number plus one, or a closure - an object with the function's
   number and the values it keeps, which a `fn` reads and sets at offsets in it (its handle comes in slot 0). An
   indirect call puts a closure there, or 0 for a plain function made by `fn`.
-- A task has its own value stack and frames, blocks on the heap that double when a call needs more; switching to a
-  task or back saves one set of registers (stack, frames, pc, sp, fp) and loads the other. A task's function returns
-  to a `TASK_END` instruction that keeps the result in the task object. The main program's waits re-run their own
-  instruction after each task they let run, so the scheduler needs no loop in C around the interpreter.
+- A coroutine has its own value stack and frames, blocks on the heap that double when a call needs more; switching to a
+  coroutine or back saves one set of registers (stack, frames, pc, sp, fp) and loads the other. A coroutine's function
+  returns to a `CORO_END` instruction that keeps the result in the coroutine object. The main program's waits re-run
+  their own instruction after each coroutine they let run, so the scheduler needs no loop in C around the interpreter.
 - Macros (`src/macro.c`) are checked when defined, kept in a table of their own (a unit's nodes are gone when the next
   one is read) and matched and copied with explicit stacks. Hygiene is a stamp: each symbol a template brings in
   carries the stamp of its expansion, and the compiler finds a local by its name and that stamp.
@@ -435,11 +435,11 @@ switch dispatch and gcc with both sanitizers, every run with `GAEL_CHECK=1`. Git
 (`.github/workflows/test.yml`, ubuntu-24.04).
 
 Not in 0.3: versions of gems, calling C, and the editor. The fixed limits are 8 parameters per function, 65536
-functions, 65536 globals, 65536 types and 2^24 instructions; per unit (a file, or one REPL form) 2^21 syntax nodes
-and a 64 MiB arena for the source and its names; at run time a stack of 65536 cells and at most 4096 nested calls (a
-tail call does not nest), the same for each task. Strings made at run time, vecs, maps and pools live on the heap; the text arena, as big, holds
-the program's own strings and a string while it is being built (a format, a command's output, a file). Both are 1 GiB
-of address space unless `GAEL_HEAP` says otherwise, and filling either is a runtime error.
+functions, 65536 globals, 65536 types and 2^24 instructions; per unit (a file, or one REPL form) 2^21 syntax nodes and a
+64 MiB arena for the source and its names; at run time a stack of 65536 cells and at most 4096 nested calls (a tail call
+does not nest), the same for each coroutine. Strings made at run time, vecs, maps and pools live on the heap; the text
+arena, as big, holds the program's own strings and a string while it is being built (a format, a command's output, a
+file). Both are 1 GiB of address space unless `GAEL_HEAP` says otherwise, and filling either is a runtime error.
 
 ## License
 

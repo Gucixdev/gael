@@ -139,7 +139,8 @@ typedef struct {
 } ArenaLevel;
 static ArenaLevel g_arenas[MAX_ARENAS];
 static i32 g_narenas;
-static i32 g_arena_floor; /* the arenas below it belong to whoever resumed the running task: the task makes nothing in them */
+static i32 g_arena_floor; /* the arenas below it belong to whoever resumed the running coroutine, which makes nothing
+                           * in them */
 static i64 g_arena_lo, g_arena_top; /* the area's first cell; the innermost arena's next free one */
 
 static i64 arena_take(i64 n)
@@ -235,7 +236,7 @@ static o vm_init(int check)
 /* every object starts with its count and its kind; the kind cell holds the type above the low 8 bits (the vec or
  * map type) or, for a string, its length */
 enum { OB_RC, OB_KIND };
-enum { KIND_STR = 1, KIND_VEC, KIND_MAP, KIND_POOL, KIND_TASK, KIND_CLOSURE };
+enum { KIND_STR = 1, KIND_VEC, KIND_MAP, KIND_POOL, KIND_CORO, KIND_CLOSURE };
 
 /* A function value is one cell: 0 none yet, minus (a function's number + 1), or a closure - an object that keeps the
  * values of the locals a (fn ...) used from the code around it: [count][kind and the type of those values][the
@@ -243,26 +244,27 @@ enum { KIND_STR = 1, KIND_VEC, KIND_MAP, KIND_POOL, KIND_TASK, KIND_CLOSURE };
 enum { CL_FN = 2, CL_DATA };
 #define UNSET_FN "this function value was never set: a global read before its def ran"
 
-/* Tasks. (async (f x)) runs f in a task: a stackful coroutine with a value stack and frames of its own, heap blocks
- * that grow when a call needs more. The VM switches between the main program and a task by saving the registers of
- * one (into g_main, or into the task) and loading the other's. A task that waits (sleep, yield, await) goes back to
- * whoever ran it - the code that started it the first time, the main program's scheduler after that - and from its
- * first wait on it is in g_tasks, which holds a count on it until it ends. A task object: */
-enum { TK_STATE = 2, TK_STACK, TK_CAP, TK_FRAMES, TK_FCAP, TK_SP, TK_FP, TK_NF, TK_PC, TK_UNTIL, TK_WAIT, TK_RESUMER,
-       TK_STEP, TK_FLOOR, TK_LINE, TK_LISTED, TK_RESULT };
-enum { TS_READY, TS_SLEEPING, TS_WAITING, TS_RUNNING, TS_DONE, TS_DEAD };
+/* Coroutines. (async (f x)) runs f in a coroutine: stackful, with a value stack and frames of its own, heap blocks that
+ * grow when a call needs more. The VM switches between the main program and a coroutine by saving the registers of one
+ * (into g_main, or into the coroutine) and loading the other's. A coroutine that waits (sleep, yield, await) goes back
+ * to whoever ran it - the code that started it the first time, the main program's scheduler after that - and from its
+ * first wait on it is in g_coros, which holds a count on it until it ends. A coroutine object: */
+enum { CO_STATE = 2, CO_STACK, CO_CAP, CO_FRAMES, CO_FCAP, CO_SP, CO_FP, CO_NF, CO_PC, CO_UNTIL, CO_WAIT, CO_RESUMER,
+       CO_STEP, CO_FLOOR, CO_LINE, CO_LISTED, CO_RESULT };
+enum { CS_READY, CS_SLEEPING, CS_WAITING, CS_RUNNING, CS_DONE, CS_DEAD };
 enum { MW_STEP = 1, MW_RUN, MW_AWAIT, MW_SLEEP };
-#define MAX_TASKS (1 << 16)
-#define TASK_STACK0 256 /* the cells a task starts with, doubled when a call needs more */
-#define TASK_FRAMES0 16
+#define MAX_COROS (1 << 16)
+#define CORO_STACK0 256 /* the cells a coroutine starts with, doubled when a call needs more */
+#define CORO_FRAMES0 16
 
-static i64 g_tasks[MAX_TASKS]; /* the tasks that wait, in the order they first did */
-static i32 g_ntasks;
-static i64 g_cur;              /* the task running; 0: the main program */
-static f64 g_task_time;        /* seconds: tasks-step adds its dt, the main program's waits the real time */
-static i64 g_step;             /* passes of the scheduler: a task that yields waits for the next one */
-static struct { i32 sp, fp, nf, pc; } g_main;                     /* its registers while a task runs */
-static struct { i32 kind, at, last; i64 task; f64 until, wall; } g_mwait; /* what the main program waits for; kind 0: nothing */
+static i64 g_coros[MAX_COROS]; /* the coroutines that wait, in the order they first did */
+static i32 g_ncoros;
+static i64 g_cur;              /* the coroutine running; 0: the main program */
+static f64 g_coro_time;        /* seconds: step-coroutines adds its dt, the main program's waits the real time */
+static i64 g_step;             /* passes of the scheduler: a coroutine that yields waits for the next one */
+static struct { i32 sp, fp, nf, pc; } g_main;                     /* its registers while a coroutine runs */
+static struct { i32 kind, at, last; i64 coro; f64 until, wall; } g_mwait; /* what the main program waits for; kind 0:
+                                                                          * nothing */
 
 static Ty obj_type(i64 h) { return (Ty)((u64)g_heap[h + OB_KIND].i >> 8); }
 
@@ -319,7 +321,7 @@ static o obj_release(i64 h)
 
 /* refs V STRIDE TYPE RETAIN: every object inside a value of TYPE, whose cell C is at V + C * STRIDE, gets one owner
  * more (RETAIN) or one less. An object inside a none is not there */
-/* ONE_HANDLE(T): a value of type T is one cell, a handle (a string, a vec, a map, a pool, a task, a function): its
+/* ONE_HANDLE(T): a value of type T is one cell, a handle (a string, a vec, a map, a pool, a coroutine, a function): its
  * leaves are the shared leaf 0 */
 #define ONE_HANDLE(t) (g_tys[t].leaf_first == 0 && g_tys[t].nleaf == 1)
 
@@ -507,14 +509,14 @@ static o obj_free(i64 h)
 		refs(hd + CL_DATA, 1, obj_type(h), 0);
 		heap_free(h, CL_DATA + cells(obj_type(h)));
 		break;
-	case KIND_TASK: {
+	case KIND_CORO: {
 		Ty rt = g_tys[obj_type(h)].elem;
-		if (hd[TK_STATE].i == TS_DONE) refs(hd + TK_RESULT, 1, rt, 0);
-		if (hd[TK_STACK].i) { /* a task a runtime error stopped (REPL): what its stack holds cannot be known */
-			heap_free(hd[TK_STACK].i, hd[TK_CAP].i);
-			heap_free(hd[TK_FRAMES].i, hd[TK_FCAP].i);
+		if (hd[CO_STATE].i == CS_DONE) refs(hd + CO_RESULT, 1, rt, 0);
+		if (hd[CO_STACK].i) { /* a coroutine a runtime error stopped (REPL): what its stack holds cannot be known */
+			heap_free(hd[CO_STACK].i, hd[CO_CAP].i);
+			heap_free(hd[CO_FRAMES].i, hd[CO_FCAP].i);
 		}
-		heap_free(h, TK_RESULT + cells(rt));
+		heap_free(h, CO_RESULT + cells(rt));
 		break;
 	}
 	default:
@@ -771,9 +773,9 @@ static o print_value(Ty type, const Cell *c)
 			out_s("(fn ");
 			out_s(v->i < 0 ? g_fns[-v->i - 1].name : v->i > 0 ? g_fns[g_heap[v->i + CL_FN].i].name : "none");
 			out_s(")");
-		} else if (ti->kind == K_TASK) {
-			i64 state = g_heap[v->i + TK_STATE].i;
-			out_s(state == TS_DONE ? "(task done)" : state == TS_DEAD ? "(task stopped)" : "(task waiting)");
+		} else if (ti->kind == K_CORO) {
+			i64 state = g_heap[v->i + CO_STATE].i;
+			out_s(state == CS_DONE ? "(coroutine done)" : state == CS_DEAD ? "(coroutine stopped)" : "(coroutine waiting)");
 		} else if (ti->kind == K_POOL || ti->kind == K_HANDLE) {
 			char buf[64];
 			if (ti->kind == K_POOL) sprintf(buf, "(pool %ld/%ld)", (long)g_heap[v->i + PH_COUNT].i, (long)g_heap[v->i + PH_CAP].i);
@@ -1334,27 +1336,27 @@ static o args_init(int argc, char **argv)
 }
 
 /* vm_run PC: run from PC until HALT; 0 when it finished, 1 after a runtime error */
-static i64 task_state(i64 t) { return g_heap[t + TK_STATE].i; }
+static i64 coro_state(i64 t) { return g_heap[t + CO_STATE].i; }
 
-/* task_ready T: the waiting task T can go on now */
-static int task_ready(i64 t)
+/* coro_ready T: the waiting coroutine T can go on now */
+static int coro_ready(i64 t)
 {
-	const Cell *tk = g_heap + t;
-	switch (tk[TK_STATE].i) {
-	case TS_READY: return tk[TK_STEP].i != g_step;
-	case TS_SLEEPING: return tk[TK_UNTIL].f <= g_task_time;
-	case TS_WAITING: return task_state(tk[TK_WAIT].i) >= TS_DONE;
+	const Cell *co = g_heap + t;
+	switch (co[CO_STATE].i) {
+	case CS_READY: return co[CO_STEP].i != g_step;
+	case CS_SLEEPING: return co[CO_UNTIL].f <= g_coro_time;
+	case CS_WAITING: return coro_state(co[CO_WAIT].i) >= CS_DONE;
 	default: return 0;
 	}
 }
 
-/* task_unlist I: the task at I in g_tasks has ended: out of the list, which lets go of its count */
-static o task_unlist(i32 i)
+/* coro_unlist I: the coroutine at I in g_coros has ended: out of the list, which lets go of its count */
+static o coro_unlist(i32 i)
 {
-	i64 t = g_tasks[i];
-	memmove(g_tasks + i, g_tasks + i + 1, (size_t)(g_ntasks - i - 1) * sizeof(i64));
-	g_ntasks--;
-	g_heap[t + TK_LISTED].i = 0;
+	i64 t = g_coros[i];
+	memmove(g_coros + i, g_coros + i + 1, (size_t)(g_ncoros - i - 1) * sizeof(i64));
+	g_ncoros--;
+	g_heap[t + CO_LISTED].i = 0;
 	obj_release(t);
 }
 
@@ -1374,31 +1376,31 @@ static o wall_sleep(f64 secs)
 	while (nanosleep(&ts, &ts) && errno == EINTR) {}
 }
 
-/* main_wait: the main program waits for what g_mwait says, and runs the tasks meanwhile, in passes over g_tasks.
- * 1: g_tasks[g_mwait.last] goes on now (the caller switches to it; when it waits or ends, the main program is back at
- * the same instruction, which calls this again); 0: the wait is over; -1: nothing can ever go on - every task waits
- * for another one. Between passes the task time follows the real time, and when every task sleeps the process
- * sleeps until the first one wakes. */
+/* main_wait: the main program waits for what g_mwait says, and runs the coroutines meanwhile, in passes over g_coros.
+ * 1: g_coros[g_mwait.last] goes on now (the caller switches to it; when it waits or ends, the main program is back at
+ * the same instruction, which calls this again); 0: the wait is over; -1: nothing can ever go on - every coroutine
+ * waits for another one. Between passes the coroutine time follows the real time, and when every coroutine sleeps the
+ * process sleeps until the first one wakes. */
 static int main_wait(void)
 {
 	for (;;) {
 		f64 next = -1, now;
 		i32 i;
 		if (g_mwait.last >= 0) {
-			if (task_state(g_tasks[g_mwait.last]) >= TS_DONE) {
-				task_unlist(g_mwait.last);
+			if (coro_state(g_coros[g_mwait.last]) >= CS_DONE) {
+				coro_unlist(g_mwait.last);
 				if (g_mwait.at > g_mwait.last) g_mwait.at--;
 			}
 			g_mwait.last = -1;
 		}
-		if (g_mwait.kind == MW_AWAIT && task_state(g_mwait.task) >= TS_DONE) return 0;
-		if (g_mwait.kind == MW_RUN && !g_ntasks) return 0;
-		if (g_mwait.kind == MW_SLEEP && g_task_time >= g_mwait.until) return 0;
-		while (g_mwait.at < g_ntasks && !task_ready(g_tasks[g_mwait.at])) {
-			if (task_state(g_tasks[g_mwait.at]) == TS_DEAD) task_unlist(g_mwait.at);
+		if (g_mwait.kind == MW_AWAIT && coro_state(g_mwait.coro) >= CS_DONE) return 0;
+		if (g_mwait.kind == MW_RUN && !g_ncoros) return 0;
+		if (g_mwait.kind == MW_SLEEP && g_coro_time >= g_mwait.until) return 0;
+		while (g_mwait.at < g_ncoros && !coro_ready(g_coros[g_mwait.at])) {
+			if (coro_state(g_coros[g_mwait.at]) == CS_DEAD) coro_unlist(g_mwait.at);
 			else g_mwait.at++;
 		}
-		if (g_mwait.at < g_ntasks) {
+		if (g_mwait.at < g_ncoros) {
 			g_mwait.last = g_mwait.at++;
 			return 1;
 		}
@@ -1406,21 +1408,21 @@ static int main_wait(void)
 		g_step++;
 		g_mwait.at = 0;
 		now = wall_time();
-		g_task_time += now - g_mwait.wall;
+		g_coro_time += now - g_mwait.wall;
 		g_mwait.wall = now;
-		for (i = 0; i < g_ntasks; i++) {
-			const Cell *tk = g_heap + g_tasks[i];
-			if (task_ready(g_tasks[i])) { next = g_task_time; break; }
-			if (tk[TK_STATE].i == TS_SLEEPING && (next < 0 || tk[TK_UNTIL].f < next)) next = tk[TK_UNTIL].f;
+		for (i = 0; i < g_ncoros; i++) {
+			const Cell *co = g_heap + g_coros[i];
+			if (coro_ready(g_coros[i])) { next = g_coro_time; break; }
+			if (co[CO_STATE].i == CS_SLEEPING && (next < 0 || co[CO_UNTIL].f < next)) next = co[CO_UNTIL].f;
 		}
 		if (g_mwait.kind == MW_SLEEP && (next < 0 || g_mwait.until < next)) next = g_mwait.until;
 		if (next < 0) return -1;
-		if (next > g_task_time) {
-			wall_sleep(next - g_task_time);
+		if (next > g_coro_time) {
+			wall_sleep(next - g_coro_time);
 			now = wall_time();
-			g_task_time += now - g_mwait.wall;
+			g_coro_time += now - g_mwait.wall;
 			g_mwait.wall = now;
-			if (g_task_time < next) g_task_time = next; /* it slept at least that long */
+			if (g_coro_time < next) g_coro_time = next; /* it slept at least that long */
 		}
 	}
 }
@@ -1435,72 +1437,72 @@ static o main_wait_start(i32 kind)
 	g_step++;
 }
 
-/* task_new FN TYPE LINE: a task that will run FN from its start, with its stack and frames; its parameters are for
- * the caller to copy in. -1 when the heap is full */
-static i64 task_new(const Fn *fn, Ty type, i32 line)
+/* coro_new FN TYPE LINE: a coroutine that will run FN from its start, with its stack and frames; its parameters are
+ * for the caller to copy in. -1 when the heap is full */
+static i64 coro_new(const Fn *fn, Ty type, i32 line)
 {
-	i64 need = fn->nslots + fn->maxdepth, cap = TASK_STACK0, size = TK_RESULT + cells(g_tys[type].elem), t, st, frs, k;
-	Cell *tk;
+	i64 need = fn->nslots + fn->maxdepth, cap = CORO_STACK0, size = CO_RESULT + cells(g_tys[type].elem), t, st, frs, k;
+	Cell *co;
 	while (cap < need) cap *= 2;
 	if ((t = heap_alloc(size)) < 0) return -1;
 	if ((st = heap_alloc(cap)) < 0) { heap_free(t, size); return -1; }
-	if ((frs = heap_alloc(TASK_FRAMES0)) < 0) { heap_free(st, cap); heap_free(t, size); return -1; }
-	obj_born(t, KIND_TASK, (u64)type);
-	tk = g_heap + t;
-	tk[TK_STATE].i = TS_RUNNING;
-	tk[TK_STACK].i = st;
-	tk[TK_CAP].i = cap;
-	tk[TK_FRAMES].i = frs;
-	tk[TK_FCAP].i = TASK_FRAMES0;
-	tk[TK_SP].i = fn->nslots;
-	tk[TK_FP].i = 0;
-	tk[TK_NF].i = 1;
-	tk[TK_PC].i = fn->entry;
-	tk[TK_UNTIL].f = 0;
-	tk[TK_WAIT].i = 0;
-	tk[TK_RESUMER].i = 0;
-	tk[TK_STEP].i = g_step;
-	tk[TK_FLOOR].i = 0;
-	tk[TK_LINE].i = line;
-	tk[TK_LISTED].i = 0;
+	if ((frs = heap_alloc(CORO_FRAMES0)) < 0) { heap_free(st, cap); heap_free(t, size); return -1; }
+	obj_born(t, KIND_CORO, (u64)type);
+	co = g_heap + t;
+	co[CO_STATE].i = CS_RUNNING;
+	co[CO_STACK].i = st;
+	co[CO_CAP].i = cap;
+	co[CO_FRAMES].i = frs;
+	co[CO_FCAP].i = CORO_FRAMES0;
+	co[CO_SP].i = fn->nslots;
+	co[CO_FP].i = 0;
+	co[CO_NF].i = 1;
+	co[CO_PC].i = fn->entry;
+	co[CO_UNTIL].f = 0;
+	co[CO_WAIT].i = 0;
+	co[CO_RESUMER].i = 0;
+	co[CO_STEP].i = g_step;
+	co[CO_FLOOR].i = 0;
+	co[CO_LINE].i = line;
+	co[CO_LISTED].i = 0;
 	for (k = fn->pcells; k < fn->nslots; k++) g_heap[st + k].i = 0;
-	g_heap[frs].i = FRAME(g_task_end, 0); /* the function's return lands on TASK_END */
+	g_heap[frs].i = FRAME(g_coro_end, 0); /* the function's return lands on CORO_END */
 	return t;
 }
 
-/* task_grow CELLS FRAMES: the running task's stack made big enough for CELLS cells and FRAMES frames (doubling, up to
- * the main program's limits); 0 when it cannot be */
-static int task_grow(i64 cells_needed, i64 frames_needed)
+/* coro_grow CELLS FRAMES: the running coroutine's stack made big enough for CELLS cells and FRAMES frames (doubling, up
+ * to the main program's limits); 0 when it cannot be */
+static int coro_grow(i64 cells_needed, i64 frames_needed)
 {
-	Cell *tk = g_heap + g_cur;
-	i64 cap = tk[TK_CAP].i, fcap = tk[TK_FCAP].i, at;
+	Cell *co = g_heap + g_cur;
+	i64 cap = co[CO_CAP].i, fcap = co[CO_FCAP].i, at;
 	if (cells_needed > VM_STACK || frames_needed > VM_FRAMES) return 0;
 	if (cells_needed > cap) {
 		while (cap < cells_needed) cap *= 2;
 		if ((at = heap_alloc(cap)) < 0) return 0;
-		memcpy(g_heap + at, g_heap + tk[TK_STACK].i, (size_t)tk[TK_CAP].i * sizeof(Cell));
-		heap_free(tk[TK_STACK].i, tk[TK_CAP].i);
-		tk[TK_STACK].i = at;
-		tk[TK_CAP].i = cap;
+		memcpy(g_heap + at, g_heap + co[CO_STACK].i, (size_t)co[CO_CAP].i * sizeof(Cell));
+		heap_free(co[CO_STACK].i, co[CO_CAP].i);
+		co[CO_STACK].i = at;
+		co[CO_CAP].i = cap;
 	}
 	if (frames_needed > fcap) {
 		while (fcap < frames_needed) fcap *= 2;
 		if ((at = heap_alloc(fcap)) < 0) return 0;
-		memcpy(g_heap + at, g_heap + tk[TK_FRAMES].i, (size_t)tk[TK_FCAP].i * sizeof(Cell));
-		heap_free(tk[TK_FRAMES].i, tk[TK_FCAP].i);
-		tk[TK_FRAMES].i = at;
-		tk[TK_FCAP].i = fcap;
+		memcpy(g_heap + at, g_heap + co[CO_FRAMES].i, (size_t)co[CO_FCAP].i * sizeof(Cell));
+		heap_free(co[CO_FRAMES].i, co[CO_FCAP].i);
+		co[CO_FRAMES].i = at;
+		co[CO_FCAP].i = fcap;
 	}
 	return 1;
 }
 
-#define DEADLOCK "every task waits for another task, so none can go on"
+#define DEADLOCK "every coroutine waits for another one, so none can go on"
 
-/* The registers of the running context out to where they wait (g_main, or the task), and another context's in */
+/* The registers of the running context out to where they wait (g_main, or the coroutine), and another context's in */
 #define SAVE_REGS(at_pc) do { \
 	if (g_cur) { \
 		Cell *tk_ = g_heap + g_cur; \
-		tk_[TK_SP].i = sp; tk_[TK_FP].i = fp; tk_[TK_NF].i = nf; tk_[TK_PC].i = (at_pc); \
+		tk_[CO_SP].i = sp; tk_[CO_FP].i = fp; tk_[CO_NF].i = nf; tk_[CO_PC].i = (at_pc); \
 	} else { \
 		g_main.sp = sp; g_main.fp = fp; g_main.nf = nf; g_main.pc = (at_pc); \
 	} } while (0)
@@ -1508,38 +1510,38 @@ static int task_grow(i64 cells_needed, i64 frames_needed)
 	g_cur = (t); \
 	if (g_cur) { \
 		const Cell *tk_ = g_heap + g_cur; \
-		s = g_heap + tk_[TK_STACK].i; fr = g_heap + tk_[TK_FRAMES].i; cap = tk_[TK_CAP].i; fcap = tk_[TK_FCAP].i; \
-		sp = (i32)tk_[TK_SP].i; fp = (i32)tk_[TK_FP].i; nf = (i32)tk_[TK_NF].i; pc = (i32)tk_[TK_PC].i; \
+		s = g_heap + tk_[CO_STACK].i; fr = g_heap + tk_[CO_FRAMES].i; cap = tk_[CO_CAP].i; fcap = tk_[CO_FCAP].i; \
+		sp = (i32)tk_[CO_SP].i; fp = (i32)tk_[CO_FP].i; nf = (i32)tk_[CO_NF].i; pc = (i32)tk_[CO_PC].i; \
 	} else { \
 		s = g_vstack; fr = g_vframes; cap = VM_STACK; fcap = VM_FRAMES; \
 		sp = g_main.sp; fp = g_main.fp; nf = g_main.nf; pc = g_main.pc; \
 	} } while (0)
-/* the running task's stack and frames, after task_grow moved them */
+/* the running coroutine's stack and frames, after coro_grow moved them */
 #define LOAD_STACK() do { \
 	const Cell *tk_ = g_heap + g_cur; \
-	s = g_heap + tk_[TK_STACK].i; fr = g_heap + tk_[TK_FRAMES].i; cap = tk_[TK_CAP].i; fcap = tk_[TK_FCAP].i; \
+	s = g_heap + tk_[CO_STACK].i; fr = g_heap + tk_[CO_FRAMES].i; cap = tk_[CO_CAP].i; fcap = tk_[CO_FCAP].i; \
 	} while (0)
-/* the running task waits (its state is set): back to whoever ran it; on its first wait it joins g_tasks */
+/* the running coroutine waits (its state is set): back to whoever ran it; on its first wait it joins g_coros */
 #define SUSPEND(at_pc) do { \
 	i64 t_ = g_cur; \
-	if (g_narenas != g_arena_floor) return vm_error(in->line, "a task cannot wait inside an arena: the arena would end out of turn"); \
+	if (g_narenas != g_arena_floor) return vm_error(in->line, "a coroutine cannot wait inside an arena: the arena would end out of turn"); \
 	SAVE_REGS(at_pc); \
-	if (!g_heap[t_ + TK_LISTED].i) { \
-		if (g_ntasks == MAX_TASKS) return vm_error(in->line, "too many tasks waiting (MAX_TASKS)"); \
-		g_tasks[g_ntasks++] = t_; \
-		g_heap[t_ + TK_LISTED].i = 1; \
+	if (!g_heap[t_ + CO_LISTED].i) { \
+		if (g_ncoros == MAX_COROS) return vm_error(in->line, "too many coroutines waiting (MAX_COROS)"); \
+		g_coros[g_ncoros++] = t_; \
+		g_heap[t_ + CO_LISTED].i = 1; \
 		obj_retain(t_); \
 	} \
-	g_arena_floor = (i32)g_heap[t_ + TK_FLOOR].i; \
-	LOAD_REGS(g_heap[t_ + TK_RESUMER].i); } while (0)
-/* the main program lets task T go on; it comes back to this instruction */
+	g_arena_floor = (i32)g_heap[t_ + CO_FLOOR].i; \
+	LOAD_REGS(g_heap[t_ + CO_RESUMER].i); } while (0)
+/* the main program lets coroutine T go on; it comes back to this instruction */
 #define RESUME(t) do { \
 	i64 t_ = (t); \
 	SAVE_REGS(pc - 1); \
-	g_heap[t_ + TK_RESUMER].i = 0; \
-	g_heap[t_ + TK_STATE].i = TS_RUNNING; \
-	g_heap[t_ + TK_STEP].i = g_step; \
-	g_heap[t_ + TK_FLOOR].i = g_arena_floor; \
+	g_heap[t_ + CO_RESUMER].i = 0; \
+	g_heap[t_ + CO_STATE].i = CS_RUNNING; \
+	g_heap[t_ + CO_STEP].i = g_step; \
+	g_heap[t_ + CO_FLOOR].i = g_arena_floor; \
 	g_arena_floor = g_narenas; \
 	LOAD_REGS(t_); } while (0)
 
@@ -1591,11 +1593,11 @@ static int vm_run(i32 pc)
 	g_narenas = 0; /* arenas a runtime error left open (REPL) stay used but take nothing new */
 	g_arena_floor = 0;
 	g_mwait.kind = 0;
-	if (g_cur) { /* a runtime error stopped a task (REPL): it and the tasks that were running it are dead */
+	if (g_cur) { /* a runtime error stopped a coroutine (REPL): it and the coroutines that were running it are dead */
 		i64 t = g_cur;
 		while (t) {
-			g_heap[t + TK_STATE].i = TS_DEAD;
-			t = g_heap[t + TK_RESUMER].i;
+			g_heap[t + CO_STATE].i = CS_DEAD;
+			t = g_heap[t + CO_RESUMER].i;
 		}
 		g_cur = 0;
 	}
@@ -1798,9 +1800,9 @@ static int vm_run(i32 pc)
 			}
 			nfp = sp + fn->env - fn->pcells;
 			if (nf == fcap || nfp + fn->nslots + fn->maxdepth > cap) {
-				if (!g_cur || !task_grow(nfp + fn->nslots + fn->maxdepth, nf + 1))
+				if (!g_cur || !coro_grow(nfp + fn->nslots + fn->maxdepth, nf + 1))
 					return vm_error(in->line, "stack overflow (recursion too deep?)");
-				LOAD_STACK(); /* the task's stack moved */
+				LOAD_STACK(); /* the coroutine's stack moved */
 			}
 			if (fn->env) { /* its closure (or 0) goes under the arguments, into slot 0; the call owns it now */
 				memmove(s + nfp + 1, s + nfp, (size_t)(sp - nfp) * sizeof(Cell));
@@ -1826,7 +1828,7 @@ static int vm_run(i32 pc)
 				fn = &g_fns[in->a];
 			}
 			if (fp + fn->nslots + fn->maxdepth > cap) {
-				if (!g_cur || !task_grow(fp + fn->nslots + fn->maxdepth, nf)) return vm_error(in->line, "stack overflow");
+				if (!g_cur || !coro_grow(fp + fn->nslots + fn->maxdepth, nf)) return vm_error(in->line, "stack overflow");
 				LOAD_STACK();
 			}
 			if (fn->env) {
@@ -2420,105 +2422,105 @@ static int vm_run(i32 pc)
 			memcpy(g_heap + s[fp].i + CL_DATA + in->a, s + sp, (size_t)in->b * sizeof(Cell));
 			NEXT;
 		CASE(OP_ENV_RELEASE) refs(g_heap + s[fp].i + CL_DATA + in->a, 1, (Ty)in->b, 0); NEXT;
-		CASE(OP_ASYNC) { /* the new task runs at once, until it first waits or ends */
+		CASE(OP_ASYNC) { /* the new coroutine runs at once, until it first waits or ends */
 			const Fn *fn = &g_fns[in->a];
-			i64 t = task_new(fn, (Ty)in->b, in->line);
+			i64 t = coro_new(fn, (Ty)in->b, in->line);
 			if (t < 0) return vm_error(in->line, HEAP_FULL);
-			memcpy(g_heap + g_heap[t + TK_STACK].i, s + sp - fn->pcells, (size_t)fn->pcells * sizeof(Cell));
+			memcpy(g_heap + g_heap[t + CO_STACK].i, s + sp - fn->pcells, (size_t)fn->pcells * sizeof(Cell));
 			sp -= fn->pcells;
-			s[sp++].i = t; /* the starter's handle: the task's first count */
-			g_heap[t + TK_RESUMER].i = g_cur;
-			g_heap[t + TK_FLOOR].i = g_arena_floor;
+			s[sp++].i = t; /* the starter's handle: the coroutine's first count */
+			g_heap[t + CO_RESUMER].i = g_cur;
+			g_heap[t + CO_FLOOR].i = g_arena_floor;
 			SAVE_REGS(pc);
 			g_arena_floor = g_narenas;
 			LOAD_REGS(t);
 			NEXT;
 		}
-		CASE(OP_TASK_END) { /* the task's function returned: its result goes into the task, its stack goes */
+		CASE(OP_CORO_END) { /* the coroutine's function returned: its result goes into the coroutine, its stack goes */
 			i64 t = g_cur;
-			Cell *tk = g_heap + t;
+			Cell *co = g_heap + t;
 			i32 n = cells(g_tys[obj_type(t)].elem);
-			memcpy(tk + TK_RESULT, s + sp - n, (size_t)n * sizeof(Cell));
-			heap_free(tk[TK_STACK].i, tk[TK_CAP].i);
-			heap_free(tk[TK_FRAMES].i, tk[TK_FCAP].i);
-			tk[TK_STACK].i = tk[TK_FRAMES].i = 0;
-			tk[TK_STATE].i = TS_DONE;
-			g_arena_floor = (i32)tk[TK_FLOOR].i;
-			LOAD_REGS(tk[TK_RESUMER].i);
+			memcpy(co + CO_RESULT, s + sp - n, (size_t)n * sizeof(Cell));
+			heap_free(co[CO_STACK].i, co[CO_CAP].i);
+			heap_free(co[CO_FRAMES].i, co[CO_FCAP].i);
+			co[CO_STACK].i = co[CO_FRAMES].i = 0;
+			co[CO_STATE].i = CS_DONE;
+			g_arena_floor = (i32)co[CO_FLOOR].i;
+			LOAD_REGS(co[CO_RESUMER].i);
 			NEXT;
 		}
 		CASE(OP_AWAIT) {
 			i64 t = s[sp - 1].i;
 			Ty rt = g_tys[(Ty)in->a].elem;
-			if (t <= 0) return vm_error(in->line, "this task was never started: a global read before its def ran");
-			if (t == g_cur) return vm_error(in->line, "a task cannot await itself");
-			if (g_cur && task_state(t) < TS_DONE) { /* back here when it has ended */
-				g_heap[g_cur + TK_STATE].i = TS_WAITING;
-				g_heap[g_cur + TK_WAIT].i = t;
+			if (t <= 0) return vm_error(in->line, "this coroutine was never started: a global read before its def ran");
+			if (t == g_cur) return vm_error(in->line, "a coroutine cannot await itself");
+			if (g_cur && coro_state(t) < CS_DONE) { /* back here when it has ended */
+				g_heap[g_cur + CO_STATE].i = CS_WAITING;
+				g_heap[g_cur + CO_WAIT].i = t;
 				SUSPEND(pc - 1);
 				NEXT;
 			}
-			if (!g_cur && (task_state(t) < TS_DONE || g_mwait.kind)) { /* the main program runs tasks until it has */
+			if (!g_cur && (coro_state(t) < CS_DONE || g_mwait.kind)) { /* the main program runs coroutines until it has */
 				int r;
 				if (!g_mwait.kind) {
 					main_wait_start(MW_AWAIT);
-					g_mwait.task = t;
+					g_mwait.coro = t;
 				}
-				if ((r = main_wait()) > 0) { RESUME(g_tasks[g_mwait.last]); NEXT; }
+				if ((r = main_wait()) > 0) { RESUME(g_coros[g_mwait.last]); NEXT; }
 				g_mwait.kind = 0;
 				if (r < 0) return vm_error(in->line, DEADLOCK);
 			}
-			if (task_state(t) == TS_DEAD) return vm_error(in->line, "this task was stopped by a runtime error");
+			if (coro_state(t) == CS_DEAD) return vm_error(in->line, "this coroutine was stopped by a runtime error");
 			sp--;
-			memcpy(s + sp, g_heap + t + TK_RESULT, (size_t)cells(rt) * sizeof(Cell));
-			refs(s + sp, 1, rt, 1); /* the task keeps its own copy */
+			memcpy(s + sp, g_heap + t + CO_RESULT, (size_t)cells(rt) * sizeof(Cell));
+			refs(s + sp, 1, rt, 1); /* the coroutine keeps its own copy */
 			sp += cells(rt);
 			obj_release(t);
 			NEXT;
 		}
 		CASE(OP_SLEEP)
 			if (g_cur) {
-				g_heap[g_cur + TK_STATE].i = TS_SLEEPING;
-				g_heap[g_cur + TK_UNTIL].f = g_task_time + s[--sp].f;
+				g_heap[g_cur + CO_STATE].i = CS_SLEEPING;
+				g_heap[g_cur + CO_UNTIL].f = g_coro_time + s[--sp].f;
 				SUSPEND(pc);
 				NEXT;
 			}
 			if (!g_mwait.kind) {
 				main_wait_start(MW_SLEEP);
-				g_mwait.until = g_task_time + s[--sp].f;
+				g_mwait.until = g_coro_time + s[--sp].f;
 			}
 			{
 				int r = main_wait();
-				if (r > 0) { RESUME(g_tasks[g_mwait.last]); NEXT; }
+				if (r > 0) { RESUME(g_coros[g_mwait.last]); NEXT; }
 				g_mwait.kind = 0;
 			}
 			NEXT;
 		CASE(OP_YIELD)
-			if (!g_cur) return vm_error(in->line, "yield is for a task; the main program runs its tasks with tasks-step");
-			g_heap[g_cur + TK_STATE].i = TS_READY;
+			if (!g_cur) return vm_error(in->line, "yield is for a coroutine; the main program runs its coroutines with step-coroutines");
+			g_heap[g_cur + CO_STATE].i = CS_READY;
 			SUSPEND(pc);
 			NEXT;
-		CASE(OP_TASKS_STEP)
-		CASE(OP_TASKS_RUN) {
+		CASE(OP_CORO_STEP)
+		CASE(OP_CORO_RUN) {
 			int r;
-			if (g_cur) return vm_error(in->line, "the main program runs the tasks, not a task: a task waits with sleep, yield or await");
+			if (g_cur) return vm_error(in->line, "the main program runs the coroutines, not a coroutine: a coroutine waits with sleep, yield or await");
 			if (!g_mwait.kind) {
-				main_wait_start(in->op == OP_TASKS_STEP ? MW_STEP : MW_RUN);
-				if (in->op == OP_TASKS_STEP) g_task_time += s[--sp].f;
+				main_wait_start(in->op == OP_CORO_STEP ? MW_STEP : MW_RUN);
+				if (in->op == OP_CORO_STEP) g_coro_time += s[--sp].f;
 			}
-			if ((r = main_wait()) > 0) { RESUME(g_tasks[g_mwait.last]); NEXT; }
+			if ((r = main_wait()) > 0) { RESUME(g_coros[g_mwait.last]); NEXT; }
 			g_mwait.kind = 0;
 			if (r < 0) return vm_error(in->line, DEADLOCK);
-			if (in->op == OP_TASKS_STEP) s[sp++].i = g_ntasks;
+			if (in->op == OP_CORO_STEP) s[sp++].i = g_ncoros;
 			NEXT;
 		}
-		CASE(OP_TASK_DONE) {
+		CASE(OP_CORO_DONE) {
 			i64 t = s[sp - 1].i;
-			s[sp - 1].i = t > 0 && task_state(t) >= TS_DONE;
+			s[sp - 1].i = t > 0 && coro_state(t) >= CS_DONE;
 			obj_release(t);
 			NEXT;
 		}
-		CASE(OP_TASK_TIME) s[sp++].f = g_task_time; NEXT;
+		CASE(OP_CORO_TIME) s[sp++].f = g_coro_time; NEXT;
 		CASE(OP_SHOW)
 			sp -= cells((Ty)in->a);
 			g_sink = stdout;

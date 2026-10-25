@@ -1,1 +1,0 @@
-tests/errors/task-yield-main.gael:2: runtime error: yield is for a task; the main program runs its tasks with tasks-step

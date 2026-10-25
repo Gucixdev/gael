@@ -1,0 +1,4 @@
+(def cs : (vec (coroutine int)) (vec))
+(defn selfish () : int (yield) (await (get cs 0)))
+(push cs (async (selfish)))
+(step-coroutines 0.0)

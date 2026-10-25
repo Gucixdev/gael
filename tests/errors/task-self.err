@@ -1,1 +1,0 @@
-tests/errors/task-self.gael:2: runtime error: a task cannot await itself

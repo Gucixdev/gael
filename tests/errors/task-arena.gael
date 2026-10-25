@@ -1,4 +1,0 @@
-; a task must not wait inside an arena: the arena would have to end while other code runs
-(defn bad () : int
-  (arena (sleep 0.01) 1))
-(println "%d" (await (async (bad))))

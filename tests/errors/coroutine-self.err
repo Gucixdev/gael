@@ -1,0 +1,1 @@
+tests/errors/coroutine-self.gael:2: runtime error: a coroutine cannot await itself

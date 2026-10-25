@@ -1,11 +1,11 @@
-; Tasks: (async (f x)) runs f as a task, which can wait - (sleep seconds), (yield) until the next step, (await t)
-; for another task's result - without the functions on the way knowing it. A game's loop runs them with
-; (tasks-step dt); a script or a server with (tasks-run), which waits in real time.
+; Coroutines: (async (f x)) runs f as a coroutine, which can wait - (sleep seconds), (yield) until the next step,
+; (await co) for another coroutine's result - without the functions on the way knowing it. A game's loop runs them
+; with (step-coroutines dt); a script or a server with (run-coroutines), which waits in real time.
 
 (struct Guard (name : string) (x : float))
 (def guards : (vec Guard) (vec (Guard "north" 0.0) (Guard "south" 10.0)))
 
-(defn walk-to ((i : int) (x : float)) : unit       ; it waits, so the task that calls it waits
+(defn walk-to ((i : int) (x : float)) : unit       ; it waits, so the coroutine that calls it waits
   (let ((g (get guards i)))
     (println "  %s walks to %f" g.name x)
     (sleep 1.0)
@@ -27,8 +27,8 @@
     (countdown (- n 1)))
   n)
 
-(defn report ((t : (task string))) : string       ; a task can wait for another one
-  (format "north is done: %s" (await t)))
+(defn report ((co : (coroutine string))) : string ; a coroutine can wait for another one
+  (format "north is done: %s" (await co)))
 
 (def north (async (patrol 0 1)))                  ; each runs at once, up to its first wait
 (def south (async (patrol 1 2)))
@@ -37,8 +37,8 @@
 
 (let ((frame 0) (left 4))
   (while (> left 0)
-    (println "frame %d, time %f" frame (task-time))
-    (arena (set left (tasks-step 1.0)))           ; what the tasks make is theirs, not the frame's
+    (println "frame %d, time %f" frame (coroutine-time))
+    (arena (set left (step-coroutines 1.0)))      ; what the coroutines make is theirs, not the frame's
     (set frame (+ frame 1))))
 
 (println "%s | %s | %d" (await rep) (await south) (await cd))
@@ -51,5 +51,5 @@
 
 (def last-one (async (later 0.02 "second")))      ; real time this time
 (async (later 0.01 "first"))
-(tasks-run)
-(println "%s, time >= 0.02: %b" (await last-one) (>= (task-time) 0.02))
+(run-coroutines)
+(println "%s, time >= 0.02: %b" (await last-one) (>= (coroutine-time) 0.02))

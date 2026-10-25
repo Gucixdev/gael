@@ -6,5 +6,5 @@
 (async (f "x"))
 (yield 1)
 (done? (vec 1))
-(let ((t : (task int) (async (f 1)))) (+ (await t) 1.0))
-(def u : (task unit) (async (f 2)))
+(let ((co : (coroutine int) (async (f 1)))) (+ (await co) 1.0))
+(def u : (coroutine unit) (async (f 2)))
