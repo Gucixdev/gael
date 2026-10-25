@@ -12,13 +12,15 @@ dokumentacja mieści się w kontekście.
 - [x] Wyniki `./bench` po ostatnich zmianach w `benchmarks/RESULTS.md` (`1565df1`).
 - [x] `task` → `coroutine`: typ `(coroutine T)`, `step-coroutines`, `run-coroutines`, `coroutine-time`; `async`,
       `await`, `sleep`, `yield`, `done?` zostają.
+- [x] `repldump.gael`: data i godzina przy każdej formie i które funkcje plików podmieniła; pliki nigdy nie są
+      nadpisywane, zmiana na żywo żyje w programie i w dzienniku, jak plik changes w Smalltalku (`ba3b807`).
 
 ## 1. Język pod modele
 
-- [ ] Dwa poziomy, jeden format `plik:linia:kolumna: error|warning: co jest źle; jak poprawić`. Error zatrzymuje
-      zawsze. Warning (nieużyta zmienna lokalna - `_` na początku nazwy ucisza; wartość wyliczona i wyrzucona, np.
-      `(+ x 1)` jako instrukcja; kod po `return`) pokazuje się w `run`, REPL-u, `gael check` i edytorze, a program
-      działa dalej; `gael build` (wydanie) z ostrzeżeniem we własnym kodzie się nie buduje. Bez flag. Test na każdy.
+- [x] Ostrzeżenia, jeden format z błędami (`plik:linia:kolumna: warning: ...`): nieużyta zmienna lokalna (`_` na
+      początku nazwy ucisza, `(for (_ 0 3) ...)` powtarza bez nazwy), wartość wyliczona i wyrzucona, kod po `return`
+      i `exit`. Program działa dalej; bez flag; `tests/warnings` (`1cfe8c0`).
+- [ ] `gael build` (wydanie) z ostrzeżeniem we własnym kodzie się nie buduje - razem z `gael build` w sekcji 2.
 - [ ] Znaczniki `@` żyją tylko w środowisku deweloperskim (REPL, `run`, `check`, `test`, edytor), `gael build` je
       wycina: `@warn` i `@err` (komunikat przy linii i na liście, niczego nie blokuje), `@test` (blok, który uruchamia
       `gael test`), `@debug` (kod tylko w trakcie pracy). Nieznany znacznik albo w złym miejscu to błąd.
@@ -57,7 +59,9 @@ dokumentacja mieści się w kontekście.
 ## 5. Potem
 
 - [ ] Gem FSM/HFSM napisany w gaelu.
-- [ ] artemacs: rdzeń w C (okno, wejście, rysowanie), reszta w gaelu; tryby jako gemy.
+- [ ] artemacs: rdzeń w C (okno, wejście, rysowanie), reszta w gaelu; bufory i tryby jako gemy - inspektor jak w
+      Godocie (wartości `@export` działającej gry, zmiana od razu w grze; dziś tekstowo `gael -x`), drzewo sceny,
+      viewport 3D, wektor, raster, tekst, terminal.
 - [ ] GPU (SPIR-V).
 - [ ] Ownership (owned / borrowed / shared) - opcjonalny, jeśli liczniki, areny i uchwyty nie wystarczą.
 

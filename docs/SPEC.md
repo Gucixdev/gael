@@ -109,6 +109,12 @@ potwierdzenia:
   `return`) pokazuje się w `run`, REPL-u, `gael check` i edytorze, a program działa dalej - połowiczna funkcja
   podmieniana na żywo nie blokuje pracy; `gael build` (wydanie) z ostrzeżeniem we własnym kodzie się nie buduje.
   Bez flag. Nieużyte parametry są w porządku (haki i callbacki mają stałe sygnatury).
+- **Dziennik zmian na żywo (jego słowa, 2026-10-25):** „każda linijka repldump powinna zawierać godzinę i datę, by
+  nie podmieniać funkcji plików, tylko inteligentnie w trakcie działania, głównie edytora, dzięki czemu moduły nie są
+  nadpisywane”. Zrobione: każda forma w `repldump.gael` ma przed sobą linię z datą i godziną oraz funkcjami plików,
+  które podmieniła (`;; 2026-10-25 16:28:57, replaces width (lib/shapes.gael:3)`); pliki nigdy nie są pisane - zmiana
+  żyje w działającym programie i w dzienniku, jak plik changes w Smalltalku. Dalej: artemacs pokazuje zmiany z
+  dziennika przy funkcjach i pozwala świadomie przenieść wybraną do pliku albo ją porzucić.
 - **Comptime, traity, GPU (2026-10-25):** comptime - kod gaela wykonywany w trakcie kompilacji przez ten sam VM;
   traity - zbiór haków `Typ.nazwa` sprawdzany w kompilacji, wywołania statyczne; MLIR nie (ogromna zależność w C++),
   GPU później przez SPIR-V; FSM i HFSM jako gem napisany w gaelu, nie w jądrze.
