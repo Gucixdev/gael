@@ -123,6 +123,18 @@ Strings, vecs, maps, pools and closures count their owners and are freed when th
 (poll c) (done? c) (coroutine-time)        ; (some result) or none, never waits; ended?; the clock
 ```
 
+## GPU
+
+```lisp
+(struct Ball (x : f32) (y : f32) (vy : f32))  ; GPU fields are f32, i32 or u32
+(def dt : f32 0.016)
+(gpu-each (b balls) (set b.vy (- b.vy (* 9.8 dt))) (set b.y (+ b.y (* b.vy dt)))) ; once per element, all at once
+```
+
+The body sets only its element's fields and its own `let`s, reads `f32` `i32` `u32` variables from around, and has
+arithmetic, comparisons, `if` `when` `let` `do`, math, `min` `max` `abs` `clamp`; no calls, prints or loops. A `let`
+from a literal says its type: `(k : f32 0.5)`. With no GPU it runs on the VM, with the same result.
+
 ## Macros
 
 ```lisp

@@ -39,7 +39,9 @@
 #include "names.c"
 #include "macro.c"
 #include "compile.c"
+#include "kernel.c"
 #include "vm.c"
+#include "gpu.c"
 
 static const char *const g_usage[] = {
 	"usage: gael                   the REPL\n",
@@ -52,6 +54,7 @@ static const char *const g_usage[] = {
 	"       gael doc               the cheat sheet for writing gael (docs/MODELS.md next to the binary)\n",
 	"       gael -d FILE           compile and print the bytecode\n",
 	"       gael -m FILE           print FILE with its macros expanded: the code the compiler checks\n",
+	"       gael -g FILE           print the WGSL that each gpu-each in FILE runs on the GPU\n",
 	"       gael -e CODE ARGS...   compile and run CODE\n",
 	"       gael -x FILE           compile FILE and list its @export globals (name : type = value) and its\n",
 	"                              (@warn ...) and (@err ...) marks, the way an editor shows them\n",
@@ -65,6 +68,8 @@ static const char *const g_usage_env[] = { /* one string each: C89 promises only
 	"GAEL_CHECK=1    freed memory is overwritten, and a program that ran to its end reports what it never freed\n",
 	"GAEL_HOME=DIR   gael's own folder (default ~/.gael): the REPL runs main.gael from there first and appends\n",
 	"                what ran to repldump.gael; its gems/ comes after the program's; set to nothing, none of it\n",
+	"GAEL_GPU=0|1    0: every gpu-each runs on the VM; 1: a missing GPU is an error (default: the GPU if there is one)\n",
+	"GAEL_WGPU=FILE  the wgpu-native library for gpu-each (default: lib/libwgpu_native.so next to gael, the system's)\n",
 	0
 };
 
@@ -737,6 +742,10 @@ int main(int argc, char **argv)
 		if (!st) st = leaks();
 	} else if (argc == 3 && (!strcmp(argv[1], "-c") || !strcmp(argv[1], "-d") || !strcmp(argv[1], "-m"))) {
 		st = load(argv[2], 0, 0, 0, argv[1][1] == 'c' ? CHECK : argv[1][1] == 'd' ? DIS : EXPAND);
+	} else if (argc == 3 && !strcmp(argv[1], "-g")) { /* the WGSL of each gpu-each, as the GPU gets it */
+		i32 i;
+		st = load(argv[2], 0, 0, 0, CHECK);
+		for (i = 0; !st && i < g_nkernels; i++) printf("// gpu-each at %s:%ld\n%s", g_kernels[i].file, (long)g_kernels[i].line, g_kernels[i].wgsl ? g_kernels[i].wgsl : "");
 	} else if (argc == 3 && !strcmp(argv[1], "-x")) { /* the inspector, as text */
 		i32 i;
 		st = load(argv[2], 0, 0, 0, CHECK);

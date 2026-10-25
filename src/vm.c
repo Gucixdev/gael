@@ -1576,6 +1576,9 @@ static int coro_grow(i64 cells_needed, i64 frames_needed)
 	CASE(OP_J##op##_SK) sp--; if ((s[sp].F R K_##F(in->a)) == in[1].b) pc = in[1].a; else pc += 2; NEXT; \
 	CASE(OP_J##op##_SS) sp -= 2; if ((s[sp].F R s[sp + 1].F) == in->b) pc = in->a; else pc++; NEXT;
 
+static int gpu_run(i32 k, const Cell *frame); /* gpu.c: 1 when kernel K ran on the GPU, 0 to run it here, -1 an error */
+static char g_gpu_error[512];
+
 static int vm_run(i32 pc)
 {
 #ifdef VM_GOTO
@@ -2507,6 +2510,12 @@ static int vm_run(i32 pc)
 		}
 		CASE(OP_CORO_TIME) s[sp++].f = g_coro_time; NEXT;
 		CASE(OP_FAIL) return vm_error(in, g_strs[in->a].p);
+		CASE(OP_GPU) { /* gpu.c; a runtime error there stops the program, as on the VM */
+			int r = gpu_run(in->a, s + fp);
+			if (r < 0) return vm_error(in, g_gpu_error);
+			s[sp++].i = r;
+			NEXT;
+		}
 		CASE(OP_SHOW)
 			sp -= cells((Ty)in->a);
 			g_sink = stdout;

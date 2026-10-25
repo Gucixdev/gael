@@ -7,6 +7,9 @@
 #   tests/warnings/NAME.gael  it runs (exit 0) and stdout equals NAME.out; its warnings are exactly the lines of NAME.err
 #   tests/test-runner/NAME.gael  gael test on it prints NAME.out (exit 1 when that has a FAIL line); NAME.err on stderr
 #   gems/NAME.gael          each gem that comes with gael has tests of its own, and gael test on its file passes them all
+#   tests/gpu/NAME.gael     gael -g prints NAME.wgsl, the WGSL of its gpu-each, and it prints NAME.out; with GAEL_WGPU
+#                           set to a libwgpu_native.so it also runs on that GPU (GAEL_GPU=1), as does examples/gpu.gael,
+#                           and prints the same; tests/gpu/abi.c checks src/wgpu89.h against tests/gpu/webgpu.h
 #   (for both, NAME.env holds VAR=value words for its environment, like a smaller heap)
 #   tests/repl.in           the REPL's stdout must equal tests/repl.out, every line of tests/repl.err on stderr, and
 #                           what it saved to repldump.gael (its header lines aside, the time of each form as TIME)
@@ -33,14 +36,14 @@ pass=0 fail=0
 
 for cc in gcc clang; do
 	command -v "$cc" > /dev/null || continue
-	if "$cc" "${flags[@]}" -O2 -o "$out/gael-$cc" src/main.c -lm 2> "$out/$cc.log"; then
+	if "$cc" "${flags[@]}" -O2 -o "$out/gael-$cc" src/main.c -lm -ldl 2> "$out/$cc.log"; then
 		builds+=("$out/gael-$cc")
 	else
 		echo "FAIL build with $cc:"; sed 's/^/  /' "$out/$cc.log"; fail=$((fail + 1))
 	fi
 done
 if command -v gcc > /dev/null; then # the plain switch the VM falls back to with other compilers
-	if gcc "${flags[@]}" -O2 -DGAEL_SWITCH -o "$out/gael-switch" src/main.c -lm 2> "$out/switch.log"; then
+	if gcc "${flags[@]}" -O2 -DGAEL_SWITCH -o "$out/gael-switch" src/main.c -lm -ldl 2> "$out/switch.log"; then
 		builds+=("$out/gael-switch")
 	else
 		echo "FAIL build with -DGAEL_SWITCH:"; sed 's/^/  /' "$out/switch.log"; fail=$((fail + 1))
@@ -50,7 +53,7 @@ sanitized=0
 for cc in gcc clang; do # the first compiler whose sanitizer runtime is installed
 	command -v "$cc" > /dev/null || continue
 	if "$cc" "${flags[@]}" -O1 -g -fno-omit-frame-pointer -fsanitize=address,undefined -fno-sanitize-recover=all \
-		-o "$out/gael-asan" src/main.c -lm 2> "$out/asan.log"; then
+		-o "$out/gael-asan" src/main.c -lm -ldl 2> "$out/asan.log"; then
 		builds+=("$out/gael-asan")
 		sanitized=1
 		break
@@ -116,6 +119,24 @@ for bin in "${builds[@]}"; do
 		[ -s "$out/stderr" ] && { ok=0; head -5 "$out/stderr"; }
 		check "$b gael test $f" "$ok"
 	done
+	for f in tests/gpu/*.gael; do
+		ok=1
+		"$bin" -g "$f" > "$out/stdout" 2> "$out/stderr" || ok=0
+		cmp -s "$out/stdout" "${f%.gael}.wgsl" || { ok=0; diff "${f%.gael}.wgsl" "$out/stdout" | head -5; }
+		GAEL_GPU=0 "$bin" "$f" > "$out/stdout" 2>> "$out/stderr" || ok=0
+		cmp -s "$out/stdout" "${f%.gael}.out" || { ok=0; diff "${f%.gael}.out" "$out/stdout" | head -5; }
+		[ -s "$out/stderr" ] && { ok=0; head -3 "$out/stderr"; }
+		check "$b gael -g $f" "$ok"
+	done
+	if [ -n "${GAEL_WGPU:-}" ]; then # the same kernels on a GPU, through wgpu-native
+		for f in tests/gpu/*.gael examples/gpu.gael; do
+			ok=1
+			GAEL_GPU=1 "$bin" "$f" > "$out/stdout" 2> "$out/stderr" || ok=0
+			cmp -s "$out/stdout" "${f%.gael}.out" || { ok=0; diff "${f%.gael}.out" "$out/stdout" | head -5; }
+			[ -s "$out/stderr" ] && { ok=0; head -3 "$out/stderr"; }
+			check "$b on the GPU: $f" "$ok"
+		done
+	fi
 	for f in tests/warnings/*.gael; do
 		ok=1
 		"$bin" "$f" > "$out/stdout" 2> "$out/stderr" || ok=0
@@ -156,6 +177,19 @@ for bin in "${builds[@]}"; do
 		cmp -s "$out/stdout" "$out/readme-$k" || { ok=0; diff "$out/readme-$k" "$out/stdout" | head -5; }
 		check "$b README: gael ${args[*]}" "$ok"
 	done
+done
+
+[ -n "${GAEL_WGPU:-}" ] || echo "skipped: gpu-each on a GPU (set GAEL_WGPU to a libwgpu_native.so to run it)"
+for cc in cc; do # the C89 mirror of WebGPU's structs, against the header it was written from
+	command -v "$cc" > /dev/null || continue
+	ok=1
+	if "$cc" -std=c11 -o "$out/abi" tests/gpu/abi.c 2> "$out/abi.log"; then
+		"$out/abi" > "$out/abi.out" || { ok=0; head -5 "$out/abi.out"; }
+	else
+		ok=0
+		head -5 "$out/abi.log"
+	fi
+	check "src/wgpu89.h matches tests/gpu/webgpu.h" "$ok"
 done
 
 if [ "${#builds[@]}" -gt 0 ]; then # docs/REFERENCE.md: every built-in name (gael -n) has its line in the index

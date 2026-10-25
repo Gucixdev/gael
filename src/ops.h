@@ -127,6 +127,7 @@
 	X(CORO_END, 0) /* r... --      where a coroutine's function returns to: the result goes into the coroutine, which ends */ \
 	X(SHOW, 1)     /* x... --      the REPL's "=> value : type"; a: the type */ \
 	X(FAIL, 1)     /* --           stop with a runtime error saying string a (assert) */ \
+	X(GPU, 1)      /* -- b         run gpu-each kernel a on the GPU: true when it ran, false to run the loop on the VM */ \
 	X(NOP, 2)      /* --           never run: the place of an instruction fused into the one before it */ \
 	GAEL_FUSED(X)
 

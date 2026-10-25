@@ -12,7 +12,7 @@ takes, gives and reports.
 You need bash and a C compiler that accepts C89 (gcc or clang).
 
 ```sh
-./build                     # writes ./gael, linked statically when the C library allows it
+./build                     # writes ./gael (GAEL_STATIC=1: linked statically, every gpu-each on the VM)
 ./gael examples/fact.gael   # run a file
 ./gael                      # the REPL
 ./run examples/fib.gael     # rebuild when a source changed, then run with these arguments
@@ -39,6 +39,7 @@ gael test FILE...      compile the files, run their defs (not the rest of their 
 gael doc               the cheat sheet for writing gael (docs/MODELS.md next to the binary)
 gael -d FILE           compile and print the bytecode
 gael -m FILE           print FILE with its macros expanded: the code the compiler checks
+gael -g FILE           print the WGSL that each gpu-each in FILE runs on the GPU
 gael -e CODE ARGS...   compile and run CODE
 gael -x FILE           compile FILE and list its @export globals (name : type = value) and its
                        (@warn ...) and (@err ...) marks, the way an editor shows them
@@ -48,6 +49,8 @@ GAEL_HEAP=SIZE  the heap for strings, vecs, maps and pools, and as much again fo
 GAEL_CHECK=1    freed memory is overwritten, and a program that ran to its end reports what it never freed
 GAEL_HOME=DIR   gael's own folder (default ~/.gael): the REPL runs main.gael from there first and appends
                 what ran to repldump.gael; set to nothing, it does neither
+GAEL_GPU=0|1    0: every gpu-each runs on the VM; 1: a missing GPU is an error (default: the GPU when there is one)
+GAEL_WGPU=FILE  the wgpu-native library for gpu-each (default: lib/libwgpu_native.so next to gael, then the system's)
 ```
 
 gael's own folder is like `~/.emacs.d`: the REPL starts by running `main.gael` from it, and every form that ran
@@ -394,6 +397,23 @@ A coroutine cannot pause inside an `(arena ...)` (the arena would end while othe
 is its own, not part of the arena of the code that resumed it. A coroutine that never ends holds what it holds: one
 stopped from outside (cancel) is not there yet. `examples/coroutines.gael` has more.
 
+GPU code is gael too, as in Mojo: `gpu-each` runs its body once per element of a vec, all at once, on the GPU when
+there is one, and as a loop on the VM when not, with the same result. The body works on `f32`, `i32` and `u32` fields
+and values, and the compiler checks that each run writes only its own element:
+
+```
+(struct Ball (x : f32) (y : f32) (vy : f32))
+(def dt : f32 0.016)
+(gpu-each (b balls)
+  (set b.vy (- b.vy (* 9.8 dt)))
+  (set b.y (max 0.0 (+ b.y (* b.vy dt)))))
+```
+
+gael writes the body as WGSL (`gael -g FILE` shows it) and runs it through wgpu-native, loaded when the first
+`gpu-each` runs (`GAEL_WGPU=FILE`, or `lib/libwgpu_native.so` next to gael), so the same program uses Vulkan on Linux
+with Wayland and on Android, Metal on Apple and Direct3D 12 on Windows; gael itself needs nothing of it to build.
+`GAEL_GPU=0` keeps everything on the VM. `examples/gpu.gael` bounces balls.
+
 A gem is a package by name: `gems/NAME.gael`, or a folder `gems/NAME/` whose `main.gael` uses the rest, next to the
 program, in gael's own folder, or in the `gems/` that comes with gael, next to its binary. Its main file starts with a
 manifest:
@@ -512,9 +532,10 @@ tests/errors/div-zero.gael:1: runtime error: division by zero
 
 ## Status
 
-Version 0.3, tested on Linux x86-64 with gcc 13.3 and clang 18.1. `./test` passes 153 checks per build (43 examples, 81
+Version 0.3, tested on Linux x86-64 with gcc 13.3 and clang 18.1. `./test` passes 155 checks per build (44 examples, 82
 compile and runtime error cases, three warning cases, four gael test cases, the tests of each of the ten gems that come
-with gael, three REPL sessions, nine README examples)
+with gael, one WGSL case, three REPL sessions, nine README examples), the C89 mirror of WebGPU's structs against
+`webgpu.h`, and with `GAEL_WGPU` set the GPU runs of `gpu-each` (tested on Mesa's lavapipe, Vulkan on the CPU)
 with gcc, clang, gcc with the plain switch dispatch and gcc with both sanitizers, every run with `GAEL_CHECK=1`. GitHub
 Actions runs shellcheck on the scripts and `./test` on every push (`.github/workflows/test.yml`, ubuntu-24.04).
 

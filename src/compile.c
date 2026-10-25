@@ -551,7 +551,7 @@ static const char *const g_reserved[] = {
 	"nand", "nor", "xor", "xnor", "bit-and", "bit-or", "bit-xor", "bit-not", "shl", "shr",
 	"pool", "spawn", "handle", "arena", "keep", "fn", "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64",
 	"defmacro", "...", "gem", "enable", "disable", "return", "coroutine", "poll", "sleep", "yield", "step-coroutines", "run-coroutines", "done?", "coroutine-time",
-	"string-of", "name-of", "assert", "compile-error"
+	"string-of", "name-of", "assert", "compile-error", "gpu-each"
 };
 
 
@@ -1613,6 +1613,7 @@ static o compile_atom(i32 n, Ty want)
 			return;
 		}
 		emit(OP_PUSH_I, add_int(nd->ival), 0, nd->line);
+		nd->lty = (u8)t;
 		push_type(t);
 		return;
 	case N_FLOAT: /* likewise for f32, rounded to it */
@@ -1623,10 +1624,12 @@ static o compile_atom(i32 n, Ty want)
 				return;
 			}
 			emit(OP_PUSH_F, add_float((f64)(f32)nd->fval), 0, nd->line);
+			nd->lty = T_F32;
 			push_type(T_F32);
 			return;
 		}
 		emit(OP_PUSH_F, add_float(nd->fval), 0, nd->line);
+		nd->lty = T_FLOAT;
 		push_type(T_FLOAT);
 		return;
 	case N_STR: emit(OP_PUSH_S, add_str(nd->text, nd->len), 0, nd->line); push_type(T_STR); return;
@@ -2074,6 +2077,9 @@ static i32 soft_form(i32 call, const char *s)
 	return pick(call, 0, opnd(x), opnd(next_of(next_of(arg))));
 }
 
+static int gpu_each(Frame *f); /* kernel.c */
+static o kernel_text(i32 k);
+
 /* start_list FRAME: decide which form a list is, check its shape, and start it */
 /* mark_note NODE: (@warn "text") or (@err "text") - recorded for the tools, no code */
 static o mark_note(i32 n)
@@ -2164,6 +2170,20 @@ static o start_list(Frame *f)
 		if (!strcmp(s, "@test")) err_node(f->node, "@test goes at the top level: (@test \"name\" body...)");
 		else err_node(head, "unknown annotation " NAME_FMT "; gael knows @export (def ...), (@test \"name\" body...), @test (form for the tests), (@debug ...), (@warn \"...\") and (@err \"...\")", s);
 		finish(T_ERR);
+		return;
+	}
+	if (!strcmp(s, "gpu-each")) { /* kernel.c: the GPU's kernel, and the loop for the VM in its place */
+		if (!gpu_each(f)) finish(T_ERR);
+		return;
+	}
+	if (!strcmp(s, "gpu kernel")) { /* (gpu kernel K), which only gpu-each writes: true when the GPU ran K */
+		emit(OP_GPU, (i32)g_nodes[f->cur].ival, 0, g_nodes[f->node].line);
+		finish(T_BOOL);
+		return;
+	}
+	if (!strcmp(s, "gpu wgsl")) { /* (gpu wgsl K), after K's loop: its WGSL, now that every literal has its type */
+		kernel_text((i32)g_nodes[f->cur].ival);
+		finish(T_UNIT);
 		return;
 	}
 	if (!strcmp(s, "if")) f->form = F_IF;

@@ -84,6 +84,7 @@ How the entries read:
 | `format` | print into a new string | [Printing](#printing) |
 | `gem` | a gem's manifest | [Gems](#gems) |
 | `get` | an element of a vec or a pool | [Vecs](#vecs), [Pools](#pools) |
+| `gpu-each` | a body run once per element of a vec, on the GPU when there is one | [GPU](#gpu) |
 | `getenv` | an environment variable as an option | [Files and the system](#files-and-the-system) |
 | `handle` | the type of a pool element's name | [Pools](#pools) |
 | `has` | whether a map has a key, a pool an element | [Maps](#maps), [Pools](#pools) |
@@ -737,6 +738,38 @@ coroutine that returns unit, `sleep` or `step-coroutines` of a non-float; `await
 instead. A coroutine cannot be cancelled from outside yet; one that never ends holds what it holds (and
 `GAEL_CHECK=1` counts that as not freed).
 
+## GPU
+
+```
+(gpu-each (p particles) body...)       ; body once per element, all at once, on the GPU when there is one
+(gpu-each (p particles i) body...)     ; i: the element's index, a u32
+```
+
+The body is a GPU kernel written in gael: it runs once per element of the vec, every element at the same time, and
+each run writes only its own element. It reads and sets the fields of `p` that are `f32`, `i32` or `u32` (nested ones
+too, `p.pos.x`), reads the variables around it of those types (they reach the GPU once per run, as constants), and
+has `let`, `set`, `if`, `when`, `do`, arithmetic, comparisons, logic, bits, the math functions, `min`, `max`, `abs`,
+`clamp` and the conversions `(f32 x)`, `(i32 x)`, `(u32 x)`. A variable of the body is one of those types or `bool`;
+one made from a literal says its type, `(let ((k : f32 0.5)) ...)`, since a literal alone would be 64-bit. Other
+fields of the element may be anything; the GPU never sees them. The vec is in a variable: a local or a global.
+
+gael writes the body as WGSL (`gael -g FILE` prints it) and runs it through wgpu-native, which it loads when a
+`gpu-each` first runs: `GAEL_WGPU=FILE` names the library, else `lib/libwgpu_native.so` next to the gael binary, in
+gael's own folder, or wherever the system finds `libwgpu_native.so`. wgpu runs it on Vulkan (Linux with Wayland or X,
+Android), Metal (macOS, iOS), Direct3D 12 or OpenGL. Without the library or a GPU the same body runs on the VM as a
+`for` over the vec that puts each element back, so a program works with or without one; `GAEL_GPU=0` keeps
+everything on the VM, `GAEL_GPU=1` makes a missing GPU a runtime error. Each field the body uses goes to the GPU as
+it is, since a vec keeps each field as a column already, and the fields it sets come back.
+
+Where the GPU and the VM differ, because WGSL says so: division and the math functions may be a few ulps off, an int
+divided by zero gives the int, a float too big for an int gives the nearest one, and a shift past the type's bits is
+taken modulo them - on the VM each of the last three is a runtime error.
+
+Compile errors, each with what to write: a field or a variable of another type (`float`, `int`, `string`, a struct as a
+whole, a `bool` field, which a vec keeps as one bit); setting anything but `p`'s fields and the body's own variables; a
+call of a function of the program, printing, a loop, a string, a `gpu-each` inside another; more than 8 fields or 16
+values from around in one body.
+
 ## Macros
 
 ```
@@ -913,6 +946,7 @@ gael -d FILE           compile and print the bytecode
 gael -m FILE           print FILE with its macros expanded
 gael -e CODE ARGS...   compile and run CODE
 gael -x FILE           list FILE's @export globals and its (@warn ...) and (@err ...) marks
+gael -g FILE           print the WGSL that each gpu-each of FILE runs on the GPU
 gael -n                the built-in names, one a line
 gael -h                the help
 ```
@@ -922,7 +956,8 @@ Exit status: 0 fine, 1 a compile or runtime error, 2 bad usage; `(exit n)` ends 
 Environment: `GAEL_HEAP=SIZE` sets the heap (and as much again for arenas and for strings), like `64M` or `2G`
 (default 1G of address space, given pages only where written). `GAEL_CHECK=1` overwrites freed memory and reports what
 a program that ran to its end never freed. `GAEL_HOME=DIR` is gael's own folder (default `~/.gael`); empty, gael uses
-none.
+none. `GAEL_GPU=0` runs every `gpu-each` on the VM, `GAEL_GPU=1` makes a missing GPU an error; `GAEL_WGPU=FILE` is the
+wgpu-native library to load ([GPU](#gpu)).
 
 The REPL: a form may span lines; `:q` quits. Each form is compiled and run on its own, and the value of the last one
 is shown as `=> value : type`. A function or a global can be defined again with the same type (the new body or value

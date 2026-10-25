@@ -12,6 +12,7 @@ typedef struct {
 	i32 line, col;
 	i64 ival;
 	u8 big;   /* an int literal above 2^63 - 1: its bits are in ival, and only a u64 holds it */
+	u8 lty;   /* a number literal: the type it took where it stands, once compiled (kernel.c writes it with that) */
 	f64 fval;
 	const char *text; /* symbols, keywords, strings: NUL-terminated, in the unit arena */
 	u32 len;
