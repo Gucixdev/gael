@@ -20,6 +20,10 @@
 ; the player tag but not burning, with e and a copy of each component named; the copies go back to their columns
 ; after body, so (set pos ...) changes the entity. Entities spawned in body are visited from the next query on.
 ; At most 64 components and tags in one world, and an entity's own functions check it is still alive.
+;
+; As in Bevy, a system is a plain function with queries in it, and :with and :not are its With and Without; a
+; resource is a global, an event the events gem, a plugin a gem, and the schedule the function that calls the systems
+; in their order. There is no command buffer: despawning inside a query is safe.
 
 (defmacro ecs-bits                                 ; each name its bit, counting up from k
   ((_ w k) (do))
