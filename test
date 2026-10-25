@@ -133,7 +133,7 @@ for bin in "${builds[@]}"; do
 	[ "$(cat "$out/stdout")" = '=> hi there : string' ] || { ok=0; head -3 "$out/stdout"; }
 	check "$b repl with main.gael" "$ok"
 	mkdir -p "$out/home-gems-$b/gems" # a gem from gael's folder, turned on and off while the REPL runs
-	cp examples/gems/ecs-flat.gael "$out/home-gems-$b/gems/"
+	cp tests/test-runner/gems/ecs-flat.gael "$out/home-gems-$b/gems/"
 	ok=1
 	printf '(enable ecs-flat)\n(ecs-name (ecs-spawn "x"))\n(disable ecs-flat)\n(ecs-name 0)\n(enable ecs-flat)\n(ecs-name 0)\n' |
 		GAEL_HOME="$out/home-gems-$b" "$bin" > "$out/stdout" 2> "$out/stderr" || ok=0

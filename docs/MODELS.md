@@ -28,7 +28,7 @@ macros; `docs/REFERENCE.md` has every detail; `examples/` has a working program 
 
 ```lisp
 ; a comment
-(use "lib/geometry.gael")                  ; compile another file first
+(use "player.gael")                        ; compile another file of this program first
 (enable ecs)                               ; turn a gem on
 (struct Vec2 (x : float 0.0) (y : float 0.0)) ; fields with optional defaults
 (enum Dir north east south west)           ; Dir.north; north in a match

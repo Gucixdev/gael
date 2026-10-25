@@ -10,7 +10,7 @@
 => (some (P :x 0 :y 0)) : (option P)
 => 6 : int
 => (P :x 4 :y 5) : P
-geometry loaded
+tests/repl.gael ran
 => 2.0 : float
 => 7.0 : float
 hi

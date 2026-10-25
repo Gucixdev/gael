@@ -112,7 +112,7 @@ potwierdzenia:
 - **Dziennik zmian na żywo (jego słowa, 2026-10-25):** „każda linijka repldump powinna zawierać godzinę i datę, by
   nie podmieniać funkcji plików, tylko inteligentnie w trakcie działania, głównie edytora, dzięki czemu moduły nie są
   nadpisywane”. Zrobione: każda forma w `repldump.gael` ma przed sobą linię z datą i godziną oraz funkcjami plików,
-  które podmieniła (`;; 2026-10-25 16:28:57, replaces width (lib/shapes.gael:3)`); pliki nigdy nie są pisane - zmiana
+  które podmieniła (`;; 2026-10-25 16:28:57, replaces hurt (game.gael:12)`); pliki nigdy nie są pisane - zmiana
   żyje w działającym programie i w dzienniku, jak plik changes w Smalltalku. Dalej: artemacs pokazuje zmiany z
   dziennika przy funkcjach i pozwala świadomie przenieść wybraną do pliku albo ją porzucić.
 - **Bez async/await (jego słowa, 2026-10-25):** „async await bardzo bym nie chciał, nie chcę czekać”. Zrobione: nic

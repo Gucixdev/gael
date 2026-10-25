@@ -520,7 +520,7 @@ static FILE *g_dump; /* repldump.gael, opened for appending when the REPL starts
 static int g_dumped; /* the session's first line is written */
 
 /* dump FORM: append a form that ran without an error, after a line with its date and time and the functions of files
- * it replaced (";; 2026-10-25 16:26:03, replaces width (lib/shapes.gael:3)"); the session's first form comes after a
+ * it replaced (";; 2026-10-25 16:26:03, replaces hurt (game.gael:12)"); the session's first form comes after a
  * line that says when and where the session ran */
 static o dump(const char *form)
 {

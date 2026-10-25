@@ -2,8 +2,6 @@
 ; rewrites it, and the compiler type-checks what comes out. They are hygienic: a name the template binds never
 ; captures one from the use, and a name the template uses freely means what it means at the top level.
 
-(use "lib/macros.gael")                        ; bump comes from there
-
 (defmacro swap                                 ; tmp is the template's own, so the tmp below is another variable
   ((_ a b) (let ((tmp a)) (set a b) (set b tmp))))
 
@@ -30,6 +28,9 @@
 
 (defn half ((x : int)) : int (/ x 2))
 (defmacro halve ((_ e) (half e)))              ; half is the global function, wherever halve is used
+
+(defn succ ((x : int)) : int (+ x 1))
+(defmacro bump ((_ v) (set v (succ v))))       ; a macro can set the variable it is given
 
 (defn sign ((x : int)) : string
   (cond ((< x 0) "minus") ((= x 0) "zero") (:else "plus")))

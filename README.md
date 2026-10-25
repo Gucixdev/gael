@@ -52,7 +52,7 @@ GAEL_HOME=DIR   gael's own folder (default ~/.gael): the REPL runs main.gael fro
 gael's own folder is like `~/.emacs.d`: the REPL starts by running `main.gael` from it, and every form that ran
 without an error is appended to `repldump.gael` there. A session starts with a line that says when and in which
 directory; each form comes after a line with its date and time and, when it gave a function of a file a new body,
-which one (`;; 2026-10-25 16:28:57, replaces width (examples/lib/shapes.gael:3)`). The files themselves are never
+which one (`;; 2026-10-25 16:28:57, replaces hurt (game.gael:12)`). The files themselves are never
 written: a change made while the program runs lives in the running program and in the dump, as in Smalltalk's changes
 file. `gael < ~/.gael/repldump.gael` plays a session again.
 
@@ -230,7 +230,7 @@ error. A comment starts with `;`.
 
 | Form | Meaning |
 |---|---|
-| `(use "lib/geometry.gael")` | compile that file first, its path relative to this one; a file used by several others is compiled once, and a file that ends up using itself is an error |
+| `(use "player.gael")` | compile that file of the program first, its path relative to this one; a file used by several others is compiled once, and a file that ends up using itself is an error. Code for other programs goes in a gem |
 | `(def hp : int 100)`, `(def hp 100)` | a global; without `: type` the type is the value's |
 | `(defn name ((x : int) (y : float)) : int body...)` | a function, `()` when it takes nothing; without `: type` it returns unit. A function can be called above its definition |
 | `inc`, `(fn ((x : int)) : int (* x x))`, `(f 3)` | one namespace, as in Scheme: a function's name is a value of type `(fn (int) int)`, `fn` makes one without a name, and a variable, a field or an expression of that type is called like a function; a local of the same name hides a function |
@@ -404,7 +404,8 @@ it (here `ecs-flat` provides `ecs`), and two gems that are on may not provide th
 those of the gems it requires, checked at each use when compiling: `gem sneaky uses ecs-spawn of gem ecs-flat, which
 it does not require; add ecs-flat to its :requires`. The program uses every gem that is on. In the REPL
 `(enable name)` compiles a gem into the running program, and `(disable name)` turns one off: its names cannot be used
-until it is on again (code compiled before goes on working). `examples/gems.gael` uses two gems.
+until it is on again (code compiled before goes on working). `examples/gems.gael` turns on two of the gems that come
+with gael, and `wfc` brings `rng` with it.
 
 The gems that come with gael are in `gems/`. `ecs` is an entity component system the way flecs and the C ones go:
 64-bit entity ids with a generation, a column per component, components and tags as bits of one mask per entity, and

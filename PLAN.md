@@ -19,6 +19,9 @@ dokumentacja mieści się w kontekście.
 - [x] Bez `async`/`await`: `(coroutine (f x))` startuje, `(poll co)` daje `(option T)` od razu; nic nie czeka.
 - [x] `repldump.gael`: data i godzina przy każdej formie i które funkcje plików podmieniła; pliki nigdy nie są
       nadpisywane, zmiana na żywo żyje w programie i w dzienniku, jak plik changes w Smalltalku (`ba3b807`).
+- [x] Jeden folder `gems/` (jego uwaga: „examples mają folder gems i główny folder ma folder gems, to nie jest
+      zgodne”): `examples/` to same programy z `.out`, kod do ponownego użycia to gemy - nowy `geometry` (`Vec2`,
+      `Vec3`, `Rect`); gemy-demo i pliki dla testów siedzą w `tests/`, stare `examples/lib` w `trash/`.
 
 ## 1. Język pod modele
 
@@ -39,6 +42,10 @@ dokumentacja mieści się w kontekście.
       każda nazwa z `gael -n` i że ma mniej niż 16 KB.
 - [ ] Skill `gael` w claude-config.
 - [x] `gael -m`: plik z rozwiniętymi makrami (także w funkcjach), ułożony do czytania - to, co sprawdza kompilator.
+- [ ] Metoda na wartości wyrażenia: `((Vec3 1.0 0.0 0.0).cross b)` jak `(v.cross b)` - piszę to sam, więc model też
+      napisze; dziś błąd podaje `(Vec3.cross expr ...)`.
+- [ ] Testy gemu w jego pliku: `gael test gems/NAZWA.gael` włącza ten gem i uruchamia jego `(@test ...)`; `./test`
+      robi to dla każdego gemu z `gems/`.
 
 ## 1b. Biblioteka: porty z holyc do `gems/`
 
