@@ -4100,7 +4100,13 @@ static o run_work(i32 base)
 				}
 				fd = find_field(ft, p, len);
 				if (!fd) {
-					if (!g_tys[ft].broken)
+					char seg[64];
+					sprintf(seg, "%.*s", (int)(len < 63 ? len : 63), p);
+					if (g_tys[ft].broken) ;
+					else if (!end && hook(ft, seg) >= 0) /* ((Vec3 ...).cross b): a method, not a field */
+						err_node(path, "%s has no field %s; a method on an expression is called by its full name: (%s.%s expr ...)",
+						         tn(ft), seg, tn(ft), seg);
+					else
 						err_node(path, "%s has no field %.*s; its fields are %s", tn(ft), (int)(len < 64 ? len : 64), p,
 						         names_of(ft, names, sizeof(names)));
 					ft = T_ERR;

@@ -24,3 +24,4 @@ tests/errors/methods.gael:33:1: error: B has 3 fields (name, hp, mp), got 0 valu
 tests/errors/methods.gael:34:1: error: B has 3 fields (name, hp, mp), got 1 value; mp has no default, so it must be given
 tests/errors/methods.gael:35:1: error: B: missing fields name, mp
 tests/errors/methods.gael:36:2: error: C.init must return C: (C ...) calls it to make one
+tests/errors/methods.gael:37:24: error: Vec2 has no field heal; a method on an expression is called by its full name: (Vec2.heal expr ...)
