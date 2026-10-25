@@ -19,7 +19,7 @@ typedef struct {
 
 static NameSlot *g_names; /* reserved address space for NAME_SLOTS (compile.c's tables_init) */
 static i32 g_nnames;
-static u32 g_name_cap = 1 << 12; /* the slots in use: a power of two */
+static u32 g_name_cap = 1 << 10; /* the slots in use: a power of two */
 
 static o names_rebuild(void); /* compile.c: the index again from the tables */
 static i32 g_unit_gem; /* the gem the unit being compiled belongs to, 0 for the program; what it defines is that gem's */

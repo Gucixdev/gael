@@ -125,7 +125,29 @@
 	X(TASK_DONE, 0) /* t -- b      the task has ended */ \
 	X(TASK_TIME, 0) /* -- f        the task time in seconds */ \
 	X(TASK_END, 0) /* r... --      where a task's function returns to: the result goes into the task, which ends */ \
-	X(SHOW, 1)     /* x... --      the REPL's "=> value : type"; a: the type */
+	X(SHOW, 1)     /* x... --      the REPL's "=> value : type"; a: the type */ \
+	X(NOP, 2)      /* --           never run: the place of an instruction fused into the one before it */ \
+	GAEL_FUSED(X)
+
+/* Superinstructions: a run of simple instructions that the compiler fuses into its first one after a unit is compiled
+ * (fuse in compile.c); the others stay in place as NOPs, skipped. LL: two locals, a and b; LK: local a and constant b;
+ * SL: the value on top and local a; SK: the value on top and constant a (an index into the int or float constants).
+ * The arithmetic ones push the result, as the run did. A compare-and-jump jumps when the comparison is the sense: the
+ * next instruction (a NOP) holds the target in a and the sense in b - 1 for a JT the run ended with, 0 for a JF; the SS
+ * form, a comparison of the two values on top, holds them itself. */
+#define GAEL_BIN_FORMS(X, op) X(op##_LL, 2) X(op##_LK, 2) X(op##_SL, 1) X(op##_SK, 1)
+#define GAEL_JMP_FORMS(X, op) X(J##op##_LL, 2) X(J##op##_LK, 2) X(J##op##_SK, 1) X(J##op##_SS, 2)
+#define GAEL_FUSED(X) \
+	GAEL_BIN_FORMS(X, ADD_I) GAEL_BIN_FORMS(X, SUB_I) GAEL_BIN_FORMS(X, MUL_I) \
+	GAEL_BIN_FORMS(X, ADD_F) GAEL_BIN_FORMS(X, SUB_F) GAEL_BIN_FORMS(X, MUL_F) GAEL_BIN_FORMS(X, DIV_F) \
+	X(MOD_I_LK, 2) X(MOD_I_SK, 1) /* the constant is neither 0 nor -1 */ \
+	GAEL_JMP_FORMS(X, LT_I) GAEL_JMP_FORMS(X, LE_I) GAEL_JMP_FORMS(X, GT_I) GAEL_JMP_FORMS(X, GE_I) \
+	GAEL_JMP_FORMS(X, EQ_I) GAEL_JMP_FORMS(X, NE_I) \
+	GAEL_JMP_FORMS(X, LT_F) GAEL_JMP_FORMS(X, LE_F) GAEL_JMP_FORMS(X, GT_F) GAEL_JMP_FORMS(X, GE_F) \
+	GAEL_JMP_FORMS(X, EQ_F) GAEL_JMP_FORMS(X, NE_F) \
+	X(LOAD2_L, 2)  /* -- x y       locals a and b */ \
+	X(STORE_LOAD_L, 2) /* x -- y   x into local a, then local b */ \
+	X(INC_JMP, 2)  /* --           add 1 to the int in local a, jump to b: the end of a for loop */
 
 #define GAEL_OP_ENUM_(name, n) OP_##name,
 typedef enum { GAEL_OPS(GAEL_OP_ENUM_) OP_COUNT_ } Op;

@@ -137,7 +137,7 @@ typedef struct {
 	i32 nrequires, nprovides, nexcludes;
 	u8 state;
 } Gem;
-static Gem g_gems[MAX_GEMS] = { { "the program", 0, 0, { 0 }, { 0 }, { 0 }, 0, 0, 0, GEM_ON } };
+static Gem g_gems[MAX_GEMS]; /* zero until used, so it costs the binary nothing; gem 0 is set in compile_init */
 static i32 g_ngems = 1;
 static int g_unit_main; /* the unit is a gem's main file: it starts with the manifest */
 
@@ -670,6 +670,8 @@ static o tables_init(void)
 
 static o compile_init(void)
 {
+	g_gems[0].name = "the program";
+	g_gems[0].state = GEM_ON;
 	tables_init();
 	text_init();
 	g_task_end = emit(OP_TASK_END, 0, 0, 0);
@@ -4441,6 +4443,139 @@ static i32 expand_top(i32 top, int repl)
 	return top;
 }
 
+/* Fusion. Once a unit compiles without errors, runs of simple instructions become one superinstruction each (ops.h):
+ * a local or a constant fed straight into arithmetic, a comparison straight into a jump, the step at the end of a for
+ * loop. The rest of a run turns into NOPs that the superinstruction skips, so no instruction moves and no jump needs
+ * to change. A run never has, after its start, a place code comes to from elsewhere: a jump's target, a function's
+ * entry, the instruction after a call or after a task's wait. Before that, a jump to a JMP goes where that one goes,
+ * and a JMP to a return becomes the return. */
+static const u8 g_bin_ops[] = { OP_ADD_I, OP_SUB_I, OP_MUL_I, OP_ADD_F, OP_SUB_F, OP_MUL_F, OP_DIV_F };
+static const u8 g_bin_fused[] = { OP_ADD_I_LL, OP_SUB_I_LL, OP_MUL_I_LL, OP_ADD_F_LL, OP_SUB_F_LL, OP_MUL_F_LL, OP_DIV_F_LL };
+static const u8 g_cmp_ops[] = { OP_LT_I, OP_LE_I, OP_GT_I, OP_GE_I, OP_EQ_I, OP_NE_I, OP_LT_F, OP_LE_F, OP_GT_F, OP_GE_F, OP_EQ_F, OP_NE_F };
+static const u8 g_cmp_fused[] = { OP_JLT_I_LL, OP_JLE_I_LL, OP_JGT_I_LL, OP_JGE_I_LL, OP_JEQ_I_LL, OP_JNE_I_LL,
+	OP_JLT_F_LL, OP_JLE_F_LL, OP_JGT_F_LL, OP_JGE_F_LL, OP_JEQ_F_LL, OP_JNE_F_LL };
+
+static int op_index(const u8 *ops, i32 n, u8 op)
+{
+	i32 k;
+	for (k = 0; k < n; k++) {
+		if (ops[k] == op) return k;
+	}
+	return -1;
+}
+
+/* fuse_const INS FLOAT: the constant a run's push puts on the stack, as an index into the int (or float) constants;
+ * -1 when it pushes something else */
+static i32 fuse_const(const Ins *c, int fl)
+{
+	if (fl) return c->op == OP_PUSH_F ? c->a : -1;
+	if (c->op == OP_PUSH_I) return c->a;
+	if (c->op == OP_PUSH_K) return add_int(c->a); /* a bool or an enum value */
+	return -1;
+}
+
+static int is_jump(u8 op) { return op == OP_JMP || op == OP_JF || op == OP_JT; }
+static int is_ret(u8 op) { return op == OP_RET_V || op == OP_RET_U || op == OP_RET_N; }
+
+/* fused SITE OP A B LEN: the run of LEN instructions at SITE becomes OP A B and NOPs */
+static o fused(Ins *c, u8 op, i32 a, i32 b, i32 len)
+{
+	i32 k;
+	c->op = op;
+	c->a = a;
+	c->b = b;
+	for (k = 1; k < len; k++) {
+		c[k].op = OP_NOP;
+		c[k].a = c[k].b = 0;
+	}
+}
+
+static o fuse(i32 from, i32 to)
+{
+	u8 *tg;
+	i32 i, n = to - from;
+	if (n <= 0) return;
+	tg = (u8 *)arena_alloc(&g_unit_arena, (size_t)n + 4);
+	memset(tg, 0, (size_t)n + 4);
+	for (i = from; i < to; i++) { /* a jump to a JMP goes on to its target; a JMP to a return returns */
+		Ins *c = &g_code[i];
+		i32 hops = 0;
+		if (!is_jump(c->op)) continue;
+		while (hops++ < 16 && c->a >= 0 && c->a < g_ncode && g_code[c->a].op == OP_JMP) c->a = g_code[c->a].a;
+		if (c->op == OP_JMP && c->a >= 0 && c->a < g_ncode && is_ret(g_code[c->a].op)) *c = g_code[c->a];
+	}
+	for (i = from; i < to; i++) { /* the places code comes to other than from the instruction before */
+		const Ins *c = &g_code[i];
+		u8 op = c->op;
+		if (is_jump(op) && c->a >= from && c->a < to) tg[c->a - from] = 1;
+		if (op == OP_CALL || op == OP_CALL_V || op == OP_TAILCALL || op == OP_TAILCALL_V || op == OP_ASYNC || op == OP_AWAIT ||
+		    op == OP_SLEEP || op == OP_YIELD || op == OP_TASKS_STEP || op == OP_TASKS_RUN)
+			tg[i + 1 - from] = 1;
+	}
+	for (i = 0; i < g_nfns; i++) {
+		if (g_fns[i].entry >= from && g_fns[i].entry < to) tg[g_fns[i].entry - from] = 1;
+	}
+	for (i = from; i < to; i++) {
+		Ins *c = &g_code[i];
+		i32 room = to - i, k, j = -1, run;
+		for (run = 1; run < 4 && run < room && !tg[i + run - from]; run++) {} /* how far a run from here may go */
+		if (run >= 4 && c[0].op == OP_LOAD_L) {
+			/* LOAD_L LOAD_L CMP J and LOAD_L PUSH CMP J: compare-and-jump with both values given */
+			if ((k = op_index(g_cmp_ops, (i32)sizeof(g_cmp_ops), c[2].op)) >= 0 && (c[3].op == OP_JT || c[3].op == OP_JF) &&
+			    c[0].op == OP_LOAD_L && (c[1].op == OP_LOAD_L || (j = fuse_const(&c[1], k >= 6)) >= 0)) {
+				i32 t = c[3].a, sense = c[3].op == OP_JT;
+				if (c[1].op == OP_LOAD_L) fused(c, (u8)g_cmp_fused[k], c[0].a, c[1].a, 4);
+				else fused(c, (u8)(g_cmp_fused[k] + 1), c[0].a, j, 4);
+				c[1].a = t;
+				c[1].b = sense;
+				i += 3;
+				continue;
+			}
+		}
+		if (run >= 3) {
+			/* PUSH CMP J: compare the value on top with a constant and jump */
+			if ((k = op_index(g_cmp_ops, (i32)sizeof(g_cmp_ops), c[1].op)) >= 0 && (c[2].op == OP_JT || c[2].op == OP_JF) &&
+			    (j = fuse_const(&c[0], k >= 6)) >= 0) {
+				i32 t = c[2].a, sense = c[2].op == OP_JT;
+				fused(c, (u8)(g_cmp_fused[k] + 2), j, 0, 3);
+				c[1].a = t;
+				c[1].b = sense;
+				i += 2;
+				continue;
+			}
+			/* LOAD_L LOAD_L OP and LOAD_L PUSH OP: arithmetic on a local and a local or a constant */
+			if (c[0].op == OP_LOAD_L && (k = op_index(g_bin_ops, (i32)sizeof(g_bin_ops), c[2].op)) >= 0) {
+				if (c[1].op == OP_LOAD_L) { fused(c, g_bin_fused[k], c[0].a, c[1].a, 3); i += 2; continue; }
+				if ((j = fuse_const(&c[1], k >= 3)) >= 0) { fused(c, (u8)(g_bin_fused[k] + 1), c[0].a, j, 3); i += 2; continue; }
+			}
+			if (c[0].op == OP_LOAD_L && c[2].op == OP_MOD_I && (j = fuse_const(&c[1], 0)) >= 0 && g_ints[j] != 0 && g_ints[j] != -1) {
+				fused(c, OP_MOD_I_LK, c[0].a, j, 3);
+				i += 2;
+				continue;
+			}
+		}
+		if (run >= 2) {
+			if ((k = op_index(g_cmp_ops, (i32)sizeof(g_cmp_ops), c[0].op)) >= 0 && (c[1].op == OP_JT || c[1].op == OP_JF)) {
+				fused(c, (u8)(g_cmp_fused[k] + 3), c[1].a, c[1].op == OP_JT, 2); /* CMP J */
+				i += 1;
+				continue;
+			}
+			if ((k = op_index(g_bin_ops, (i32)sizeof(g_bin_ops), c[1].op)) >= 0) {
+				if (c[0].op == OP_LOAD_L) { fused(c, (u8)(g_bin_fused[k] + 2), c[0].a, 0, 2); i += 1; continue; } /* LOAD_L OP */
+				if ((j = fuse_const(&c[0], k >= 3)) >= 0) { fused(c, (u8)(g_bin_fused[k] + 3), j, 0, 2); i += 1; continue; } /* PUSH OP */
+			}
+			if (c[1].op == OP_MOD_I && (j = fuse_const(&c[0], 0)) >= 0 && g_ints[j] != 0 && g_ints[j] != -1) {
+				fused(c, OP_MOD_I_SK, j, 0, 2);
+				i += 1;
+				continue;
+			}
+			if (c[0].op == OP_INC_L && c[1].op == OP_JMP) { fused(c, OP_INC_JMP, c[0].a, c[1].a, 2); i += 1; continue; }
+			if (c[0].op == OP_STORE_L && c[1].op == OP_LOAD_L) { fused(c, OP_STORE_LOAD_L, c[0].a, c[1].a, 2); i += 1; continue; }
+			if (c[0].op == OP_LOAD_L && c[1].op == OP_LOAD_L) { fused(c, OP_LOAD2_L, c[0].a, c[1].a, 2); i += 1; continue; }
+		}
+	}
+}
+
 /* everything a failed unit may have added, so the REPL can forget it */
 static struct {
 	i32 ncode, nints, nfloats, nstrs, nfns, nglobals, nglobal_cells, ntys, nfields, nvariants, nfmts, nfmt_tys, nleaves, nguards,
@@ -4536,7 +4671,10 @@ static i32 compile_unit(i32 top, int repl)
 	emit(OP_HALT, 0, 0, 0);
 	g_code[entry].a = g_maxslots;
 	g_code[entry].b = g_maxdepth;
-	if (!g_unit.nerrors) return entry;
+	if (!g_unit.nerrors) {
+		fuse(g_snap.ncode, g_ncode);
+		return entry;
+	}
 
 	g_ncode = g_snap.ncode;
 	g_nints = g_snap.nints;

@@ -396,8 +396,16 @@ tests/errors/div-zero.gael:1: runtime error: division by zero
   carries the stamp of its expansion, and the compiler finds a local by its name and that stamp.
 - The top level's names (functions, globals, types, macros) and the built-in ones are in one hash index
   (`src/names.c`), so compiling grows with the size of the program, not with its square.
-- Every instruction is listed once in `src/ops.h` (an x-macro); the opcode enum, the disassembler's names and the
-  operand counts come from that list.
+- Every instruction is listed once in `src/ops.h` (an x-macro); the opcode enum, the disassembler's names, the
+  operand counts and, with gcc and clang, the table of label addresses the VM dispatches through come from that list.
+  Each instruction's code jumps straight to the next one's (computed goto, as Lua does; a plain switch with other
+  compilers).
+- Once a unit compiles, runs of simple instructions are fused into one superinstruction: a local or a constant fed
+  straight into arithmetic (`(- n 1)` is one `SUB_I_LK`), a comparison straight into a jump, the step at the end of a
+  `for`. The rest of a run becomes NOPs the superinstruction skips, so nothing moves and no jump changes; `gael -d`
+  shows the fused code.
+- A map keeps its entries in insertion order and an index of slots; each slot holds an entry's number and 32 bits of
+  its key's hash, so a probe reads an entry only when those agree.
 - The VM's cells carry no type tag: the compiler has already proved the types, so `ADD_I` reads two ints. A value
   takes as many cells as its type says: one for a number, a bool, a string, an enum value or a vec, the sum of its
   fields for a struct, and one more than the value inside for an option. A string is one cell too: the program's own

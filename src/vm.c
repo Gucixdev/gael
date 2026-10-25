@@ -354,13 +354,19 @@ static o vec_store(const Cell *hd, i64 i, i64 size, const Cell *from)
 	for (c = 0; c < size; c++) *vec_cell(hd, i, c) = from[c];
 }
 
-/* A map: [count][kind][entries][used][cap][ent][slots][idx]; its entries in the order they went in, each an alive
- * flag, the key and the value's cells; an index of SLOTS cells holding an entry's number + 1 (0: empty), probed
- * linearly from the key's hash. A removed entry stays in place, dead, until the map grows and packs the live ones */
-enum { MH_COUNT = 2, MH_USED, MH_CAP, MH_ENT, MH_SLOTS, MH_IDX, MH_CELLS };
+/* A map: [count][kind][entries][used][cap][ent][slots][idx][info][shift]; its entries in the order they went in, each
+ * an alive flag, the key and the value's cells; an index of SLOTS cells (a power of two), each 0 or an entry's number +
+ * 1 in the low 32 bits and the low 32 bits of the key's hash in the high ones, so a probe looks at an entry only when
+ * those agree. A key's probe starts at the top bits of its hash (SHIFT is 64 - log2 SLOTS) and goes on linearly. A removed
+ * entry stays in place, dead, until the map grows and packs the live ones. INFO says what the map's type would: the
+ * cells of an entry (low 16 bits), whether the keys are strings (bit 16) and whether a value holds objects (bit 17) */
+enum { MH_COUNT = 2, MH_USED, MH_CAP, MH_ENT, MH_SLOTS, MH_IDX, MH_INFO, MH_SHIFT, MH_CELLS };
+#define MAP_ESIZE(hd) ((hd)[MH_INFO].i & 0xffff)
+#define MAP_STRKEYS(hd) ((hd)[MH_INFO].i >> 16 & 1)
+#define MAP_VREFS(hd) ((hd)[MH_INFO].i >> 17 & 1)
 
-static i64 map_vsize(i64 m) { return cells(g_tys[obj_type(m)].elem); }
-static int map_strkeys(i64 m) { return g_tys[obj_type(m)].key == T_STR || g_tys[obj_type(m)].key == T_PATH; }
+static i64 map_vsize(i64 m) { return MAP_ESIZE(g_heap + m) - 2; }
+static int map_strkeys(i64 m) { return (int)MAP_STRKEYS(g_heap + m); }
 
 /* A pool: [count][kind][cap][elements][free][data][gens]; a fixed number of slots, the elements as columns like a
  * vec's (cell C of slot I at data + C * cap + I). gens holds each slot's generation, odd while the slot holds an
@@ -919,22 +925,19 @@ static int vec_push(i64 v, const Cell *from)
 	return 1;
 }
 
+/* hash_key KEY IS_STR: a string's FNV-1a, or an int's (a bool's, an enum value's) Fibonacci hash: times 2^64 / phi,
+ * whose top bits a map's index starts from */
 static u64 hash_key(i64 key, int is_str)
 {
 	u64 h;
-	if (is_str) { /* FNV-1a */
+	if (is_str) {
 		const char *p = STR_P(key);
 		u32 i, n = STR_LEN(key);
 		h = 14695981039346656037UL;
 		for (i = 0; i < n; i++) h = (h ^ (u8)p[i]) * 1099511628211UL;
-		return h;
+		return h * 11400714819323198485UL; /* FNV's low bits are its best; this brings them to the top */
 	}
-	h = (u64)key; /* the splitmix64 finish: an int, a bool or an enum value spread over all the bits */
-	h ^= h >> 30;
-	h *= 0xbf58476d1ce4e5b9UL;
-	h ^= h >> 27;
-	h *= 0x94d049bb133111ebUL;
-	return h ^ (h >> 31);
+	return (u64)key * 11400714819323198485UL;
 }
 
 /* map_new TYPE: an empty map of this map type; -1 when the heap is full */
@@ -949,27 +952,33 @@ static i64 map_new(Ty mt)
 	g_heap[h + MH_ENT].i = ent;
 	g_heap[h + MH_SLOTS].i = 16;
 	g_heap[h + MH_IDX].i = idx;
+	g_heap[h + MH_INFO].i = esize | (i64)(g_tys[mt].key == T_STR || g_tys[mt].key == T_PATH) << 16 | (i64)(g_tys[g_tys[mt].elem].nleaf > 0) << 17;
+	g_heap[h + MH_SHIFT].i = 60;
 	memset(g_heap + idx, 0, 16 * sizeof(Cell));
 	return h;
 }
 
-/* map_find M KEY SLOT: the entry number of KEY, or -1; *SLOT gets the index slot where it is or would go */
-static i64 map_find(i64 m, i64 key, i64 *slot)
+/* map_find M KEY SLOT HASH: the entry number of KEY, or -1; *SLOT gets the index slot where it is or would go, and
+ * *HASH the key's hash */
+static i64 map_find(i64 m, i64 key, i64 *slot, u64 *hash)
 {
-	const Cell *hd = g_heap + m;
-	int strkeys = map_strkeys(m);
-	i64 mask = hd[MH_SLOTS].i - 1, esize = 2 + map_vsize(m), at = (i64)(hash_key(key, strkeys) & (u64)mask);
-	for (;; at = (at + 1) & mask) {
-		i64 e = g_heap[hd[MH_IDX].i + at].i;
+	const Cell *hd = g_heap + m, *idx = g_heap + hd[MH_IDX].i, *ents = g_heap + hd[MH_ENT].i;
+	i64 strkeys = MAP_STRKEYS(hd), mask = hd[MH_SLOTS].i - 1, esize = MAP_ESIZE(hd), at;
+	u64 h = hash_key(key, (int)strkeys);
+	u32 tag = (u32)h; /* for ints below 2^32 a different key is a different tag: the product is odd, so one to one */
+	*hash = h;
+	for (at = (i64)(h >> hd[MH_SHIFT].i);; at = (at + 1) & mask) {
+		u64 v = (u64)idx[at].i;
 		const Cell *ent;
-		if (!e) {
+		if (!v) {
 			*slot = at;
 			return -1;
 		}
-		ent = g_heap + hd[MH_ENT].i + (e - 1) * esize;
+		if ((u32)(v >> 32) != tag) continue;
+		ent = ents + ((i64)(u32)v - 1) * esize;
 		if (ent[0].i && (strkeys ? str_eq(ent[1].i, key) : ent[1].i == key)) {
 			*slot = at;
-			return e - 1;
+			return (i64)(u32)v - 1;
 		}
 	}
 }
@@ -979,7 +988,7 @@ static i64 map_find(i64 m, i64 key, i64 *slot)
 static int map_grow(i64 m)
 {
 	Cell *hd = g_heap + m;
-	i64 esize = 2 + map_vsize(m), cap = hd[MH_CAP].i * 2, slots = hd[MH_SLOTS].i * 2, ent, idx, e, k = 0, slot;
+	i64 esize = MAP_ESIZE(hd), cap = hd[MH_CAP].i * 2, slots = hd[MH_SLOTS].i * 2, ent, idx, e, k = 0, mask = slots - 1;
 	int idx_here = part_grow(hd[MH_IDX].i, hd[MH_SLOTS].i), ent_here; /* each grows in place when it can */
 	idx = idx_here ? hd[MH_IDX].i : part_alloc(m, slots);
 	if (idx < 0) return 0;
@@ -990,9 +999,14 @@ static int map_grow(i64 m)
 		else part_free(idx, slots);
 		return 0;
 	}
-	for (e = 0; e < hd[MH_USED].i; e++) { /* the live entries, packed; in place they only move down */
-		const Cell *from = g_heap + hd[MH_ENT].i + e * esize;
-		if (from[0].i) memmove(g_heap + ent + k++ * esize, from, (size_t)esize * sizeof(Cell));
+	if (hd[MH_COUNT].i == hd[MH_USED].i) { /* none dead: the entries as they are */
+		k = hd[MH_USED].i;
+		if (!ent_here) memcpy(g_heap + ent, g_heap + hd[MH_ENT].i, (size_t)(k * esize) * sizeof(Cell));
+	} else {
+		for (e = 0; e < hd[MH_USED].i; e++) { /* the live ones, packed; in place they only move down */
+			const Cell *from = g_heap + hd[MH_ENT].i + e * esize;
+			if (from[0].i) memmove(g_heap + ent + k++ * esize, from, (size_t)esize * sizeof(Cell));
+		}
 	}
 	memset(g_heap + idx, 0, (size_t)slots * sizeof(Cell));
 	if (!ent_here) part_free(hd[MH_ENT].i, hd[MH_CAP].i * esize);
@@ -1001,10 +1015,13 @@ static int map_grow(i64 m)
 	hd[MH_IDX].i = idx;
 	hd[MH_CAP].i = cap;
 	hd[MH_SLOTS].i = slots;
+	hd[MH_SHIFT].i--;
 	hd[MH_USED].i = k;
-	for (e = 0; e < k; e++) {
-		(void)map_find(m, g_heap[ent + e * esize + 1].i, &slot);
-		g_heap[idx + slot].i = e + 1;
+	for (e = 0; e < k; e++) { /* the keys are all different: each goes to the first free slot of its probe */
+		u64 h = hash_key(g_heap[ent + e * esize + 1].i, (int)MAP_STRKEYS(hd));
+		i64 at = (i64)(h >> hd[MH_SHIFT].i);
+		while (g_heap[idx + at].i) at = (at + 1) & mask;
+		g_heap[idx + at].i = (i64)((u64)(u32)h << 32 | (u64)(e + 1));
 	}
 	return 1;
 }
@@ -1014,25 +1031,26 @@ static int map_grow(i64 m)
 static int map_insert(i64 m, i64 key, const Cell *val)
 {
 	Cell *hd = g_heap + m, *ent;
-	Ty vt = g_tys[obj_type(m)].elem;
-	i64 vsize = cells(vt), esize = 2 + vsize, slot, e = map_find(m, key, &slot);
+	i64 esize = MAP_ESIZE(hd), vsize = esize - 2, slot, e = 0, k;
+	u64 h;
+	e = map_find(m, key, &slot, &h);
 	if (e >= 0) {
 		ent = g_heap + hd[MH_ENT].i + e * esize;
-		refs(ent + 2, 1, vt, 0);
-		memcpy(ent + 2, val, (size_t)vsize * sizeof(Cell));
-		if (map_strkeys(m)) obj_release(key);
+		if (MAP_VREFS(hd)) refs(ent + 2, 1, g_tys[obj_type(m)].elem, 0);
+		for (k = 0; k < vsize; k++) ent[2 + k] = val[k];
+		if (MAP_STRKEYS(hd)) obj_release(key);
 		return 1;
 	}
 	if (hd[MH_USED].i == hd[MH_CAP].i) {
 		if (!map_grow(m)) return 0;
-		(void)map_find(m, key, &slot);
+		(void)map_find(m, key, &slot, &h);
 	}
 	e = hd[MH_USED].i++;
 	ent = g_heap + hd[MH_ENT].i + e * esize;
 	ent[0].i = 1;
 	ent[1].i = key;
-	memcpy(ent + 2, val, (size_t)vsize * sizeof(Cell));
-	g_heap[hd[MH_IDX].i + slot].i = e + 1;
+	for (k = 0; k < vsize; k++) ent[2 + k] = val[k];
+	g_heap[hd[MH_IDX].i + slot].i = (i64)((u64)(u32)h << 32 | (u64)(e + 1));
 	hd[MH_COUNT].i++;
 	return 1;
 }
@@ -1433,8 +1451,47 @@ static int task_grow(i64 cells_needed, i64 frames_needed)
 	g_arena_floor = g_narenas; \
 	LOAD_REGS(t_); } while (0)
 
+/* Dispatch. With gcc and clang each instruction's code jumps straight to the next one's through a table of label
+ * addresses (computed goto, as Lua does), so each instruction has a jump of its own for the branch predictor; with
+ * another compiler, or GAEL_SWITCH defined, it is a plain switch in a loop. The cases are the same in both: CASE names
+ * one, NEXT ends it. */
+#if defined(__GNUC__) && !defined(GAEL_SWITCH)
+#define VM_GOTO 1
+#define CASE(op) case op: L_##op:
+#define NEXT __extension__ ({ in = &g_code[pc++]; goto *labels[in->op]; })
+#else
+#define CASE(op) case op:
+#define NEXT continue
+#endif
+
+/* the cases of the superinstructions: VM_BIN for the arithmetic ones, VM_JMP for the compare-and-jumps (ops.h) */
+#define K_i(x) g_ints[x]
+#define K_f(x) g_floats[x]
+#define E_ADD_I(x, y) (i64)((u64)(x) + (u64)(y))
+#define E_SUB_I(x, y) (i64)((u64)(x) - (u64)(y))
+#define E_MUL_I(x, y) (i64)((u64)(x) * (u64)(y))
+#define E_ADD_F(x, y) ((x) + (y))
+#define E_SUB_F(x, y) ((x) - (y))
+#define E_MUL_F(x, y) ((x) * (y))
+#define E_DIV_F(x, y) ((x) / (y))
+#define VM_BIN(op, F) \
+	CASE(OP_##op##_LL) s[sp].F = E_##op(s[fp + in->a].F, s[fp + in->b].F); sp++; pc += 2; NEXT; \
+	CASE(OP_##op##_LK) s[sp].F = E_##op(s[fp + in->a].F, K_##F(in->b)); sp++; pc += 2; NEXT; \
+	CASE(OP_##op##_SL) s[sp - 1].F = E_##op(s[sp - 1].F, s[fp + in->a].F); pc++; NEXT; \
+	CASE(OP_##op##_SK) s[sp - 1].F = E_##op(s[sp - 1].F, K_##F(in->a)); pc++; NEXT;
+#define VM_JMP(op, F, R) \
+	CASE(OP_J##op##_LL) if ((s[fp + in->a].F R s[fp + in->b].F) == in[1].b) pc = in[1].a; else pc += 3; NEXT; \
+	CASE(OP_J##op##_LK) if ((s[fp + in->a].F R K_##F(in->b)) == in[1].b) pc = in[1].a; else pc += 3; NEXT; \
+	CASE(OP_J##op##_SK) sp--; if ((s[sp].F R K_##F(in->a)) == in[1].b) pc = in[1].a; else pc += 2; NEXT; \
+	CASE(OP_J##op##_SS) sp -= 2; if ((s[sp].F R s[sp + 1].F) == in->b) pc = in->a; else pc++; NEXT;
+
 static int vm_run(i32 pc)
 {
+#ifdef VM_GOTO
+#define VM_LABEL(name, k) &&L_OP_##name,
+	__extension__ static void *const labels[] = { GAEL_OPS(VM_LABEL) };
+#undef VM_LABEL
+#endif
 	i32 sp = 0, fp = 0, nf = 0;
 	i64 cap = VM_STACK, fcap = VM_FRAMES;
 	Cell *s = g_vstack, *fr = g_vframes;
@@ -1453,70 +1510,82 @@ static int vm_run(i32 pc)
 	for (;;) {
 		in = &g_code[pc++];
 		switch ((Op)in->op) {
-		case OP_HALT: return 0;
-		case OP_ENTER:
+		CASE(OP_HALT) return 0;
+		CASE(OP_ENTER)
 			if (fp + in->a + in->b > cap) return vm_error(in->line, "stack overflow");
 			while (sp < fp + in->a) s[sp++].i = 0;
-			break;
-		case OP_PUSH_I: s[sp++].i = g_ints[in->a]; break;
-		case OP_PUSH_F: s[sp++].f = g_floats[in->a]; break;
-		case OP_PUSH_S: s[sp++].i = g_strs[in->a].cell; break;
-		case OP_PUSH_K: s[sp++].i = in->a; break;
-		case OP_ZERO: memset(s + sp, 0, (size_t)in->a * sizeof(Cell)); sp += in->a; break;
-		case OP_POP: sp--; break;
-		case OP_POPN: sp -= in->a; break;
-		case OP_LOAD_L: s[sp++] = s[fp + in->a]; break;
-		case OP_STORE_L: s[fp + in->a] = s[--sp]; break;
-		case OP_LOAD_G: s[sp++] = g_global_cells[in->a]; break;
-		case OP_STORE_G: g_global_cells[in->a] = s[--sp]; break;
-		case OP_LOADN_L: memcpy(s + sp, s + fp + in->a, (size_t)in->b * sizeof(Cell)); sp += in->b; break;
-		case OP_STOREN_L: sp -= in->b; memcpy(s + fp + in->a, s + sp, (size_t)in->b * sizeof(Cell)); break;
-		case OP_LOADN_G: memcpy(s + sp, g_global_cells + in->a, (size_t)in->b * sizeof(Cell)); sp += in->b; break;
-		case OP_STOREN_G: sp -= in->b; memcpy(g_global_cells + in->a, s + sp, (size_t)in->b * sizeof(Cell)); break;
-		case OP_RETAIN:
+			NEXT;
+		CASE(OP_PUSH_I) s[sp++].i = g_ints[in->a]; NEXT;
+		CASE(OP_PUSH_F) s[sp++].f = g_floats[in->a]; NEXT;
+		CASE(OP_PUSH_S) s[sp++].i = g_strs[in->a].cell; NEXT;
+		CASE(OP_PUSH_K) s[sp++].i = in->a; NEXT;
+		CASE(OP_ZERO) memset(s + sp, 0, (size_t)in->a * sizeof(Cell)); sp += in->a; NEXT;
+		CASE(OP_POP) sp--; NEXT;
+		CASE(OP_POPN) sp -= in->a; NEXT;
+		CASE(OP_LOAD_L) s[sp++] = s[fp + in->a]; NEXT;
+		CASE(OP_STORE_L) s[fp + in->a] = s[--sp]; NEXT;
+		CASE(OP_LOAD_G) s[sp++] = g_global_cells[in->a]; NEXT;
+		CASE(OP_STORE_G) g_global_cells[in->a] = s[--sp]; NEXT;
+		CASE(OP_LOADN_L) { /* a few cells: a loop, not a call of memcpy */
+			const Cell *from = s + fp + in->a;
+			i32 k;
+			for (k = 0; k < in->b; k++) s[sp + k] = from[k];
+			sp += in->b;
+			NEXT;
+		}
+		CASE(OP_STOREN_L) {
+			Cell *to = s + fp + in->a;
+			i32 k;
+			sp -= in->b;
+			for (k = 0; k < in->b; k++) to[k] = s[sp + k];
+			NEXT;
+		}
+		CASE(OP_LOADN_G) memcpy(s + sp, g_global_cells + in->a, (size_t)in->b * sizeof(Cell)); sp += in->b; NEXT;
+		CASE(OP_STOREN_G) sp -= in->b; memcpy(g_global_cells + in->a, s + sp, (size_t)in->b * sizeof(Cell)); NEXT;
+		CASE(OP_RETAIN)
 			if (ONE_HANDLE(in->a)) obj_retain(s[sp - 1].i);
 			else refs(s + sp - cells((Ty)in->a), 1, (Ty)in->a, 1);
-			break;
-		case OP_DROP:
+			NEXT;
+		CASE(OP_DROP)
 			sp -= cells((Ty)in->a);
 			if (ONE_HANDLE(in->a)) obj_release(s[sp].i);
 			else refs(s + sp, 1, (Ty)in->a, 0);
-			break;
-		case OP_RELEASE_L:
+			NEXT;
+		CASE(OP_RELEASE_L)
 			if (ONE_HANDLE(in->b)) obj_release(s[fp + in->a].i);
 			else refs(s + fp + in->a, 1, (Ty)in->b, 0);
-			break;
-		case OP_RELEASE_G:
+			NEXT;
+		CASE(OP_RELEASE_G)
 			if (ONE_HANDLE(in->b)) obj_release(g_global_cells[in->a].i);
 			else refs(g_global_cells + in->a, 1, (Ty)in->b, 0);
-			break;
+			NEXT;
 
-		case OP_ADD_I: sp--; s[sp - 1].i = (i64)((u64)s[sp - 1].i + (u64)s[sp].i); break;
-		case OP_SUB_I: sp--; s[sp - 1].i = (i64)((u64)s[sp - 1].i - (u64)s[sp].i); break;
-		case OP_MUL_I: sp--; s[sp - 1].i = (i64)((u64)s[sp - 1].i * (u64)s[sp].i); break;
-		case OP_DIV_I:
-		case OP_MOD_I:
+		CASE(OP_ADD_I) sp--; s[sp - 1].i = (i64)((u64)s[sp - 1].i + (u64)s[sp].i); NEXT;
+		CASE(OP_SUB_I) sp--; s[sp - 1].i = (i64)((u64)s[sp - 1].i - (u64)s[sp].i); NEXT;
+		CASE(OP_MUL_I) sp--; s[sp - 1].i = (i64)((u64)s[sp - 1].i * (u64)s[sp].i); NEXT;
+		CASE(OP_DIV_I)
+		CASE(OP_MOD_I)
 			sp--;
 			if (s[sp].i == 0) return vm_error(in->line, "division by zero");
 			if (s[sp].i == -1) { /* INT_MIN / -1 overflows; -x and 0 are what wrapping gives */
 				s[sp - 1].i = in->op == OP_DIV_I ? (i64)(0 - (u64)s[sp - 1].i) : 0;
-				break;
+				NEXT;
 			}
 			s[sp - 1].i = in->op == OP_DIV_I ? s[sp - 1].i / s[sp].i : s[sp - 1].i % s[sp].i;
-			break;
-		case OP_NEG_I: s[sp - 1].i = (i64)(0 - (u64)s[sp - 1].i); break;
-		case OP_DIV_U:
-		case OP_MOD_U:
+			NEXT;
+		CASE(OP_NEG_I) s[sp - 1].i = (i64)(0 - (u64)s[sp - 1].i); NEXT;
+		CASE(OP_DIV_U)
+		CASE(OP_MOD_U)
 			sp--;
 			if (s[sp].i == 0) return vm_error(in->line, "division by zero");
 			s[sp - 1].i = (i64)(in->op == OP_DIV_U ? (u64)s[sp - 1].i / (u64)s[sp].i : (u64)s[sp - 1].i % (u64)s[sp].i);
-			break;
-		case OP_BAND: sp--; s[sp - 1].i = (i64)((u64)s[sp - 1].i & (u64)s[sp].i); break;
-		case OP_BOR: sp--; s[sp - 1].i = (i64)((u64)s[sp - 1].i | (u64)s[sp].i); break;
-		case OP_BXOR: sp--; s[sp - 1].i = (i64)((u64)s[sp - 1].i ^ (u64)s[sp].i); break;
-		case OP_BNOT: s[sp - 1].i = (i64)~(u64)s[sp - 1].i; break;
-		case OP_SHL:
-		case OP_SHR: { /* a: the int type */
+			NEXT;
+		CASE(OP_BAND) sp--; s[sp - 1].i = (i64)((u64)s[sp - 1].i & (u64)s[sp].i); NEXT;
+		CASE(OP_BOR) sp--; s[sp - 1].i = (i64)((u64)s[sp - 1].i | (u64)s[sp].i); NEXT;
+		CASE(OP_BXOR) sp--; s[sp - 1].i = (i64)((u64)s[sp - 1].i ^ (u64)s[sp].i); NEXT;
+		CASE(OP_BNOT) s[sp - 1].i = (i64)~(u64)s[sp - 1].i; NEXT;
+		CASE(OP_SHL)
+		CASE(OP_SHR) { /* a: the int type */
 			Ty t = (Ty)in->a;
 			i64 n = s[sp - 1].i, bits = int_bits(t);
 			u64 v = (u64)s[sp - 2].i;
@@ -1534,21 +1603,21 @@ static int vm_run(i32 pc)
 				v &= mask;
 				s[sp - 1].i = is_unsigned(t) || !(v & sign) ? (i64)v : -(i64)(mask - v) - 1;
 			}
-			break;
+			NEXT;
 		}
-		case OP_WRAP: { /* keep the low bits; a signed type gets its sign back */
+		CASE(OP_WRAP) { /* keep the low bits; a signed type gets its sign back */
 			u64 v = (u64)s[sp - 1].i, mask = ((u64)1 << int_bits((Ty)in->a)) - 1, sign = (mask >> 1) + 1;
 			v &= mask;
 			s[sp - 1].i = is_unsigned((Ty)in->a) || !(v & sign) ? (i64)v : -(i64)(mask - v) - 1;
-			break;
+			NEXT;
 		}
-		case OP_F32: s[sp - 1].f = to_f32(s[sp - 1].f); break;
-		case OP_ADD_F: sp--; s[sp - 1].f += s[sp].f; break;
-		case OP_SUB_F: sp--; s[sp - 1].f -= s[sp].f; break;
-		case OP_MUL_F: sp--; s[sp - 1].f *= s[sp].f; break;
-		case OP_DIV_F: sp--; s[sp - 1].f /= s[sp].f; break;
-		case OP_NEG_F: s[sp - 1].f = -s[sp - 1].f; break;
-		case OP_MATH: {
+		CASE(OP_F32) s[sp - 1].f = to_f32(s[sp - 1].f); NEXT;
+		CASE(OP_ADD_F) sp--; s[sp - 1].f += s[sp].f; NEXT;
+		CASE(OP_SUB_F) sp--; s[sp - 1].f -= s[sp].f; NEXT;
+		CASE(OP_MUL_F) sp--; s[sp - 1].f *= s[sp].f; NEXT;
+		CASE(OP_DIV_F) sp--; s[sp - 1].f /= s[sp].f; NEXT;
+		CASE(OP_NEG_F) s[sp - 1].f = -s[sp - 1].f; NEXT;
+		CASE(OP_MATH) {
 			f64 x = s[sp - 1].f;
 			switch (in->a) {
 			case 0: x = sqrt(x); break;
@@ -1564,45 +1633,45 @@ static int vm_run(i32 pc)
 			default: x = ceil(x); break;
 			}
 			s[sp - 1].f = x;
-			break;
+			NEXT;
 		}
-		case OP_MATH2: sp--; s[sp - 1].f = in->a ? pow(s[sp - 1].f, s[sp].f) : atan2(s[sp - 1].f, s[sp].f); break;
+		CASE(OP_MATH2) sp--; s[sp - 1].f = in->a ? pow(s[sp - 1].f, s[sp].f) : atan2(s[sp - 1].f, s[sp].f); NEXT;
 
-		case OP_LT_I: sp--; s[sp - 1].i = s[sp - 1].i < s[sp].i; break;
-		case OP_LE_I: sp--; s[sp - 1].i = s[sp - 1].i <= s[sp].i; break;
-		case OP_GT_I: sp--; s[sp - 1].i = s[sp - 1].i > s[sp].i; break;
-		case OP_GE_I: sp--; s[sp - 1].i = s[sp - 1].i >= s[sp].i; break;
-		case OP_EQ_I: sp--; s[sp - 1].i = s[sp - 1].i == s[sp].i; break;
-		case OP_NE_I: sp--; s[sp - 1].i = s[sp - 1].i != s[sp].i; break;
-		case OP_LT_F: sp--; s[sp - 1].i = s[sp - 1].f < s[sp].f; break;
-		case OP_LE_F: sp--; s[sp - 1].i = s[sp - 1].f <= s[sp].f; break;
-		case OP_GT_F: sp--; s[sp - 1].i = s[sp - 1].f > s[sp].f; break;
-		case OP_GE_F: sp--; s[sp - 1].i = s[sp - 1].f >= s[sp].f; break;
-		case OP_LT_U: sp--; s[sp - 1].i = (u64)s[sp - 1].i < (u64)s[sp].i; break;
-		case OP_LE_U: sp--; s[sp - 1].i = (u64)s[sp - 1].i <= (u64)s[sp].i; break;
-		case OP_GT_U: sp--; s[sp - 1].i = (u64)s[sp - 1].i > (u64)s[sp].i; break;
-		case OP_GE_U: sp--; s[sp - 1].i = (u64)s[sp - 1].i >= (u64)s[sp].i; break;
-		case OP_EQ_F: sp--; s[sp - 1].i = s[sp - 1].f == s[sp].f; break;
-		case OP_NE_F: sp--; s[sp - 1].i = s[sp - 1].f != s[sp].f; break;
-		case OP_EQ_S:
-		case OP_NE_S: { /* a: bit 0 the first string is borrowed, bit 1 the second */
+		CASE(OP_LT_I) sp--; s[sp - 1].i = s[sp - 1].i < s[sp].i; NEXT;
+		CASE(OP_LE_I) sp--; s[sp - 1].i = s[sp - 1].i <= s[sp].i; NEXT;
+		CASE(OP_GT_I) sp--; s[sp - 1].i = s[sp - 1].i > s[sp].i; NEXT;
+		CASE(OP_GE_I) sp--; s[sp - 1].i = s[sp - 1].i >= s[sp].i; NEXT;
+		CASE(OP_EQ_I) sp--; s[sp - 1].i = s[sp - 1].i == s[sp].i; NEXT;
+		CASE(OP_NE_I) sp--; s[sp - 1].i = s[sp - 1].i != s[sp].i; NEXT;
+		CASE(OP_LT_F) sp--; s[sp - 1].i = s[sp - 1].f < s[sp].f; NEXT;
+		CASE(OP_LE_F) sp--; s[sp - 1].i = s[sp - 1].f <= s[sp].f; NEXT;
+		CASE(OP_GT_F) sp--; s[sp - 1].i = s[sp - 1].f > s[sp].f; NEXT;
+		CASE(OP_GE_F) sp--; s[sp - 1].i = s[sp - 1].f >= s[sp].f; NEXT;
+		CASE(OP_LT_U) sp--; s[sp - 1].i = (u64)s[sp - 1].i < (u64)s[sp].i; NEXT;
+		CASE(OP_LE_U) sp--; s[sp - 1].i = (u64)s[sp - 1].i <= (u64)s[sp].i; NEXT;
+		CASE(OP_GT_U) sp--; s[sp - 1].i = (u64)s[sp - 1].i > (u64)s[sp].i; NEXT;
+		CASE(OP_GE_U) sp--; s[sp - 1].i = (u64)s[sp - 1].i >= (u64)s[sp].i; NEXT;
+		CASE(OP_EQ_F) sp--; s[sp - 1].i = s[sp - 1].f == s[sp].f; NEXT;
+		CASE(OP_NE_F) sp--; s[sp - 1].i = s[sp - 1].f != s[sp].f; NEXT;
+		CASE(OP_EQ_S)
+		CASE(OP_NE_S) { /* a: bit 0 the first string is borrowed, bit 1 the second */
 			i64 a = s[sp - 2].i, b = s[sp - 1].i;
 			int eq = str_eq(a, b);
 			if (!(in->a & 1)) obj_release(a);
 			if (!(in->a & 2)) obj_release(b);
 			sp--;
 			s[sp - 1].i = in->op == OP_EQ_S ? eq : !eq;
-			break;
+			NEXT;
 		}
-		case OP_NOT: s[sp - 1].i = !s[sp - 1].i; break;
+		CASE(OP_NOT) s[sp - 1].i = !s[sp - 1].i; NEXT;
 
-		case OP_JMP: pc = in->a; break;
-		case OP_JF: if (!s[--sp].i) pc = in->a; break;
-		case OP_JT: if (s[--sp].i) pc = in->a; break;
+		CASE(OP_JMP) pc = in->a; NEXT;
+		CASE(OP_JF) if (!s[--sp].i) pc = in->a; NEXT;
+		CASE(OP_JT) if (s[--sp].i) pc = in->a; NEXT;
 
-		case OP_I2F: s[sp - 1].f = (f64)s[sp - 1].i; break;
-		case OP_U2F: s[sp - 1].f = (f64)(u64)s[sp - 1].i; break;
-		case OP_F2I: { /* a: the int type */
+		CASE(OP_I2F) s[sp - 1].f = (f64)s[sp - 1].i; NEXT;
+		CASE(OP_U2F) s[sp - 1].f = (f64)(u64)s[sp - 1].i; NEXT;
+		CASE(OP_F2I) { /* a: the int type */
 			f64 v = s[sp - 1].f, lo, hi; /* it fits when lo < v < hi; both are false for nan */
 			Ty t = (Ty)in->a;
 			i32 bits = int_bits(t);
@@ -1614,17 +1683,17 @@ static int vm_run(i32 pc)
 				return vm_error(in->line, msg);
 			}
 			s[sp - 1].i = t == T_U64 && v >= 9223372036854775808.0 ? (i64)(u64)v : (i64)v;
-			break;
+			NEXT;
 		}
-		case OP_LEN_S: {
+		CASE(OP_LEN_S) {
 			i64 v = s[sp - 1].i;
 			s[sp - 1].i = (i64)STR_LEN(v);
 			if (!in->a) obj_release(v);
-			break;
+			NEXT;
 		}
 
-		case OP_CALL:
-		case OP_CALL_V: {
+		CASE(OP_CALL)
+		CASE(OP_CALL_V) {
 			const Fn *fn;
 			i32 nfp;
 			i64 fv = 0;
@@ -1651,10 +1720,10 @@ static int vm_run(i32 pc)
 			fp = nfp;
 			while (sp < fp + fn->nslots) s[sp++].i = 0;
 			pc = fn->entry;
-			break;
+			NEXT;
 		}
-		case OP_TAILCALL:
-		case OP_TAILCALL_V: { /* the arguments move down to this frame's start, and the callee runs in it */
+		CASE(OP_TAILCALL)
+		CASE(OP_TAILCALL_V) { /* the arguments move down to this frame's start, and the callee runs in it */
 			const Fn *fn;
 			i64 fv = 0;
 			if (in->op == OP_TAILCALL_V) {
@@ -1678,41 +1747,41 @@ static int vm_run(i32 pc)
 			sp = fp + fn->pcells;
 			while (sp < fp + fn->nslots) s[sp++].i = 0;
 			pc = fn->entry;
-			break;
+			NEXT;
 		}
-		case OP_RET_V: {
+		CASE(OP_RET_V) {
 			Cell r = s[sp - 1];
 			sp = fp;
 			nf--;
 			fp = FRAME_FP(fr[nf]);
 			pc = FRAME_PC(fr[nf]);
 			s[sp++] = r;
-			break;
+			NEXT;
 		}
-		case OP_RET_N:
+		CASE(OP_RET_N)
 			memmove(s + fp, s + sp - in->a, (size_t)in->a * sizeof(Cell));
 			sp = fp + in->a;
 			nf--;
 			fp = FRAME_FP(fr[nf]);
 			pc = FRAME_PC(fr[nf]);
-			break;
-		case OP_RET_U:
+			NEXT;
+		CASE(OP_RET_U)
 			sp = fp;
 			nf--;
 			fp = FRAME_FP(fr[nf]);
 			pc = FRAME_PC(fr[nf]);
-			break;
+			NEXT;
 
-		case OP_PRINT:
-		case OP_PRINTLN:
+		CASE(OP_PRINT)
+		CASE(OP_PRINTLN)
 			sp -= g_fmts[in->a].cells;
 			if (in->b) fflush(stdout); /* stdout's text first when both go to one terminal */
 			g_sink = in->b ? stderr : stdout;
 			print_fmt(&g_fmts[in->a], s + sp);
 			if (in->op == OP_PRINTLN) putc('\n', g_sink);
 			release_args(&g_fmts[in->a], s + sp);
-			break;
-		case OP_FORMAT: {
+			NEXT;
+		CASE(OP_FORMAT) {
 			size_t start = g_text.used;
 			i64 h;
 			sp -= g_fmts[in->a].cells;
@@ -1723,25 +1792,25 @@ static int vm_run(i32 pc)
 			release_args(&g_fmts[in->a], s + sp);
 			if ((h = text_take(start)) < 0) return vm_error(in->line, HEAP_FULL);
 			s[sp++].i = h;
-			break;
+			NEXT;
 		}
-		case OP_SH: {
+		CASE(OP_SH) {
 			i64 cmd = s[sp - 1].i, res;
 			if (!run_cmd(c_str(cmd), &res)) return vm_error(in->line, g_fail);
 			obj_release(cmd);
 			s[sp - 1].i = res;
-			break;
+			NEXT;
 		}
-		case OP_SHPIPE: {
+		CASE(OP_SHPIPE) {
 			i64 res, k;
 			sp -= in->a;
 			if (!run_pipe(s + sp, in->a, in->b, &res)) return vm_error(in->line, g_fail);
 			for (k = 0; k < in->a; k++) obj_release(s[sp + k].i);
 			s[sp++].i = res;
-			break;
+			NEXT;
 		}
-		case OP_PID: s[sp++].i = (i64)getpid(); break;
-		case OP_ENV: {
+		CASE(OP_PID) s[sp++].i = (i64)getpid(); NEXT;
+		CASE(OP_ENV) {
 			i64 name = s[sp - 1].i, h;
 			const char *c = c_str(name), *val;
 			if (!c) return vm_error(in->line, TEXT_FULL);
@@ -1750,10 +1819,10 @@ static int vm_run(i32 pc)
 			if ((h = str_new(val, strlen(val))) < 0) return vm_error(in->line, HEAP_FULL);
 			obj_release(name);
 			s[sp - 1].i = h;
-			break;
+			NEXT;
 		}
-		case OP_SYSTEM:
-		case OP_RUN: {
+		CASE(OP_SYSTEM)
+		CASE(OP_RUN) {
 			i64 cmd = s[sp - 1].i;
 			const char *c = c_str(cmd);
 			int st;
@@ -1763,35 +1832,35 @@ static int vm_run(i32 pc)
 			obj_release(cmd);
 			st = st == -1 ? -1 : (st >> 8) & 0xff; /* the exit status as the shell reports it (Linux) */
 			s[sp - 1].i = in->op == OP_RUN ? st == 0 : st;
-			break;
+			NEXT;
 		}
-		case OP_PARSE_I: {
+		CASE(OP_PARSE_I) {
 			i64 v = 0, str = s[sp - 1].i;
 			int ok = parse_int(str, &v);
 			obj_release(str);
 			s[sp - 1].i = ok;
 			s[sp++].i = v;
-			break;
+			NEXT;
 		}
-		case OP_PARSE_F: {
+		CASE(OP_PARSE_F) {
 			i64 str = s[sp - 1].i;
 			f64 v = 0;
 			int ok = parse_float(str, &v);
 			obj_release(str);
 			s[sp - 1].i = ok;
 			s[sp++].f = ok ? v : 0;
-			break;
+			NEXT;
 		}
-		case OP_SUBSTR: {
+		CASE(OP_SUBSTR) {
 			i64 v = s[sp - 3].i, from = s[sp - 2].i, to = s[sp - 1].i, h;
 			if (from < 0 || from > to || to > STR_LEN(v)) return range_error(in->line, from, to, STR_LEN(v));
 			if ((h = str_piece(v, from, to - from)) == -1) return vm_error(in->line, HEAP_FULL);
 			obj_release(v);
 			sp -= 2;
 			s[sp - 1].i = h;
-			break;
+			NEXT;
 		}
-		case OP_BYTE: {
+		CASE(OP_BYTE) {
 			i64 v = s[sp - 2].i, i = s[sp - 1].i;
 			if (i < 0 || i >= STR_LEN(v)) {
 				char msg[96];
@@ -1801,17 +1870,17 @@ static int vm_run(i32 pc)
 			sp--;
 			s[sp - 1].i = (u8)STR_P(v)[i];
 			if (!in->a) obj_release(v);
-			break;
+			NEXT;
 		}
-		case OP_FIND: { /* the two strings become the option's two cells */
+		CASE(OP_FIND) { /* the two strings become the option's two cells */
 			i64 a = s[sp - 2].i, b = s[sp - 1].i, at = str_find(a, b, 0);
 			obj_release(a);
 			obj_release(b);
 			s[sp - 2].i = at >= 0;
 			s[sp - 1].i = at >= 0 ? at : 0;
-			break;
+			NEXT;
 		}
-		case OP_SPLIT: {
+		CASE(OP_SPLIT) {
 			i64 v = s[sp - 2].i, sep = s[sp - 1].i, n = 1, at, start = 0, h, piece;
 			Cell *data;
 			if (!STR_LEN(sep)) return vm_error(in->line, "split: the separator is empty");
@@ -1828,9 +1897,9 @@ static int vm_run(i32 pc)
 			obj_release(sep);
 			sp--;
 			s[sp - 1].i = h;
-			break;
+			NEXT;
 		}
-		case OP_JOIN: {
+		CASE(OP_JOIN) {
 			i64 v = s[sp - 2].i, sep = s[sp - 1].i, k, h;
 			const Cell *hd = g_heap + v;
 			size_t start = g_text.used;
@@ -1850,17 +1919,17 @@ static int vm_run(i32 pc)
 			obj_release(sep);
 			sp--;
 			s[sp - 1].i = h;
-			break;
+			NEXT;
 		}
-		case OP_CHAR:
+		CASE(OP_CHAR)
 			if (s[sp - 1].i < 0 || s[sp - 1].i > 255) {
 				char msg[64];
 				sprintf(msg, "char takes 0 to 255, this is %ld", (long)s[sp - 1].i);
 				return vm_error(in->line, msg);
 			}
 			s[sp - 1].i = str_cell((size_t)(2 * s[sp - 1].i), 1);
-			break;
-		case OP_TRIM: {
+			NEXT;
+		CASE(OP_TRIM) {
 			i64 v = s[sp - 1].i, h;
 			const char *p;
 			u32 n;
@@ -1868,9 +1937,9 @@ static int vm_run(i32 pc)
 			if ((h = str_piece(v, p - STR_P(v), n)) == -1) return vm_error(in->line, HEAP_FULL);
 			obj_release(v);
 			s[sp - 1].i = h;
-			break;
+			NEXT;
 		}
-		case OP_READ_FILE: { /* the path's cell becomes the option's two: tag, string */
+		CASE(OP_READ_FILE) { /* the path's cell becomes the option's two: tag, string */
 			i64 pathv = s[sp - 1].i, v = 0;
 			const char *path = c_str(pathv);
 			FILE *file = path ? fopen(path, "rb") : 0;
@@ -1883,9 +1952,9 @@ static int vm_run(i32 pc)
 			obj_release(pathv);
 			s[sp - 1].i = file != 0;
 			s[sp++].i = v;
-			break;
+			NEXT;
 		}
-		case OP_WRITE_FILE: { /* a: append, b: the text is below the path */
+		CASE(OP_WRITE_FILE) { /* a: append, b: the text is below the path */
 			i64 text = s[sp - (in->b ? 2 : 1)].i, pathv = s[sp - (in->b ? 1 : 2)].i;
 			const char *path = c_str(pathv);
 			FILE *file = path ? fopen(path, in->a ? "ab" : "wb") : 0;
@@ -1896,9 +1965,9 @@ static int vm_run(i32 pc)
 			obj_release(pathv);
 			sp--;
 			s[sp - 1].i = ok;
-			break;
+			NEXT;
 		}
-		case OP_READ_LINE: {
+		CASE(OP_READ_LINE) {
 			size_t start = g_text.used;
 			int c = EOF, any = 0;
 			i64 h;
@@ -1917,14 +1986,14 @@ static int vm_run(i32 pc)
 				g_text.used = start;
 				s[sp++].i = 0;
 				s[sp++].i = 0;
-				break;
+				NEXT;
 			}
 			if ((h = text_take(start)) < 0) return vm_error(in->line, HEAP_FULL);
 			s[sp++].i = 1;
 			s[sp++].i = h;
-			break;
+			NEXT;
 		}
-		case OP_GETENV: {
+		CASE(OP_GETENV) {
 			i64 name = s[sp - 1].i, h = 0;
 			const char *c = c_str(name), *val;
 			if (!c) return vm_error(in->line, TEXT_FULL);
@@ -1933,40 +2002,40 @@ static int vm_run(i32 pc)
 			obj_release(name);
 			s[sp - 1].i = val != 0;
 			s[sp++].i = h;
-			break;
+			NEXT;
 		}
-		case OP_ARGS: {
+		CASE(OP_ARGS) {
 			i64 h = vec_new(g_vec_str, g_nargs, 0), k;
 			if (h < 0) return vm_error(in->line, HEAP_FULL);
 			for (k = 0; k < g_nargs; k++) vec_cell(g_heap + h, k, 0)->i = g_arg_cells[k];
 			s[sp++].i = h;
-			break;
+			NEXT;
 		}
-		case OP_EXIT:
+		CASE(OP_EXIT)
 			fflush(stdout);
 			exit((int)(s[sp - 1].i & 0xff));
-		case OP_INC_L: s[fp + in->a].i = (i64)((u64)s[fp + in->a].i + 1); break;
-		case OP_VEC_NEW: { /* a: elements on the stack, b: the vec type */
+		CASE(OP_INC_L) s[fp + in->a].i = (i64)((u64)s[fp + in->a].i + 1); NEXT;
+		CASE(OP_VEC_NEW) { /* a: elements on the stack, b: the vec type */
 			i64 h;
 			sp -= in->a * cells(g_tys[in->b].elem);
 			if ((h = vec_new((Ty)in->b, in->a, s + sp)) < 0) return vm_error(in->line, HEAP_FULL);
 			s[sp++].i = h;
-			break;
+			NEXT;
 		}
-		case OP_VEC_LEN: {
+		CASE(OP_VEC_LEN) {
 			i64 v = s[sp - 1].i;
 			MADE(v);
 			s[sp - 1].i = g_heap[v + VH_LEN].i;
 			if (!in->a) obj_release(v);
-			break;
+			NEXT;
 		}
-		case OP_VEC_PUSH:
+		CASE(OP_VEC_PUSH)
 			sp -= in->a + 1;
 			MADE(s[sp].i);
 			if (!vec_push(s[sp].i, s + sp + 1)) return vm_error(in->line, HEAP_FULL);
 			if (!in->b) obj_release(s[sp].i);
-			break;
-		case OP_VEC_GET: { /* a copy of the element: the vec keeps its own */
+			NEXT;
+		CASE(OP_VEC_GET) { /* a copy of the element: the vec keeps its own */
 			i64 v = s[sp - 2].i, i = s[sp - 1].i;
 			const Cell *hd = g_heap + v;
 			MADE(v);
@@ -1976,9 +2045,9 @@ static int vm_run(i32 pc)
 			refs(s + sp, 1, vec_elem(v), 1);
 			sp += in->a;
 			if (!in->b) obj_release(v);
-			break;
+			NEXT;
 		}
-		case OP_VEC_PUT: {
+		CASE(OP_VEC_PUT) {
 			const Cell *hd;
 			i64 i, v;
 			sp -= in->a + 2;
@@ -1990,9 +2059,9 @@ static int vm_run(i32 pc)
 			refs(vec_cell(hd, i, 0), hd[VH_CAP].i, vec_elem(v), 0); /* the element it replaces */
 			vec_store(hd, i, in->a, s + sp + 2);
 			if (!in->b) obj_release(v);
-			break;
+			NEXT;
 		}
-		case OP_VEC_POP: { /* the last element moves out */
+		CASE(OP_VEC_POP) { /* the last element moves out */
 			i64 v = s[sp - 1].i;
 			Cell *hd = g_heap + v;
 			MADE(v);
@@ -2006,9 +2075,9 @@ static int vm_run(i32 pc)
 			}
 			sp += in->a;
 			if (!in->b) obj_release(v);
-			break;
+			NEXT;
 		}
-		case OP_MAP_NEW: { /* a: entries on the stack, b: the map type */
+		CASE(OP_MAP_NEW) { /* a: entries on the stack, b: the map type */
 			i64 vsize = cells(g_tys[in->b].elem), k, m;
 			sp -= in->a * (1 + vsize);
 			if ((m = map_new((Ty)in->b)) < 0) return vm_error(in->line, HEAP_FULL);
@@ -2017,59 +2086,62 @@ static int vm_run(i32 pc)
 				if (!map_insert(m, e[0].i, e + 1)) return vm_error(in->line, HEAP_FULL);
 			}
 			s[sp++].i = m;
-			break;
+			NEXT;
 		}
-		case OP_MAP_INSERT:
+		CASE(OP_MAP_INSERT)
 			sp -= in->a + 2;
 			MADE(s[sp].i);
 			if (!map_insert(s[sp].i, s[sp + 1].i, s + sp + 2)) return vm_error(in->line, HEAP_FULL);
 			if (!in->b) obj_release(s[sp].i);
-			break;
-		case OP_MAP_LOOKUP:
-		case OP_MAP_REMOVE: { /* the map and the key become the option: tag, value */
-			i64 m = s[sp - 2].i, key = s[sp - 1].i, slot, e;
-			int strkeys = map_strkeys(m);
+			NEXT;
+		CASE(OP_MAP_LOOKUP)
+		CASE(OP_MAP_REMOVE) { /* the map and the key become the option: tag, value */
+			i64 m = s[sp - 2].i, key = s[sp - 1].i, slot, e, k;
+			int strkeys;
+			u64 h;
 			MADE(m);
-			e = map_find(m, key, &slot);
+			strkeys = map_strkeys(m);
+			e = map_find(m, key, &slot, &h);
 			sp -= 2;
 			s[sp].i = e >= 0;
 			if (e >= 0) {
 				Cell *ent = g_heap + g_heap[m + MH_ENT].i + e * (2 + in->a);
-				memcpy(s + sp + 1, ent + 2, (size_t)in->a * sizeof(Cell));
+				for (k = 0; k < in->a; k++) s[sp + 1 + k] = ent[2 + k];
 				if (in->op == OP_MAP_LOOKUP) {
-					refs(s + sp + 1, 1, g_tys[obj_type(m)].elem, 1); /* a copy: the map keeps its own */
+					if (MAP_VREFS(g_heap + m)) refs(s + sp + 1, 1, g_tys[obj_type(m)].elem, 1); /* a copy: the map keeps its own */
 				} else { /* the value moves out, the entry dies with its key */
 					ent[0].i = 0;
 					g_heap[m + MH_COUNT].i--;
 					if (strkeys) obj_release(ent[1].i);
 				}
 			} else {
-				memset(s + sp + 1, 0, (size_t)in->a * sizeof(Cell));
+				for (k = 0; k < in->a; k++) s[sp + 1 + k].i = 0;
 			}
 			if (strkeys && !(in->b & 2)) obj_release(key);
 			if (!(in->b & 1)) obj_release(m);
 			sp += 1 + in->a;
-			break;
+			NEXT;
 		}
-		case OP_MAP_HAS: {
+		CASE(OP_MAP_HAS) {
 			i64 m = s[sp - 2].i, key = s[sp - 1].i, slot, found;
+			u64 h;
 			MADE(m);
-			found = map_find(m, key, &slot) >= 0;
+			found = map_find(m, key, &slot, &h) >= 0;
 			if (map_strkeys(m) && !(in->a & 2)) obj_release(key);
 			if (!(in->a & 1)) obj_release(m);
 			sp--;
 			s[sp - 1].i = found;
-			break;
+			NEXT;
 		}
-		case OP_MAP_LEN: {
+		CASE(OP_MAP_LEN) {
 			i64 m = s[sp - 1].i;
 			MADE(m);
 			s[sp - 1].i = g_heap[m + MH_COUNT].i;
 			if (!in->a) obj_release(m);
-			break;
+			NEXT;
 		}
-		case OP_MAP_KEYS:
-		case OP_MAP_VALUES: { /* a: the vec type made; its elements are copies */
+		CASE(OP_MAP_KEYS)
+		CASE(OP_MAP_VALUES) { /* a: the vec type made; its elements are copies */
 			i64 m = s[sp - 1].i, e, k = 0, v, size = cells(g_tys[in->a].elem), esize = 2 + map_vsize(m);
 			MADE(m);
 			if ((v = vec_new((Ty)in->a, g_heap[m + MH_COUNT].i, 0)) < 0) return vm_error(in->line, HEAP_FULL);
@@ -2081,9 +2153,9 @@ static int vm_run(i32 pc)
 			}
 			if (!in->b) obj_release(m);
 			s[sp - 1].i = v;
-			break;
+			NEXT;
 		}
-		case OP_POOL_NEW: { /* b: the pool type */
+		CASE(OP_POOL_NEW) { /* b: the pool type */
 			i64 cap = s[sp - 1].i, h;
 			if (cap < 1 || cap > 0x7fffffff) {
 				char msg[96];
@@ -2092,9 +2164,9 @@ static int vm_run(i32 pc)
 			}
 			if ((h = pool_new((Ty)in->b, cap)) < 0) return vm_error(in->line, HEAP_FULL);
 			s[sp - 1].i = h;
-			break;
+			NEXT;
 		}
-		case OP_POOL_SPAWN: { /* the element moves into the first free slot */
+		CASE(OP_POOL_SPAWN) { /* the element moves into the first free slot */
 			Cell *hd, *gens;
 			i64 p, i, c, cap, h;
 			sp -= in->a + 1;
@@ -2115,9 +2187,9 @@ static int vm_run(i32 pc)
 			h = handle_of(hd, i);
 			if (!in->b) obj_release(p);
 			s[sp++].i = h;
-			break;
+			NEXT;
 		}
-		case OP_POOL_GET: { /* a copy of the element: the pool keeps its own */
+		CASE(OP_POOL_GET) { /* a copy of the element: the pool keeps its own */
 			i64 p = s[sp - 2].i, i, c;
 			const Cell *hd = g_heap + p;
 			MADE(p);
@@ -2127,9 +2199,9 @@ static int vm_run(i32 pc)
 			refs(s + sp, 1, g_tys[obj_type(p)].elem, 1);
 			sp += in->a;
 			if (!in->b) obj_release(p);
-			break;
+			NEXT;
 		}
-		case OP_POOL_PUT: {
+		CASE(OP_POOL_PUT) {
 			const Cell *hd;
 			i64 p, i, c;
 			sp -= in->a + 2;
@@ -2140,10 +2212,10 @@ static int vm_run(i32 pc)
 			refs(slot_cell(hd, i, 0), hd[PH_CAP].i, g_tys[obj_type(p)].elem, 0); /* the element it replaces */
 			for (c = 0; c < in->a; c++) *slot_cell(hd, i, c) = s[sp + 2 + c];
 			if (!in->b) obj_release(p);
-			break;
+			NEXT;
 		}
-		case OP_POOL_LOOKUP:
-		case OP_POOL_REMOVE: { /* the pool and the handle become the option: tag, element */
+		CASE(OP_POOL_LOOKUP)
+		CASE(OP_POOL_REMOVE) { /* the pool and the handle become the option: tag, element */
 			i64 p = s[sp - 2].i, i, c;
 			Cell *hd = g_heap + p;
 			MADE(p);
@@ -2162,25 +2234,25 @@ static int vm_run(i32 pc)
 			}
 			sp += 1 + in->a;
 			if (!(in->b & 1)) obj_release(p);
-			break;
+			NEXT;
 		}
-		case OP_POOL_HAS: {
+		CASE(OP_POOL_HAS) {
 			i64 p = s[sp - 2].i, found;
 			MADE(p);
 			found = pool_slot(g_heap + p, s[sp - 1].i) >= 0;
 			if (!(in->a & 1)) obj_release(p);
 			sp--;
 			s[sp - 1].i = found;
-			break;
+			NEXT;
 		}
-		case OP_POOL_LEN: {
+		CASE(OP_POOL_LEN) {
 			i64 p = s[sp - 1].i;
 			MADE(p);
 			s[sp - 1].i = g_heap[p + PH_COUNT].i;
 			if (!in->a) obj_release(p);
-			break;
+			NEXT;
 		}
-		case OP_POOL_NEXT: { /* for (h p): the next slot that holds an element */
+		CASE(OP_POOL_NEXT) { /* for (h p): the next slot that holds an element */
 			i64 p = s[sp - 2].i, i = s[sp - 1].i, cap;
 			const Cell *hd = g_heap + p, *gens;
 			MADE(p);
@@ -2190,16 +2262,16 @@ static int vm_run(i32 pc)
 			s[sp - 2].i = i < cap ? i : -1;
 			s[sp - 1].i = i < cap ? handle_of(hd, i) : 0;
 			if (!in->a) obj_release(p);
-			break;
+			NEXT;
 		}
-		case OP_ARENA_BEGIN:
+		CASE(OP_ARENA_BEGIN)
 			if (g_narenas == MAX_ARENAS) return vm_error(in->line, "arenas nested deeper than 64");
 			memset(&g_arenas[g_narenas], 0, sizeof(ArenaLevel));
 			g_arenas[g_narenas].start = g_arena_top;
 			g_arenas[g_narenas].line = in->line;
 			g_narenas++;
-			break;
-		case OP_ARENA_END: {
+			NEXT;
+		CASE(OP_ARENA_END) {
 			const ArenaLevel *ar = &g_arenas[g_narenas - 1];
 			i64 k;
 			for (k = 0; k < 8; k++) {
@@ -2208,12 +2280,12 @@ static int vm_run(i32 pc)
 			if (g_check) memset(g_heap + ar->start, 0xa5, (size_t)(g_arena_top - ar->start) * sizeof(Cell));
 			g_arena_top = ar->start;
 			g_narenas--;
-			break;
+			NEXT;
 		}
-		case OP_KEEP:
+		CASE(OP_KEEP)
 			if (!keep(s + sp - cells((Ty)in->a), (Ty)in->a)) return vm_error(in->line, "keep: out of memory (the heap or the text arena is full)");
-			break;
-		case OP_CLOSURE: { /* a: the fn, b: the type of the values it keeps, which are on the stack and move in */
+			NEXT;
+		CASE(OP_CLOSURE) { /* a: the fn, b: the type of the values it keeps, which are on the stack and move in */
 			i32 n = cells((Ty)in->b);
 			i64 h = heap_alloc(CL_DATA + n);
 			if (h < 0) return vm_error(in->line, HEAP_FULL);
@@ -2222,18 +2294,18 @@ static int vm_run(i32 pc)
 			sp -= n;
 			memcpy(g_heap + h + CL_DATA, s + sp, (size_t)n * sizeof(Cell));
 			s[sp++].i = h;
-			break;
+			NEXT;
 		}
-		case OP_ENV_LOAD:
+		CASE(OP_ENV_LOAD)
 			memcpy(s + sp, g_heap + s[fp].i + CL_DATA + in->a, (size_t)in->b * sizeof(Cell));
 			sp += in->b;
-			break;
-		case OP_ENV_STORE:
+			NEXT;
+		CASE(OP_ENV_STORE)
 			sp -= in->b;
 			memcpy(g_heap + s[fp].i + CL_DATA + in->a, s + sp, (size_t)in->b * sizeof(Cell));
-			break;
-		case OP_ENV_RELEASE: refs(g_heap + s[fp].i + CL_DATA + in->a, 1, (Ty)in->b, 0); break;
-		case OP_ASYNC: { /* the new task runs at once, until it first waits or ends */
+			NEXT;
+		CASE(OP_ENV_RELEASE) refs(g_heap + s[fp].i + CL_DATA + in->a, 1, (Ty)in->b, 0); NEXT;
+		CASE(OP_ASYNC) { /* the new task runs at once, until it first waits or ends */
 			const Fn *fn = &g_fns[in->a];
 			i64 t = task_new(fn, (Ty)in->b, in->line);
 			if (t < 0) return vm_error(in->line, HEAP_FULL);
@@ -2245,9 +2317,9 @@ static int vm_run(i32 pc)
 			SAVE_REGS(pc);
 			g_arena_floor = g_narenas;
 			LOAD_REGS(t);
-			break;
+			NEXT;
 		}
-		case OP_TASK_END: { /* the task's function returned: its result goes into the task, its stack goes */
+		CASE(OP_TASK_END) { /* the task's function returned: its result goes into the task, its stack goes */
 			i64 t = g_cur;
 			Cell *tk = g_heap + t;
 			i32 n = cells(g_tys[obj_type(t)].elem);
@@ -2258,9 +2330,9 @@ static int vm_run(i32 pc)
 			tk[TK_STATE].i = TS_DONE;
 			g_arena_floor = (i32)tk[TK_FLOOR].i;
 			LOAD_REGS(tk[TK_RESUMER].i);
-			break;
+			NEXT;
 		}
-		case OP_AWAIT: {
+		CASE(OP_AWAIT) {
 			i64 t = s[sp - 1].i;
 			Ty rt = g_tys[(Ty)in->a].elem;
 			if (t <= 0) return vm_error(in->line, "this task was never started: a global read before its def ran");
@@ -2269,7 +2341,7 @@ static int vm_run(i32 pc)
 				g_heap[g_cur + TK_STATE].i = TS_WAITING;
 				g_heap[g_cur + TK_WAIT].i = t;
 				SUSPEND(pc - 1);
-				break;
+				NEXT;
 			}
 			if (!g_cur && (task_state(t) < TS_DONE || g_mwait.kind)) { /* the main program runs tasks until it has */
 				int r;
@@ -2277,7 +2349,7 @@ static int vm_run(i32 pc)
 					main_wait_start(MW_AWAIT);
 					g_mwait.task = t;
 				}
-				if ((r = main_wait()) > 0) { RESUME(g_tasks[g_mwait.last]); break; }
+				if ((r = main_wait()) > 0) { RESUME(g_tasks[g_mwait.last]); NEXT; }
 				g_mwait.kind = 0;
 				if (r < 0) return vm_error(in->line, DEADLOCK);
 			}
@@ -2287,14 +2359,14 @@ static int vm_run(i32 pc)
 			refs(s + sp, 1, rt, 1); /* the task keeps its own copy */
 			sp += cells(rt);
 			obj_release(t);
-			break;
+			NEXT;
 		}
-		case OP_SLEEP:
+		CASE(OP_SLEEP)
 			if (g_cur) {
 				g_heap[g_cur + TK_STATE].i = TS_SLEEPING;
 				g_heap[g_cur + TK_UNTIL].f = g_task_time + s[--sp].f;
 				SUSPEND(pc);
-				break;
+				NEXT;
 			}
 			if (!g_mwait.kind) {
 				main_wait_start(MW_SLEEP);
@@ -2302,44 +2374,56 @@ static int vm_run(i32 pc)
 			}
 			{
 				int r = main_wait();
-				if (r > 0) { RESUME(g_tasks[g_mwait.last]); break; }
+				if (r > 0) { RESUME(g_tasks[g_mwait.last]); NEXT; }
 				g_mwait.kind = 0;
 			}
-			break;
-		case OP_YIELD:
+			NEXT;
+		CASE(OP_YIELD)
 			if (!g_cur) return vm_error(in->line, "yield is for a task; the main program runs its tasks with tasks-step");
 			g_heap[g_cur + TK_STATE].i = TS_READY;
 			SUSPEND(pc);
-			break;
-		case OP_TASKS_STEP:
-		case OP_TASKS_RUN: {
+			NEXT;
+		CASE(OP_TASKS_STEP)
+		CASE(OP_TASKS_RUN) {
 			int r;
 			if (g_cur) return vm_error(in->line, "the main program runs the tasks, not a task: a task waits with sleep, yield or await");
 			if (!g_mwait.kind) {
 				main_wait_start(in->op == OP_TASKS_STEP ? MW_STEP : MW_RUN);
 				if (in->op == OP_TASKS_STEP) g_task_time += s[--sp].f;
 			}
-			if ((r = main_wait()) > 0) { RESUME(g_tasks[g_mwait.last]); break; }
+			if ((r = main_wait()) > 0) { RESUME(g_tasks[g_mwait.last]); NEXT; }
 			g_mwait.kind = 0;
 			if (r < 0) return vm_error(in->line, DEADLOCK);
 			if (in->op == OP_TASKS_STEP) s[sp++].i = g_ntasks;
-			break;
+			NEXT;
 		}
-		case OP_TASK_DONE: {
+		CASE(OP_TASK_DONE) {
 			i64 t = s[sp - 1].i;
 			s[sp - 1].i = t > 0 && task_state(t) >= TS_DONE;
 			obj_release(t);
-			break;
+			NEXT;
 		}
-		case OP_TASK_TIME: s[sp++].f = g_task_time; break;
-		case OP_SHOW:
+		CASE(OP_TASK_TIME) s[sp++].f = g_task_time; NEXT;
+		CASE(OP_SHOW)
 			sp -= cells((Ty)in->a);
 			g_sink = stdout;
 			fputs("=> ", stdout);
 			print_value((Ty)in->a, s + sp);
 			printf(" : %s\n", tn((Ty)in->a));
 			refs(s + sp, 1, (Ty)in->a, 0);
-			break;
+			NEXT;
+
+		/* the superinstructions (ops.h): a run of instructions in one step, then past the NOPs it left */
+		VM_BIN(ADD_I, i) VM_BIN(SUB_I, i) VM_BIN(MUL_I, i)
+		VM_BIN(ADD_F, f) VM_BIN(SUB_F, f) VM_BIN(MUL_F, f) VM_BIN(DIV_F, f)
+		CASE(OP_MOD_I_LK) s[sp].i = s[fp + in->a].i % g_ints[in->b]; sp++; pc += 2; NEXT;
+		CASE(OP_MOD_I_SK) s[sp - 1].i %= g_ints[in->a]; pc++; NEXT;
+		VM_JMP(LT_I, i, <) VM_JMP(LE_I, i, <=) VM_JMP(GT_I, i, >) VM_JMP(GE_I, i, >=) VM_JMP(EQ_I, i, ==) VM_JMP(NE_I, i, !=)
+		VM_JMP(LT_F, f, <) VM_JMP(LE_F, f, <=) VM_JMP(GT_F, f, >) VM_JMP(GE_F, f, >=) VM_JMP(EQ_F, f, ==) VM_JMP(NE_F, f, !=)
+		CASE(OP_LOAD2_L) s[sp] = s[fp + in->a]; s[sp + 1] = s[fp + in->b]; sp += 2; pc++; NEXT;
+		CASE(OP_STORE_LOAD_L) s[fp + in->a] = s[--sp]; s[sp++] = s[fp + in->b]; pc++; NEXT;
+		CASE(OP_INC_JMP) s[fp + in->a].i = (i64)((u64)s[fp + in->a].i + 1); pc = in->b; NEXT;
+		CASE(OP_NOP) NEXT;
 		default:
 			return vm_error(in->line, "internal: unknown instruction");
 		}
@@ -2360,15 +2444,44 @@ static const char *const g_op_names[] = { GAEL_OPS(GAEL_OP_NAME_) "?" };
 #define GAEL_OP_ARGS_(name, n) n,
 static const int g_op_args[] = { GAEL_OPS(GAEL_OP_ARGS_) 0 };
 
-/* disassemble FROM TO: the code of one unit, one instruction per line */
+/* fused_form OP: the form of a superinstruction (ops.h): 'L' LL, 'K' LK, 'l' SL, 'k' SK, 'S' SS, 0 for another
+ * instruction; *FL gets 1 when its values are floats, *JUMP 1 for a compare-and-jump */
+static int fused_form(u8 op, int *fl, int *jump)
+{
+	*fl = *jump = 0;
+	if (op >= OP_ADD_I_LL && op <= OP_DIV_F_SK) {
+		*fl = op >= OP_ADD_F_LL;
+		return "LKlk"[(op - OP_ADD_I_LL) % 4];
+	}
+	if (op == OP_MOD_I_LK || op == OP_MOD_I_SK) return op == OP_MOD_I_LK ? 'K' : 'k';
+	if (op >= OP_JLT_I_LL && op <= OP_JNE_F_SS) {
+		*fl = op >= OP_JLT_F_LL;
+		*jump = 1;
+		return "LKkS"[(op - OP_JLT_I_LL) % 4];
+	}
+	return 0;
+}
+
+/* disassemble FROM TO: the code of one unit, one instruction per line; the NOPs a superinstruction left are not shown */
 static o disassemble(i32 from, i32 to)
 {
 	i32 pc;
 	for (pc = from; pc < to; pc++) {
 		const Ins *in = &g_code[pc];
+		int fl, jump, form = fused_form(in->op, &fl, &jump);
+		if (in->op == OP_NOP) continue;
 		printf("%5ld  %-8s", (long)pc, g_op_names[in->op]);
 		if (g_op_args[in->op] >= 1) printf(" %ld", (long)in->a);
 		if (g_op_args[in->op] >= 2) printf(" %ld", (long)in->b);
+		if (form == 'K' || form == 'k') { /* the constant */
+			i32 k = form == 'K' ? in->b : in->a;
+			if (fl) { g_sink = stdout; fputs("\t(", stdout); print_float(g_floats[k]); putchar(')'); }
+			else printf("\t(%ld)", (long)g_ints[k]);
+		}
+		if (jump) { /* where it jumps, and when */
+			const Ins *t = form == 'S' ? in : in + 1;
+			printf("\t-> %ld when %s", (long)t->a, t->b ? "true" : "false");
+		}
 		if (in->op == OP_PUSH_I) printf("\t(%ld)", (long)g_ints[in->a]);
 		if (in->op == OP_PUSH_F) { g_sink = stdout; fputs("\t(", stdout); print_float(g_floats[in->a]); putchar(')'); }
 		if (in->op == OP_PUSH_S) printf("\t(\"%.40s\")", g_strs[in->a].p);

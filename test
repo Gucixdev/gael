@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# test - build gael with every compiler here (C89, pedantic, warnings as errors) and once with AddressSanitizer and
-# UndefinedBehaviorSanitizer, then run each build against:
+# test - build gael with every compiler here (C89, pedantic, warnings as errors), once more with the plain switch the
+# VM uses without gcc or clang (GAEL_SWITCH), and once with AddressSanitizer and UndefinedBehaviorSanitizer, then run
+# each build against:
 #   examples/NAME.gael      stdout must equal examples/NAME.out, exit 0; NAME.in is its stdin, NAME.args its arguments
 #   tests/errors/NAME.gael  every line of NAME.err must appear on stderr, exit 1; stdout must equal NAME.out if there is one
 #   (for both, NAME.env holds VAR=value words for its environment, like a smaller heap)
@@ -31,6 +32,13 @@ for cc in gcc clang; do
 		echo "FAIL build with $cc:"; sed 's/^/  /' "$out/$cc.log"; fail=$((fail + 1))
 	fi
 done
+if command -v gcc > /dev/null; then # the plain switch the VM falls back to with other compilers
+	if gcc "${flags[@]}" -O2 -DGAEL_SWITCH -o "$out/gael-switch" src/main.c -lm 2> "$out/switch.log"; then
+		builds+=("$out/gael-switch")
+	else
+		echo "FAIL build with -DGAEL_SWITCH:"; sed 's/^/  /' "$out/switch.log"; fail=$((fail + 1))
+	fi
+fi
 sanitized=0
 for cc in gcc clang; do # the first compiler whose sanitizer runtime is installed
 	command -v "$cc" > /dev/null || continue
