@@ -106,3 +106,21 @@ the keys land in its array part. LuaJIT and Node compile to machine code and are
 the map, which is 1.35 times slower than gael; C is 4 to 28 times faster. Start: 1.5 ms (C 1.4, Lua 2.1). Memory:
 the sieve takes 3 MB, half of C's 6 (C stores a byte per number, gael a bit); the map 67 MB, against C's 36 and Lua's
 28.
+
+## 2026-10-25 c74e9f7, gpu-each
+
+`benchmarks/gpu-balls.gael`: 20 steps of a falling, bouncing ball (four f32 fields, one `when`) over a million balls,
+as one `gpu-each` per step. Intel(R) Xeon(R) Processor @ 2.10GHz, 2 cores, 8 GB, no GPU: the "GPU" here is Mesa's
+lavapipe (llvmpipe 20.1, Vulkan 1.4 on the CPU's two cores), through wgpu-native v29. hyperfine, 7 runs after 1 warmup.
+
+| | mean ms | ± | per step |
+|---|---:|---:|---:|
+| making the million balls (0 steps) | 68.0 | 9.0 | |
+| `GAEL_GPU=0`: the loop on the VM | 1437.6 | 35.6 | 68.5 |
+| `GAEL_GPU=1`: lavapipe | 618.2 | 31.1 | 27.5 |
+
+Both print the same last ball. Even with Vulkan on the CPU the kernel runs 2.5 times faster than the VM's loop, and
+that time includes making the device, compiling the shader, and making, filling and reading back fresh buffers each
+step (16 MB up, 12 MB back). On a real GPU the kernel itself costs next to nothing and the copies are what remain, so
+keeping the data on the GPU between steps is the next thing to measure. Memory: 67 MB on the VM, 222 MB with wgpu
+(its own allocations and lavapipe's).
