@@ -119,3 +119,25 @@
       (set ok (wfc--run w r))
       (set k (+ k 1)))
     ok))
+
+(@test "two tiles that may only touch each other make a checkerboard"
+  (let ((w (Wfc.new 4 3 2)))
+    (w.allow-all 0 1)
+    (w.fix 0 0 0)
+    (assert (w.solve (Rng.seed 1 0) 1))
+    (for (y 0 3) (for (x 0 4) (assert (= (w.tile x y) (% (+ x y) 2)))))))
+(@test "rules that cannot be met give false"
+  (let ((w (Wfc.new 2 1 1)))
+    (assert (not (w.solve (Rng.seed 1 0) 3)))))
+(@test "a fixed cell keeps its tile, and its neighbours follow the rules"
+  (let ((w (Wfc.new 5 5 3)))
+    (w.allow-all 0 0)
+    (w.allow-all 1 1)
+    (w.allow-all 2 2)
+    (w.allow-all 0 1)
+    (w.allow-all 1 2)
+    (w.fix 2 2 2)
+    (assert (w.solve (Rng.seed 9 0) 5))
+    (assert (= (w.tile 2 2) 2))
+    (for (y 0 5) (for (x 0 4)
+      (assert (< (* (- (w.tile x y) (w.tile (+ x 1) y)) (- (w.tile x y) (w.tile (+ x 1) y))) 2))))))

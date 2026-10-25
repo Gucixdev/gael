@@ -6,6 +6,7 @@
 #   tests/errors/NAME.gael  every line of NAME.err must appear on stderr, exit 1; stdout must equal NAME.out if there is one
 #   tests/warnings/NAME.gael  it runs (exit 0) and stdout equals NAME.out; its warnings are exactly the lines of NAME.err
 #   tests/test-runner/NAME.gael  gael test on it prints NAME.out (exit 1 when that has a FAIL line); NAME.err on stderr
+#   gems/NAME.gael          each gem that comes with gael has tests of its own, and gael test on its file passes them all
 #   (for both, NAME.env holds VAR=value words for its environment, like a smaller heap)
 #   tests/repl.in           the REPL's stdout must equal tests/repl.out, every line of tests/repl.err on stderr, and
 #                           what it saved to repldump.gael (its header lines aside, the time of each form as TIME)
@@ -106,6 +107,14 @@ for bin in "${builds[@]}"; do
 		done < "${f%.gael}.err"
 		grep -q 'Sanitizer' "$out/stderr" && ok=0
 		check "$b $f" "$ok"
+	done
+	for f in gems/*.gael gems/*/main.gael; do
+		[ -f "$f" ] || continue
+		ok=1
+		"$bin" test "$f" > "$out/stdout" 2> "$out/stderr" || ok=0
+		grep -q '^[1-9][0-9]* passed, 0 failed$' "$out/stdout" || { ok=0; grep -v '^ok ' "$out/stdout" | head -5; }
+		[ -s "$out/stderr" ] && { ok=0; head -5 "$out/stderr"; }
+		check "$b gael test $f" "$ok"
 	done
 	for f in tests/warnings/*.gael; do
 		ok=1

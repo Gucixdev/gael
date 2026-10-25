@@ -44,8 +44,9 @@ dokumentacja mieści się w kontekście.
 - [x] `gael -m`: plik z rozwiniętymi makrami (także w funkcjach), ułożony do czytania - to, co sprawdza kompilator.
 - [x] Metoda na wartości wyrażenia: `((Vec3 1.0 0.0 0.0).cross b)` jak `(v.cross b)` - pisałem to sam, więc model też
       napisze; bez nawiasów `(expr).cross` błąd mówi, że to funkcja i jak ją wywołać.
-- [ ] Testy gemu w jego pliku: `gael test gems/NAZWA.gael` włącza ten gem i uruchamia jego `(@test ...)`; `./test`
-      robi to dla każdego gemu z `gems/`.
+- [x] Testy gemu w jego pliku: `gael test gems/NAZWA.gael` włącza ten gem i uruchamia jego `(@test ...)`, `@test`
+      przed formą zostawia ją dla testów; program, który włącza gem, ich nie kompiluje. `./test` testuje każdy gem z
+      `gems/` - testy od razu znalazły błąd w `wfc` (kafelek bez sąsiada przechodził).
 
 ## 1b. Biblioteka: porty z holyc do `gems/`
 

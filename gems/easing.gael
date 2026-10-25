@@ -44,3 +44,23 @@
     (if (< t 0.5)
       (let ((u (* 2.0 t))) (/ (* u u (- (* (+ c2 1.0) u) c2)) 2.0))
       (let ((u (- (* 2.0 t) 2.0))) (/ (+ (* u u (+ (* (+ c2 1.0) u) c2)) 2.0) 2.0)))))
+
+@test (defn easing--near ((a : float) (b : float)) : bool (let ((d (- a b))) (< (* d d) 1.0e-24)))
+(@test "every curve goes from 0 at 0 to 1 at 1"
+  (for (f (vec smooth ease-in-quad ease-out-quad ease-in-out-quad ease-in-cubic ease-out-cubic ease-in-out-cubic
+               ease-in-sine ease-out-sine ease-in-out-sine ease-in-back ease-out-back ease-in-out-back))
+    (assert (easing--near (f 0.0) 0.0))
+    (assert (easing--near (f 1.0) 1.0))))
+(@test "the in-out curves are halfway at the half"
+  (for (f (vec smooth ease-in-out-quad ease-in-out-cubic ease-in-out-sine ease-in-out-back))
+    (assert (easing--near (f 0.5) 0.5))))
+(@test "lerp, unlerp, step, smoothstep"
+  (assert (= (lerp 2.0 6.0 0.25) 3.0))
+  (assert (= (unlerp 2.0 6.0 3.0) 0.25))
+  (assert (= (unlerp 1.0 1.0 5.0) 0.0))
+  (assert (= (lerp-clamped 2.0 6.0 2.0) 6.0))
+  (assert (= (step 0.5 0.4) 0.0))
+  (assert (= (step 0.5 0.5) 1.0))
+  (assert (= (smoothstep 0.0 2.0 1.0) 0.5))
+  (assert (= (smoothstep 0.0 2.0 -1.0) 0.0))
+  (assert (= (smoothstep 0.0 2.0 3.0) 1.0)))

@@ -39,3 +39,14 @@
       (set amp (* amp 0.5))
       (set freq (* freq 2.0)))
     sum))
+
+@test (defn noise--near ((a : float) (b : float)) : bool (let ((d (- a b))) (< (* d d) 1.0e-24)))
+(@test "0 at every whole point"
+  (for (x -3 4) (for (y -3 4) (assert (= (noise2 7 (float x) (float y)) 0.0)))))
+(@test "the values a C version gives"
+  (assert (noise--near (noise2 1 0.5 0.5) 0.176776695296637))
+  (assert (noise--near (noise2 7 3.25 -1.75) -0.222365375177128))
+  (assert (noise--near (noise2 -3 -0.3 12.9) 0.141276334291682))
+  (assert (noise--near (noise2 2 100.1 0.7) -0.212044378005258)))
+(@test "fbm of one octave is the noise itself"
+  (assert (= (fbm2 3 0.3 0.7 1) (noise2 3 0.3 0.7))))

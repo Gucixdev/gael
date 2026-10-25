@@ -72,3 +72,21 @@
    (hfsm m (ctx : ty) (s p) ... :enter () :exit ((ex xa) ...)))
   ((_ m (ctx : ty) (s p) ...)
    (hfsm m (ctx : ty) (s p) ... :enter () :exit ())))
+
+@test (hfsm hfsm--M (log : (vec string))
+  (top -) (a top) (a1 a) (b top)
+  :enter ((a (push log "+a")) (a1 (push log "+a1")) (b (push log "+b")))
+  :exit ((a (push log "-a")) (a1 (push log "-a1"))))
+(@test "start enters top down; go leaves up to the shared state and enters down"
+  (let ((log : (vec string) (vec)))
+    (let ((s (hfsm--M.start hfsm--M.a1 log)))
+      (assert (= (join log " ") "+a +a1"))
+      (set s (s.go hfsm--M.b log))
+      (assert (= (join log " ") "+a +a1 -a1 -a +b"))
+      (assert (s.in? hfsm--M.top))
+      (assert (not (s.in? hfsm--M.a)))
+      (set s (s.go hfsm--M.b log))
+      (assert (= (len log) 5)))))
+(@test "parent"
+  (assert (match (hfsm--M.parent hfsm--M.a1) ((some p) (= p hfsm--M.a)) (none false)))
+  (assert (match (hfsm--M.parent hfsm--M.top) ((some _) false) (none true))))

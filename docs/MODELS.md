@@ -137,6 +137,7 @@ top level a macro can make several definitions with `(do ...)`.
 
 ```lisp
 (@test "adds" (assert (= (add 1 2) 3)))    ; top level; runs only under gael test
+@test (defn sample () : int 21)            ; a top-level form only the tests use
 (@debug (println "x %d" x))                ; code for while working
 (@warn "slow for big n") (@err "fix before shipping") ; marks for the tools: gael -x lists them
 @export (def speed : float 10.0)           ; for an editor's inspector
@@ -166,6 +167,7 @@ on, `(disable name)` off. These come with gael:
 
 ## Commands
 
-`gael FILE ARGS...` runs; `gael check FILE` compiles only; `gael test FILE` runs the defs and each `@test`; `gael -m
+`gael FILE ARGS...` runs; `gael check FILE` compiles only; `gael test FILE` runs the defs and each `@test` (of a gem
+with `gael test gems/NAME.gael`); `gael -m
 FILE` prints it with macros expanded; `gael -d FILE` the bytecode; `gael -x FILE` the exports and marks; `gael` alone
 is the REPL, where a function can be given a new body while the program runs.

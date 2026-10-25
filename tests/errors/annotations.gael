@@ -7,3 +7,5 @@
 (defn g () (@test "inside" 1))
 (@warn 5)
 (@err "one" "two")
+@test 5
+@test (@test "x" (assert true))

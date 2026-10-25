@@ -60,3 +60,23 @@
 
 (defn PQ.clear ((q : PQ)) : unit
   (while (> (len q.items) 0) (pop q.items)))
+
+(@test "1 first, 0 and below last, ties in the order they went in"
+  (let ((q (PQ)) (out : (vec int) (vec)))
+    (q.push 10 0)
+    (q.push 11 2)
+    (q.push 12 1)
+    (q.push 13 2)
+    (q.push 14 -5)
+    (q.push 15 1)
+    (while (> (len q) 0)
+      (match (q.pop) ((some it) (push out it.id)) (none (do))))
+    (assert (= (format "%v" out) "(vec 12 15 11 13 10 14)"))))
+(@test "peek leaves the item, an empty queue gives none"
+  (let ((q (PQ)))
+    (assert (match (q.pop) ((some _) false) (none true)))
+    (q.push 1 3)
+    (assert (match (q.peek) ((some it) (= it.id 1)) (none false)))
+    (assert (= (len q) 1))
+    (q.clear)
+    (assert (= (len q) 0))))

@@ -1,9 +1,12 @@
 /* gael - a small statically typed language with s-expressions, compiled to bytecode and run on a VM.
  *
  *   gael                   the REPL
- *   gael FILE ARGS...      compile FILE; when there are no errors, run it; (args) gives it ARGS
- *   gael -c FILE           only compile: report every type error, run nothing
+ *   gael FILE ARGS...      compile FILE; when there are no errors, run it; (args) gives it ARGS (also gael run)
+ *   gael check FILE        only compile: report every error and warning, run nothing (also gael -c)
+ *   gael test FILE...      run the files' defs, then each (@test "name" ...); a gem's main file runs that gem's tests
+ *   gael doc               the cheat sheet for models, docs/MODELS.md next to the binary
  *   gael -d FILE           compile and print the bytecode
+ *   gael -m FILE           print FILE with its macros expanded
  *   gael -e CODE ARGS...   compile and run CODE
  *   gael -x FILE           compile FILE and list what it exports (@export), the way an editor's inspector shows it
  *   gael -n                the built-in names, one a line: forms, operators, functions and types (docs/REFERENCE.md
@@ -44,7 +47,8 @@ static const char *const g_usage[] = {
 	"       gael run FILE ARGS...  the same\n",
 	"       gael check FILE        only compile: report every error and warning, run nothing (also gael -c)\n",
 	"       gael test FILE...      compile the files, run their defs (not the rest of their top level), then each\n",
-	"                              (@test \"name\" ...) in them: ok or FAIL for each; exit 1 when one failed\n",
+	"                              (@test \"name\" ...) in them: ok or FAIL for each; exit 1 when one failed. A\n",
+	"                              gem's main file (gems/NAME.gael) runs that gem's own tests\n",
 	"       gael doc               the cheat sheet for writing gael (docs/MODELS.md next to the binary)\n",
 	"       gael -d FILE           compile and print the bytecode\n",
 	"       gael -m FILE           print FILE with its macros expanded: the code the compiler checks\n",
@@ -195,6 +199,7 @@ static int load_failed(void)
 }
 
 static char g_gem_root[PATH_MAX]; /* the folder of the program being loaded: its gems/ is looked at first */
+static char g_gem_dir[PATH_MAX]; /* gael test on a gem's file: the folder that holds it, looked in before the others */
 static int gael_home(char *path);
 
 /* exe_dir PATH: the folder of the running gael binary, into PATH (PATH_MAX bytes): the gems that come with gael are in
@@ -222,6 +227,12 @@ static int gem_path(const char *name, char *out)
 	const char *c;
 	for (c = name; *c; c++) { /* a gem's name is its file's: letters, digits, - and _ */
 		if (!((*c >= 'a' && *c <= 'z') || (*c >= 'A' && *c <= 'Z') || (*c >= '0' && *c <= '9') || *c == '-' || *c == '_')) return 0;
+	}
+	if (g_gem_dir[0] && strlen(g_gem_dir) + 2 * strlen(name) + 24 <= PATH_MAX) { /* the tested gem's neighbours */
+		sprintf(out, "%s/%s.gael", g_gem_dir, name);
+		if (!access(out, R_OK)) return 1;
+		sprintf(out, "%s/%s/main.gael", g_gem_dir, name);
+		if (!access(out, R_OK)) return 1;
 	}
 	dirs[nd++] = g_gem_root;
 	if (gael_home(home)) dirs[nd++] = home;
@@ -255,6 +266,7 @@ static i32 gem_register(const char *name, const char *path)
 		return -2;
 	}
 	if (!gem_manifest(top, name, &g)) return -2;
+	g.tested = 0;
 	g.file = so.name;
 	g.state = GEM_KNOWN;
 	g_gems[g_ngems] = g;
@@ -585,16 +597,71 @@ static int repl(void)
 	}
 }
 
+/* gem_file PATH NAME: 1 when the first form of the file PATH is a (gem ...) manifest, with the gem's name - the file's,
+ * gems/NAME.gael, or its folder's, gems/NAME/main.gael - in NAME (64 bytes) */
+static int gem_file(const char *path, char *name)
+{
+	const char *base = strrchr(path, '/') ? strrchr(path, '/') + 1 : path, *from = base;
+	char head[4];
+	size_t len;
+	FILE *f;
+	int c, n;
+	if (!(f = fopen(path, "r"))) return 0;
+	do { /* past blank space and comments to the first form */
+		c = getc(f);
+		if (c == ';') while (c != '\n' && c != EOF) c = getc(f);
+	} while (c == ' ' || c == '\t' || c == '\n' || c == '\r');
+	n = 0;
+	if (c == '(') for (; n < 4 && (c = getc(f)) != EOF; n++) head[n] = (char)c;
+	fclose(f);
+	if (n < 4 || memcmp(head, "gem", 3) || !strchr(" \t\r\n)", head[3])) return 0;
+	len = strlen(base);
+	if (!strcmp(base, "main.gael")) { /* a gem in a folder: the folder's name */
+		if (base == path) return 0;
+		for (from = base - 1; from > path && from[-1] != '/'; from--) {}
+		len = (size_t)(base - 1 - from);
+	} else if (len > 5 && !strcmp(base + len - 5, ".gael")) len -= 5;
+	if (len == 0 || len >= 64) return 0;
+	memcpy(name, from, len);
+	name[len] = 0;
+	return 1;
+}
+
+/* parent_dir PATH: PATH (PATH_MAX bytes) becomes the folder that holds it */
+static void parent_dir(char *p)
+{
+	char *s = strrchr(p, '/');
+	if (s && s[1] && strcmp(s + 1, ".") && strcmp(s + 1, "..")) *(s == p ? s + 1 : s) = 0;
+	else if (!s && strcmp(p, ".") && strcmp(p, "..")) strcpy(p, ".");
+	else if (strlen(p) + 4 < PATH_MAX) strcat(p, "/..");
+}
+
 /* run_tests N FILES: gael test - compile the files with their top level's own forms jumped over (their defs run),
- * then call each (@test "name" ...) of them in turn, each in a run of its own, so one that fails stops only itself */
+ * then call each (@test "name" ...) of them in turn, each in a run of its own, so one that fails stops only itself.
+ * A gem's main file is turned on as that gem, from that file; the tests of the gems a program turns on do not run */
 static int run_tests(int n, char **files)
 {
-	i32 k, pass = 0, fail = 0;
+	i32 k, pass = 0, fail = 0, g;
 	int st, i;
-	char name[40];
+	char name[100];
 	g_test_mode = 1;
+	for (i = 0; i < n; i++) { /* the gems named first, so their tests are there also when another one needs them */
+		if (!gem_file(files[i], name)) continue;
+		if ((g = gem_find(name)) < 0 && (g = gem_register(name, files[i])) < 0) return 1;
+		g_gems[g].tested = 1;
+	}
 	for (i = 0; i < n; i++) {
-		if ((st = load(files[i], 0, 0, 0, RUN)) != 0) return st;
+		if (gem_file(files[i], name)) { /* gael test gems/NAME.gael: the program (enable NAME), with NAME from here */
+			char src[100];
+			sprintf(src, "(enable %.64s)\n", name);
+			if (strlen(files[i]) >= sizeof(g_gem_dir)) return 1;
+			strcpy(g_gem_dir, files[i]); /* the gems it requires: next to it first */
+			parent_dir(g_gem_dir);
+			if (!strcmp(strrchr(files[i], '/') ? strrchr(files[i], '/') + 1 : files[i], "main.gael")) parent_dir(g_gem_dir);
+			st = load("<gael test>", src, strlen(src), 0, RUN);
+			g_gem_dir[0] = 0;
+			if (st) return st;
+		} else if ((st = load(files[i], 0, 0, 0, RUN)) != 0) return st;
 	}
 	for (k = 0; k < g_ntests; k++) {
 		i32 fi, stub;

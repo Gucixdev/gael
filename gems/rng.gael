@@ -31,3 +31,23 @@
   (+ lo (% (r.next) (- hi lo))))
 
 (defn Rng.chance ((r : Rng) (p : float)) : bool (< (r.float) p))
+
+(@test "the first numbers of the PCG32 demo: seed 42, stream 54"
+  (let ((r (Rng.seed 42 54)))
+    (assert (= (r.next) 2707161783))
+    (assert (= (r.next) 2068313097))
+    (assert (= (r.next) 3122475824))))
+(@test "range, float and chance stay in their bounds"
+  (let ((r (Rng.seed 1 0)))
+    (for (_ 0 1000)
+      (let ((d (r.range 1 7)) (f (r.float)))
+        (assert (and (>= d 1) (< d 7)))
+        (assert (and (>= f 0.0) (< f 1.0)))))
+    (assert (not (r.chance 0.0)))
+    (assert (r.chance 1.0))))
+(@test "a copy is the same generator"
+  (let ((a (Rng.seed 5 0)) (twin (Rng.seed 5 0)))
+    (let ((b a))
+      (b.next)
+      (twin.next)
+      (assert (= (a.next) (twin.next))))))

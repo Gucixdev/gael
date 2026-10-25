@@ -34,7 +34,8 @@ gael FILE ARGS...      compile FILE; when there are no errors, run it; (args) gi
 gael run FILE ARGS...  the same
 gael check FILE        only compile: report every error and warning, run nothing (also gael -c)
 gael test FILE...      compile the files, run their defs (not the rest of their top level), then each
-                       (@test "name" ...) in them: ok or FAIL for each; exit 1 when one failed
+                       (@test "name" ...) in them: ok or FAIL for each; exit 1 when one failed. A
+                       gem's main file (gems/NAME.gael) runs that gem's own tests
 gael doc               the cheat sheet for writing gael (docs/MODELS.md next to the binary)
 gael -d FILE           compile and print the bytecode
 gael -m FILE           print FILE with its macros expanded: the code the compiler checks
@@ -115,7 +116,10 @@ tests/warnings/unreachable.gael:9:1: warning: this never runs: the exit on line 
 
 Tests sit next to the code they test: `(@test "name" body...)` at the top level, with `assert` inside. `gael FILE`
 runs the program and leaves the tests be; `gael test FILE` runs the defs, then each test in a run of its own, so a
-failing one stops only itself. Everything that starts with `@` is for the tools and for while you work on the program
+failing one stops only itself. `@test` before a top-level form keeps it for the tests, like
+`@test (defn sample-world () ...)`. A gem keeps its tests the same way: `gael test gems/NAME.gael` runs them, and a
+program that turns the gem on neither runs nor compiles them. Everything that starts with `@` is for the tools and
+for while you work on the program
 - `(@warn "...")` and `(@err "...")` are marks an editor shows at their line, `(@debug ...)` is code for while
 working - and a release build leaves it all out:
 
@@ -507,8 +511,9 @@ tests/errors/div-zero.gael:1: runtime error: division by zero
 
 ## Status
 
-Version 0.3, tested on Linux x86-64 with gcc 13.3 and clang 18.1. `./test` passes 140 checks per build (44 examples, 80
-compile and runtime error cases, three warning cases, one gael test case, three REPL sessions, nine README examples)
+Version 0.3, tested on Linux x86-64 with gcc 13.3 and clang 18.1. `./test` passes 152 checks per build (43 examples, 80
+compile and runtime error cases, three warning cases, four gael test cases, the tests of each of the ten gems that come
+with gael, three REPL sessions, nine README examples)
 with gcc, clang, gcc with the plain switch dispatch and gcc with both sanitizers, every run with `GAEL_CHECK=1`. GitHub
 Actions runs shellcheck on the scripts and `./test` on every push (`.github/workflows/test.yml`, ubuntu-24.04).
 

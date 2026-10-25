@@ -137,6 +137,7 @@ typedef struct {
 	const char *requires[MAX_GEM_LINKS], *provides[MAX_GEM_LINKS], *excludes[MAX_GEM_LINKS];
 	i32 nrequires, nprovides, nexcludes;
 	u8 state;
+	u8 tested; /* gael test on its main file: its test code is compiled and its tests run; else neither */
 } Gem;
 /* The REPL: the functions from files that a unit gave new bodies, for the line repldump.gael writes before the unit.
  * The files stay as they are; the new bodies live in the running program and in the dump */
@@ -2013,7 +2014,7 @@ static o start_list(Frame *f)
 		if (!strcmp(s, "@warn") || !strcmp(s, "@err")) { mark_note(f->node); finish(T_UNIT); return; }
 		if (!strcmp(s, "@debug")) { f->form = F_DO; return; } /* its forms, their values dropped */
 		if (!strcmp(s, "@test")) err_node(f->node, "@test goes at the top level: (@test \"name\" body...)");
-		else err_node(head, "unknown annotation " NAME_FMT "; gael knows @export, (@warn \"...\"), (@err \"...\"), (@debug ...) and (@test \"name\" ...)", s);
+		else err_node(head, "unknown annotation " NAME_FMT "; gael knows @export (def ...), (@test \"name\" body...), @test (form for the tests), (@debug ...), (@warn \"...\") and (@err \"...\")", s);
 		finish(T_ERR);
 		return;
 	}
@@ -5061,6 +5062,30 @@ static struct {
 	size_t perm, text, mtext;
 } g_snap;
 
+/* test_code TOP: the top level with its test code - (@test "name" body...) and a form after @test, which exists for
+ * the tests - kept, with the @test marks taken off, or taken out in a gem that gael test is not testing: its tests
+ * neither run nor cost anything there. Gives the new first form */
+static i32 test_code(i32 top)
+{
+	int keep = !g_unit_gem || g_gems[g_unit_gem].tested;
+	i32 n = top, prev = -1;
+	while (n >= 0) {
+		i32 next = next_of(n);
+		int drop = 0;
+		if (sym_is(n, "@test")) { /* @test (defn helper ...): for the tests only */
+			drop = 1;
+			if (next < 0 || g_nodes[next].kind != N_LIST || head_is(next, "@test"))
+				err_node(n, "@test goes before a top-level form that the tests use, like @test (defn sample () ...), or around a test: (@test \"name\" body...)");
+			else if (!keep) next = next_of(next);
+		} else if (head_is(n, "@test") && !keep) drop = 1;
+		if (!drop) prev = n;
+		else if (prev < 0) top = next;
+		else g_nodes[prev].next = next;
+		n = next;
+	}
+	return top;
+}
+
 /* compile_unit TOP REPL: compile every top-level form; returns the entry point, or -1 after errors (and then nothing
  * of the unit stays). In the REPL the value of the last form is shown. */
 static i32 compile_unit(i32 top, int repl)
@@ -5105,6 +5130,7 @@ static i32 compile_unit(i32 top, int repl)
 	g_nfjumps = g_ntjumps = 0;
 
 	g_expansions = 0;
+	top = test_code(top);
 	for (n = top; n >= 0; n = next_of(n)) { /* macros first: anything below may use them, and so may the passes below */
 		if (head_is(n, "defmacro")) {
 			define_macro(n, repl);
@@ -5127,7 +5153,7 @@ static i32 compile_unit(i32 top, int repl)
 		int shown = repl && next_of(n) < 0;
 		if (is_sym(n) && g_nodes[n].text[0] == '@') { /* an annotation, for the form after it */
 			if (strcmp(g_nodes[n].text, "@export"))
-				err_node(n, "unknown annotation " NAME_FMT "; gael knows @export, (@warn \"...\"), (@err \"...\"), (@debug ...) and (@test \"name\" ...)", g_nodes[n].text);
+				err_node(n, "unknown annotation " NAME_FMT "; gael knows @export (def ...), (@test \"name\" body...), @test (form for the tests), (@debug ...), (@warn \"...\") and (@err \"...\")", g_nodes[n].text);
 			else if (!head_is(next_of(n), "def")) err_node(next_of(n) < 0 ? n : next_of(n), "@export goes before a def, like @export (def speed : float 10.0)");
 			else exported = 1;
 			continue;

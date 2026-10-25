@@ -829,6 +829,7 @@ by another; a gem using a name of a gem it does not require; disabling a gem ano
 
 ```
 (@test "name" body...)     ; at the top level: a test, with assert in it
+@test (defn sample () ...) ; a top-level form that only the tests use
 (@debug body...)           ; code for while working on the program
 (@warn "text") (@err "text")   ; marks for the tools
 ```
@@ -836,12 +837,17 @@ by another; a gem using a name of a gem it does not require; disabling a gem ano
 A test is compiled with the rest of the file - its errors show in every run - and runs only under `gael test FILE...`:
 that runs the files' defs (but not the rest of their top level, the program's own run), then each test in a run of its
 own, and prints `ok name` or `FAIL name (file:line)` for each and a count; the exit status is 1 when one failed. A
-test fails on a runtime error, an `assert` above all. `(@debug ...)` runs its forms while you work on the program;
+test fails on a runtime error, an `assert` above all. `@test` before a top-level form (a function, a global, a world
+of the ecs gem) keeps it for the tests: a release build leaves it out with them.
+
+A gem keeps its tests in its files the same way. `gael test gems/NAME.gael` (or `gems/NAME/main.gael`) turns that gem
+on from that file, the gems it requires looked for first in the same folder, and runs its tests; a program that turns
+the gem on does not compile them. Each gem that comes with gael has its tests, and `./test` runs them. `(@debug ...)` runs its forms while you work on the program;
 `(@warn "...")` and `(@err "...")` give no code at all: `gael -x` lists them, as `file:line: @warn: text`, and an
 editor shows them at their line. A release build leaves out everything that starts with `@`.
 
-Compile errors: an annotation gael does not know, `@test` anywhere but the top level or without a name, a mark
-without one string.
+Compile errors: an annotation gael does not know, `@test` anywhere but the top level or without a name or a form
+after it, a mark without one string.
 
 ## Warnings
 

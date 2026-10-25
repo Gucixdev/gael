@@ -37,3 +37,21 @@
     (bit-and (bit-or x (shl x 1)) 0x5555555555555555)))
 
 (defn morton2 ((x : int) (y : int)) : int (bit-or (curve--spread x) (shl (curve--spread y) 1)))
+
+(@test "each curve starts and ends at its points"
+  (assert (= (bezier2 1.0 5.0 3.0 0.0) 1.0))
+  (assert (= (bezier2 1.0 5.0 3.0 1.0) 3.0))
+  (assert (= (bezier3 1.0 5.0 -2.0 3.0 0.0) 1.0))
+  (assert (= (bezier3 1.0 5.0 -2.0 3.0 1.0) 3.0))
+  (assert (= (hermite 1.0 9.0 4.0 -9.0 0.0) 1.0))
+  (assert (= (hermite 1.0 9.0 4.0 -9.0 1.0) 4.0))
+  (assert (= (catmull-rom 0.0 1.0 4.0 2.0 0.0) 1.0))
+  (assert (= (catmull-rom 0.0 1.0 4.0 2.0 1.0) 4.0)))
+(@test "points on a line give the line"
+  (assert (= (bezier3 0.0 1.0 2.0 3.0 0.5) 1.5))
+  (assert (= (catmull-rom 0.0 1.0 2.0 3.0 0.5) 1.5)))
+(@test "morton2 takes the bits of x and y in turn"
+  (assert (= (morton2 1 0) 1))
+  (assert (= (morton2 0 1) 2))
+  (assert (= (morton2 3 3) 15))
+  (assert (= (morton2 5 9) 147)))
