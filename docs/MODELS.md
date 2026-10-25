@@ -10,7 +10,7 @@ macros; `docs/REFERENCE.md` has every detail; `examples/` has a working program 
 - Count the parens. When they do not balance, gael names the line where a `)` is missing or one too many - keep the
   indentation honest, it reads it.
 - Nothing converts on its own: `(+ 1 2.0)` is an error; write `(+ (float 1) 2.0)`. A literal takes the type expected
-  where it stands.
+  where it stands. A float has digits on both sides of its point: `0.5`, `1.0e-9`.
 - A struct is a value. `(set p.hp 5)` changes the local copy only; give it back: `(defn hurt ((p : Player)) : Player
   (set p.hp (- p.hp 1)) p)` and `(set hero (hurt hero))`. A `vec`, a `map` and a `pool` are references: changing one
   changes it for everyone who has it.

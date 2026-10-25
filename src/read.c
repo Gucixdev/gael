@@ -165,6 +165,25 @@ static int like_number(const char *s, size_t n)
 	return i < n && s[i] >= '0' && s[i] <= '9';
 }
 
+/* number_fix TEXT LEN OUT: the float that the typo TEXT most likely means - 1e-9 as 1.0e-9, .5 as 0.5, 5. as 5.0 - in
+ * OUT (80 bytes); 0 when there is none */
+static int number_fix(const char *s, size_t n, char *out)
+{
+	size_t lead = (s[0] == '-' || s[0] == '+') ? 1 : 0, o = 0, k;
+	if (n > 60) return 0;
+	for (k = 0; k < n; k++) {
+		if (s[k] == '.' && k == lead) out[o++] = '0';
+		if ((s[k] == 'e' || s[k] == 'E') && !memchr(s, '.', k)) {
+			out[o++] = '.';
+			out[o++] = '0';
+		}
+		out[o++] = s[k];
+		if (s[k] == '.' && (k + 1 == n || s[k + 1] == 'e' || s[k + 1] == 'E')) out[o++] = '0';
+	}
+	out[o] = 0;
+	return atom_kind(out, o) == N_FLOAT;
+}
+
 /* Paren mistakes, read from the indentation the way parinfer reads it; used only when the parens do not balance. The
  * first column of a code line closes, at the end of the code line before it, every list opened at that column or
  * right of it; the closing parens that line ends with are counted against that, and where the counts differ a ')' is
@@ -452,8 +471,12 @@ static i32 read_unit(void)
 			} else if (kind == N_FLOAT) {
 				g_nodes[node].fval = strtod(g_nodes[node].text, 0);
 			} else if (kind == N_SYM && like_number(s + start, len)) {
-				error_at(l0, c0, "%.*s is not a number; an int is written 42, a float 4.2 or 4.2e3",
-					(int)(len < 64 ? len : 64), s + start); /* msg is 1024 bytes */
+				char fix[80];
+				if (number_fix(s + start, len, fix))
+					error_at(l0, c0, "%.*s is not a number; a float has digits on both sides of its point: %s", (int)len, s + start, fix);
+				else
+					error_at(l0, c0, "%.*s is not a number; an int is written 42, a float 4.2 or 4.2e3",
+						(int)(len < 64 ? len : 64), s + start); /* msg is 1024 bytes */
 			}
 		}
 		/* link the new form under the innermost open list, or at the top level */
