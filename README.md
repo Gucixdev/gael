@@ -411,7 +411,8 @@ The gems that come with gael are in `gems/`. `ecs` is an entity component system
 queries that name what they need; `pqueue` (a priority queue) and `events` (a log and a schedule of events by tick)
 are ported from holyc, used in `examples/queues.gael`; `hfsm` is a hierarchical state machine whose state is an enum
 value, so `examples/guards.gael` keeps one in an ECS column; `rng` (PCG32), `noise`, `easing` and `curve` make the
-map of `examples/procgen.gael`. `examples/ecs.gael` runs a few ticks of an ECS:
+map of `examples/procgen.gael`; `wfc` is wave function collapse, which grows the island of `examples/wfc.gael`.
+`examples/ecs.gael` runs a few ticks of an ECS:
 
 ```lisp
 (enable ecs)
@@ -504,7 +505,7 @@ tests/errors/div-zero.gael:1: runtime error: division by zero
 
 ## Status
 
-Version 0.3, tested on Linux x86-64 with gcc 13.3 and clang 18.1. `./test` passes 139 checks per build (43 examples, 80
+Version 0.3, tested on Linux x86-64 with gcc 13.3 and clang 18.1. `./test` passes 140 checks per build (44 examples, 80
 compile and runtime error cases, three warning cases, one gael test case, three REPL sessions, nine README examples)
 with gcc, clang, gcc with the plain switch dispatch and gcc with both sanitizers, every run with `GAEL_CHECK=1`. GitHub
 Actions runs shellcheck on the scripts and `./test` on every push (`.github/workflows/test.yml`, ubuntu-24.04).

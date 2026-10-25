@@ -48,6 +48,8 @@ dokumentacja mieści się w kontekście.
       na przyszłe ticki, wyjmowane po ticku) (`a1345ec`).
 - [x] `hfsm` w gaelu (płaski FSM to ten sam gem, gdy każdy rodzic to `-`): drzewo stanów, kod wejścia i wyjścia,
       przejście przez wspólnego przodka; stan to wartość enuma, więc siedzi w kolumnie ECS (`examples/guards.gael`).
+- [x] `wfc`: wave function collapse (model z kafelkami, do 64 kafelków jako bity), `examples/wfc.gael` (jego prośba:
+      „wave function też dodać, koniecznie”).
 - [x] `rng` (PCG32, te same liczby co C), `noise` (gradient Perlina 2D i fbm, te same wartości co C), `easing`,
       `curve`; `examples/procgen.gael` robi z nich mapę.
 - [ ] ECS dalej, gdy będzie potrzeba: `Changed` (znacznik zmiany kolumny, jak w Bevy), systemy równolegle na fgjob

@@ -808,6 +808,7 @@ The gems that come with gael:
 | `rng` | PCG32: `(Rng.seed seed stream)`, `(r.next)` (0 to 2^32 - 1), `(r.float)` ([0, 1)), `(r.range lo hi)`, `(r.chance p)`. The same seed gives the same numbers everywhere. Ported from holyc |
 | `noise` | Perlin's improved gradient noise in 2D: `(noise2 seed x y)`, about -1 to 1, 0 at whole points; `(fbm2 seed x y octaves)`. Ported from holyc |
 | `easing` | `lerp`, `lerp-clamped`, `unlerp`, `step`, `smooth`, `smoothstep`, and `ease-in-`, `ease-out-`, `ease-in-out-` `quad`, `cubic`, `sine`, `back`. Ported from holyc |
+| `wfc` | wave function collapse, the simple tiled model, up to 64 tiles: `(Wfc.new w h tiles)`, `(w.allow a dir b)` and `(w.allow-all a b)` for which tile may stand by which, `(w.weight t x)`, `(w.fix x y t)`, `(w.solve rng tries)` (true when solved), `(w.tile x y)`. Requires `rng`; `examples/wfc.gael` grows an island |
 | `curve` | on one number at a time: `bezier2`, `bezier3`, `hermite`, `catmull-rom`; `morton2` for a Z-order index. Ported from holyc; `examples/procgen.gael` uses these four |
 
 `(enable a b)` in the program reads only the manifests of the gems named and loads each one after the gems it
