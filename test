@@ -180,17 +180,16 @@ for bin in "${builds[@]}"; do
 done
 
 [ -n "${GAEL_WGPU:-}" ] || echo "skipped: gpu-each on a GPU (set GAEL_WGPU to a libwgpu_native.so to run it)"
-for cc in cc; do # the C89 mirror of WebGPU's structs, against the header it was written from
-	command -v "$cc" > /dev/null || continue
+if command -v cc > /dev/null; then # the C89 mirror of WebGPU's structs, against the header it was written from
 	ok=1
-	if "$cc" -std=c11 -o "$out/abi" tests/gpu/abi.c 2> "$out/abi.log"; then
+	if cc -std=c11 -o "$out/abi" tests/gpu/abi.c 2> "$out/abi.log"; then
 		"$out/abi" > "$out/abi.out" || { ok=0; head -5 "$out/abi.out"; }
 	else
 		ok=0
 		head -5 "$out/abi.log"
 	fi
 	check "src/wgpu89.h matches tests/gpu/webgpu.h" "$ok"
-done
+fi
 
 if [ "${#builds[@]}" -gt 0 ]; then # docs/REFERENCE.md: every built-in name (gael -n) has its line in the index
 	ok=1
