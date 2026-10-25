@@ -53,6 +53,21 @@ static o show_source_line(i32 line, i32 col)
 	fputs("^\n", stderr);
 }
 
+/* said_before FILE LINE COL MSG: the diagnostic just printed was this one - code the compiler wrote twice, like the
+ * two (- x) of (abs x), would say it twice. 0, and remembered, when it is new */
+static int said_before(const char *file, i32 line, i32 col, const char *msg)
+{
+	static char last[1024];
+	static const char *last_file;
+	static i32 last_line = -1, last_col = -1;
+	if (file == last_file && line == last_line && col == last_col && !strcmp(msg, last)) return 1;
+	last_file = file;
+	last_line = line;
+	last_col = col;
+	strcpy(last, msg);
+	return 0;
+}
+
 /* error_at LINE COL FORMAT ...: one diagnostic, "file:line:col: error: ...", with the source line under it. The
  * arguments must stay short (names are passed through %.*s with a cap), so the fixed buffer cannot overflow. */
 static o error_at(i32 line, i32 col, const char *fmt, ...)
@@ -67,6 +82,7 @@ static o error_at(i32 line, i32 col, const char *fmt, ...)
 	va_start(ap, fmt);
 	vsprintf(msg, fmt, ap);
 	va_end(ap);
+	if (said_before(g_unit.file, line, col, msg)) return;
 	fprintf(stderr, "%s:%ld:%ld: error: %s\n", g_unit.file, (long)line, (long)col, msg);
 	show_source_line(line, col);
 }
@@ -86,6 +102,7 @@ static o warning_at(i32 line, i32 col, const char *fmt, ...)
 	va_start(ap, fmt);
 	vsprintf(msg, fmt, ap);
 	va_end(ap);
+	if (said_before(g_unit.file, line, col, msg)) return;
 	fprintf(stderr, "%s:%ld:%ld: warning: %s\n", g_unit.file, (long)line, (long)col, msg);
 	show_source_line(line, col);
 }
