@@ -74,7 +74,14 @@ static void gpu_close(void); /* gfx.c: everything given back to the GPU at the e
 	X(void, wgpuQueueRelease, (WgHandle)) \
 	X(void, wgpuDeviceRelease, (WgHandle)) \
 	X(void, wgpuAdapterRelease, (WgHandle)) \
-	X(void, wgpuInstanceRelease, (WgHandle))
+	X(void, wgpuInstanceRelease, (WgHandle)) \
+	X(WgHandle, wgpuInstanceCreateSurface, (WgHandle, const WgSurfaceDescriptor *)) \
+	X(u32, wgpuSurfaceGetCapabilities, (WgHandle, WgHandle, WgSurfaceCapabilities *)) \
+	X(void, wgpuSurfaceCapabilitiesFreeMembers, (WgSurfaceCapabilities)) \
+	X(void, wgpuSurfaceConfigure, (WgHandle, const WgSurfaceConfiguration *)) \
+	X(void, wgpuSurfaceGetCurrentTexture, (WgHandle, WgSurfaceTexture *)) \
+	X(u32, wgpuSurfacePresent, (WgHandle)) \
+	X(void, wgpuSurfaceRelease, (WgHandle))
 
 static struct {
 	int tried, ok, need;     /* tried to start; a device is there; GAEL_GPU=1 */

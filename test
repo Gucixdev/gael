@@ -12,7 +12,9 @@
 #                           and prints the same, and tests/errors/gpu-fault*.gael stop with the same error there;
 #   tests/draw/NAME.gael    with GAEL_WGPU set: drawing on a canvas on the GPU prints NAME.out
 #                           tests/gpu/abi.c checks src/wgpu89.h against tests/gpu/webgpu.h
-#   (for both, NAME.env holds VAR=value words for its environment, like a smaller heap)
+#   tests/window/NAME.gael  with GAEL_WGPU set and weston installed: windows on a headless weston of the test's own
+#                           (never the desktop's) print NAME.out, or stop with the lines of NAME.err (exit 1)
+#   (for these, NAME.env holds VAR=value words for its environment, like a smaller heap)
 #   tests/repl.in           the REPL's stdout must equal tests/repl.out, every line of tests/repl.err on stderr, and
 #                           what it saved to repldump.gael (its header lines aside, the time of each form as TIME)
 #                           must equal tests/repl.dump; then
@@ -28,7 +30,8 @@ cd "$(dirname "${BASH_SOURCE[0]}")" || exit 1
 export GAEL_CHECK=1
 
 out=$(mktemp -d "${TMPDIR:-/tmp}/gael-test.XXXXXX") || exit 1
-trap 'rm -rf -- "$out"' EXIT
+wl_pid=
+trap '[ -n "$wl_pid" ] && kill "$wl_pid" 2> /dev/null; rm -rf -- "$out"' EXIT
 export GAEL_HOME="$out/home" # gael's own folder: never the real ~/.gael
 ln -s "$PWD/gems" "$out/gems" # the gems that come with gael sit next to each build, as next to an installed gael
 ln -s "$PWD/docs" "$out/docs" # and its docs, for gael doc
@@ -62,6 +65,17 @@ for cc in gcc clang; do # the first compiler whose sanitizer runtime is installe
 	fi
 done
 [ "$sanitized" = 1 ] || echo "skipped: no compiler here has its sanitizer runtime installed (libasan, libubsan)"
+
+wl_run= # the window tests get a compositor of their own: headless, never asleep, gone at the end
+if [ -n "${GAEL_WGPU:-}" ] && command -v weston > /dev/null; then
+	wl_run="$out/run"
+	mkdir -m 700 "$wl_run"
+	XDG_RUNTIME_DIR="$wl_run" weston --backend=headless --socket=gael-test --idle-time=0 --width=320 --height=240 \
+		> "$out/weston.log" 2>&1 < /dev/null &
+	wl_pid=$!
+	for ((k = 0; k < 100; k++)); do [ -S "$wl_run/gael-test" ] && break; sleep 0.1; done
+	[ -S "$wl_run/gael-test" ] || { echo "skipped: windows (weston did not start: $(tail -1 "$out/weston.log"))"; wl_run=; }
+fi
 
 check() {	# check NAME OK: count a result, say what failed
 	if [ "$2" = 1 ]; then pass=$((pass + 1)); else fail=$((fail + 1)); echo "FAIL $1"; fi
@@ -157,6 +171,26 @@ for bin in "${builds[@]}"; do
 			done < "${f%.gael}.err"
 			check "$b on the GPU: $f" "$ok"
 		done
+		for f in tests/window/*.gael; do # a window on the compositor above: frames, its keys and mouse, misuse
+			[ -n "$wl_run" ] || break
+			ok=1
+			envs=()
+			[ -f "${f%.gael}.env" ] && read -r -a envs < "${f%.gael}.env"
+			env XDG_RUNTIME_DIR="$wl_run" WAYLAND_DISPLAY=gael-test "${gpu_env[@]}" "${envs[@]}" timeout 60 "$bin" "$f" \
+				> "$out/stdout" 2> "$out/stderr"
+			code=$?
+			if [ -f "${f%.gael}.err" ]; then
+				[ "$code" = 1 ] || { ok=0; echo "  exit $code"; }
+				while IFS= read -r line; do
+					grep -qxF -- "$line" "$out/stderr" || { ok=0; echo "  missing: $line"; }
+				done < "${f%.gael}.err"
+			else
+				[ "$code" = 0 ] || { ok=0; echo "  exit $code"; }
+				[ -s "$out/stderr" ] && { ok=0; head -3 "$out/stderr"; }
+			fi
+			[ -f "${f%.gael}.out" ] && ! cmp -s "$out/stdout" "${f%.gael}.out" && { ok=0; diff "${f%.gael}.out" "$out/stdout" | head -5; }
+			check "$b window: $f" "$ok"
+		done
 	fi
 	for f in tests/warnings/*.gael; do
 		ok=1
@@ -201,6 +235,7 @@ for bin in "${builds[@]}"; do
 done
 
 [ -n "${GAEL_WGPU:-}" ] || echo "skipped: gpu-each and drawing on a GPU (set GAEL_WGPU to a libwgpu_native.so to run them)"
+[ -n "${GAEL_WGPU:-}" ] && ! command -v weston > /dev/null && echo "skipped: windows (they run on a headless weston; install weston)"
 if command -v cc > /dev/null; then # the C89 mirror of WebGPU's structs, against the header it was written from
 	ok=1
 	if cc -std=c11 -o "$out/abi" tests/gpu/abi.c 2> "$out/abi.log"; then

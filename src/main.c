@@ -42,6 +42,7 @@
 #include "kernel.c"
 #include "vm.c"
 #include "gpu.c"
+#include "wayland.c"
 #include "gfx.c"
 
 static const char *const g_usage[] = {

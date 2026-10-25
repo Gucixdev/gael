@@ -256,7 +256,50 @@ typedef struct {
 	WgHandle buffer;
 } WgTexelCopyBufferInfo;
 
+typedef struct {
+	WgChained *nextInChain;
+	WgStringView label;
+} WgSurfaceDescriptor;
+
+typedef struct {
+	WgChained chain;
+	void *display, *surface;
+} WgSurfaceSourceWaylandSurface;
+
+typedef struct {
+	WgChained *nextInChain;
+	u64 usages;
+	size_t formatCount;
+	const u32 *formats;
+	size_t presentModeCount;
+	const u32 *presentModes;
+	size_t alphaModeCount;
+	const u32 *alphaModes;
+} WgSurfaceCapabilities;
+
+typedef struct {
+	WgChained *nextInChain;
+	WgHandle device;
+	u32 format;
+	u64 usage;
+	u32 width, height;
+	size_t viewFormatCount;
+	const u32 *viewFormats;
+	u32 alphaMode, presentMode;
+} WgSurfaceConfiguration;
+
+typedef struct {
+	WgChained *nextInChain;
+	WgHandle texture;
+	u32 status;
+} WgSurfaceTexture;
+
 #define WG_STYPE_SHADER_SOURCE_WGSL 0x2u
+#define WG_STYPE_SURFACE_SOURCE_WAYLAND 0x7u
+#define WG_PRESENT_FIFO 0x1u
+#define WG_SURFACE_TEXTURE_OPTIMAL 0x1u
+#define WG_SURFACE_TEXTURE_SUBOPTIMAL 0x2u
+#define WG_STATUS_OK 0x1u                /* WGPUStatus */
 #define WG_CALLBACK_ALLOW_PROCESS_EVENTS 0x2u
 #define WG_FEATURE_LEVEL_CORE 0x2u
 #define WG_STATUS_SUCCESS 0x1u           /* WGPURequestAdapterStatus, WGPURequestDeviceStatus, WGPUMapAsyncStatus */

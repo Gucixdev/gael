@@ -141,7 +141,12 @@ from a literal says its type: `(k : f32 0.5)`. With no GPU it runs on the VM, wi
 (def c (new-canvas 640 480))               ; on the GPU; colors are 0xRRGGBBAA
 (draw-clear c 0x202030ff) (draw-rect c 10.0 10.0 50.0 20.0 0xff0000ff) (draw-circle c 320.0 240.0 8.0 0xffcc00ff)
 (draw-line c 0.0 0.0 640.0 480.0 2.0 0xffffffff) (show-frame c) (canvas-pixel c 5 5) (save-png c "out.png")
+(def w (open-window "game" 640 480))       ; a canvas on the screen (Wayland)
+(while (show-frame w) (when (key-down? w "space") (jump)) (draw-circle w (mouse-x w) (mouse-y w) 4.0 0xffffffff))
 ```
+
+`show-frame` on a window waits for the screen and gives false once it is closed. Keys by place: `"a"`, `"1"`,
+`"f1"`, `"space"`, `"enter"`, `"escape"`, `"up"`, `"shift"`. `(mouse-down? w 1)`: 1 left, 2 right, 3 middle.
 
 ## Macros
 

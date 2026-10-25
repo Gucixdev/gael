@@ -99,6 +99,7 @@ How the entries read:
 | `int` | a 64-bit int; converts to it | [Types](#types), [Numbers](#numbers) |
 | `join` | strings put together with a separator | [Strings](#strings) |
 | `keep` | copy a value out of an arena | [Memory](#memory) |
+| `key-down?` | whether a key is down over a window | [Drawing](#drawing) |
 | `keys` | a map's keys, in order | [Maps](#maps) |
 | `len` | the length of a string, vec, map or pool | [Strings](#strings), [Vecs](#vecs) |
 | `let` | locals for a body | [Control](#control) |
@@ -108,12 +109,16 @@ How the entries read:
 | `match` | choose by a value's shape | [match](#match) |
 | `max` | the largest of values | [Comparing](#comparing) |
 | `min` | the smallest of values | [Comparing](#comparing) |
+| `mouse-down?` | whether a mouse button is down over a window | [Drawing](#drawing) |
+| `mouse-x` | the pointer's x over a window | [Drawing](#drawing) |
+| `mouse-y` | the pointer's y over a window | [Drawing](#drawing) |
 | `name-of` | a name joined from a macro's parts, like C's `##` | [Macros](#macros) |
 | `nand` | not all true | [Logic](#logic) |
 | `new-canvas` | an image the GPU draws on | [Drawing](#drawing) |
 | `none` | the empty option | [Options](#options) |
 | `nor` | none true | [Logic](#logic) |
 | `not` | the opposite bool | [Logic](#logic) |
+| `open-window` | a window to draw on | [Drawing](#drawing) |
 | `option` | the option type | [Options](#options) |
 | `or` | any true, stops at the first true | [Logic](#logic) |
 | `parse-float` | a float from a string | [Strings](#strings) |
@@ -787,6 +792,12 @@ values from around in one body.
 (show-frame c)                       ; draws what is batched; true while the canvas is there
 (canvas-pixel c x y)                 ; a pixel, 0xRRGGBBAA
 (save-png c "frame.png")             ; true when the file was written
+
+(def w (open-window "game" 640 480)) ; a window on the screen, a canvas too: the same draw- calls draw into it
+(while (show-frame w) ...)           ; shows the frame at the screen's rate; false once the window was closed
+(key-down? w "space")                ; true while the key is down
+(mouse-x w) (mouse-y w)              ; the pointer over the window, floats in pixels from its top left
+(mouse-down? w 1)                    ; 1 the left button, 2 the right, 3 the middle
 ```
 
 A canvas is an image that the GPU draws on, through wgpu as `gpu-each` runs ([GPU](#gpu)). The shapes are batched and
@@ -795,8 +806,17 @@ canvas; a color's alpha blends it over what is there, and `draw-clear` starts a 
 f32s, so a `gpu-each` vec's fields go in as they are. There can be 16 canvases, each up to 8192 pixels each way.
 `(format "%x" color)` writes a color the way it is written here.
 
+A window is a canvas on the screen, on Wayland for now (libwayland-client, loaded when the first window opens, finds
+the compositor through `WAYLAND_DISPLAY`). Each frame starts as one color, the last `draw-clear`'s (black at first),
+because the screen's images do not keep what was drawn before. `show-frame` presents the frame, waiting for the screen
+as a game loop wants, then takes in what happened since the last frame: keys, the mouse, a new size from the
+compositor, the close button. The keys are named by their place on the keyboard, so `"w"` `"a"` `"s"` `"d"` are the
+same four keys on any layout: the letters, the digits, `"f1"` to `"f10"`, `"space"` `"enter"` `"escape"` `"tab"`
+`"backspace"` `"minus"` `"equal"` `"up"` `"down"` `"left"` `"right"` `"shift"` `"ctrl"` `"alt"`.
+
 Runtime errors: no GPU (drawing has no VM version), a canvas number that `new-canvas` did not give, a size or a pixel
-outside the canvas.
+outside the canvas; no compositor to open a window on, a key name not in the list, a window's keys or mouse asked of a
+canvas, a window's pixels read (draw into a canvas to read them), a mouse button other than 1, 2, 3.
 
 ## Macros
 

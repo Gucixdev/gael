@@ -810,7 +810,12 @@ static const Builtin g_builtins[] = {
 	{ "draw-line", "ifffffi", "canvas x1 y1 x2 y2 width color", 'u', OP_GFX, 4, 7 },
 	{ "show-frame", "i", "canvas", 'b', OP_GFX, 5, 1 },
 	{ "canvas-pixel", "iii", "canvas x y", 'i', OP_GFX, 6, 3 },
-	{ "save-png", "is", "canvas path", 'b', OP_GFX, 7, 2 }
+	{ "save-png", "is", "canvas path", 'b', OP_GFX, 7, 2 },
+	{ "open-window", "sii", "title width height", 'i', OP_GFX, 8, 3 },
+	{ "key-down?", "is", "window key", 'b', OP_GFX, 9, 2 },
+	{ "mouse-x", "i", "window", 'f', OP_GFX, 10, 1 },
+	{ "mouse-y", "i", "window", 'f', OP_GFX, 11, 1 },
+	{ "mouse-down?", "ii", "window button", 'b', OP_GFX, 12, 2 }
 };
 
 static Ty code_type(char c)

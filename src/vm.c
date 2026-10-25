@@ -2519,11 +2519,13 @@ static int vm_run(i32 pc)
 		}
 		CASE(OP_CORO_TIME) s[sp++].f = g_coro_time; NEXT;
 		CASE(OP_FAIL) return vm_error(in, g_strs[in->a].p);
-		CASE(OP_GFX) { /* gfx.c: b arguments; save-png's last one is the path, a string to let go of */
+		CASE(OP_GFX) { /* gfx.c: b arguments; the string among them (save-png's path, open-window's title, key-down?'s
+		                * key) is let go of here */
 			Cell out;
-			const char *path = in->a == 7 ? c_str(s[sp - 1].i) : 0;
-			int r = gfx_op(in->a, s + sp - in->b, &out, path);
-			if (in->a == 7) obj_release(s[sp - 1].i);
+			i32 at = in->a == 7 || in->a == 9 ? (i32)sp - 1 : in->a == 8 ? (i32)sp - 3 : -1;
+			const char *str = at >= 0 ? c_str(s[at].i) : 0;
+			int r = gfx_op(in->a, s + sp - in->b, &out, str);
+			if (at >= 0) obj_release(s[at].i);
 			sp -= in->b;
 			if (r < 0) return vm_error(in, g_gpu_error);
 			if (r > 0) s[sp++] = out;

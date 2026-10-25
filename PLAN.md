@@ -75,7 +75,9 @@ dokumentacja mieści się w kontekście.
 - [x] Na GPU te same błędy co na VM: dzielenie inta przez zero, float za duży na int, przesunięcie poza bity - kernel
       zapisuje znacznik, nic nie wraca, VM powtarza pętlę i zgłasza błąd z linią (`01c2255`).
 - [ ] Dane, które zostają na karcie między klatkami, żeby nie kopiować co klatkę.
-- [ ] Okno i klatka na Waylandzie (powierzchnia wgpu z `wl_surface`); wierzchołki i fragmenty pisane w gaelu.
+- [x] Okno i klatka na Waylandzie: `open-window`, powierzchnia wgpu z `wl_surface`, xdg-shell, klawisze po miejscu
+      (evdev), mysz; testy na własnym headless weston w `./test`.
+- [ ] Wierzchołki i fragmenty pisane w gaelu.
 - [ ] Android, Apple (Metal przez wgpu), przeglądarka (WASM i WebGPU, ten sam WGSL).
 - [ ] Dwie pozostałe drogi za tym samym API: SPIR-V z gaela i Vulkan przez `dlopen`; SDL3 GPU (SPIR-V i MSL).
 

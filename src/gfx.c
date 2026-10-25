@@ -4,6 +4,7 @@
  * and a circle's fragment keeps the disc inside its square, smoothed over a pixel at the edge.
  *
  *   (new-canvas width height)             an image of that many pixels, black and clear; its number
+ *   (open-window title width height)      a window on Wayland (wayland.c), a canvas too; its number
  *   (draw-clear c color)                  the whole canvas one color, 0xRRGGBBAA
  *   (draw-rect c x y width height color)  x and y the top left, in pixels from the top left of the canvas
  *   (draw-circle c x y radius color)
@@ -11,6 +12,11 @@
  *   (show-frame c)                        draws what is batched; true while the canvas is there to draw on
  *   (canvas-pixel c x y)                  a pixel as 0xRRGGBBAA
  *   (save-png c path)                     the canvas as a PNG file; true when it was written
+ *   (key-down? w "space") (mouse-x w) (mouse-y w) (mouse-down? w 1)   a window's keys and mouse, as of the last frame
+ *
+ * A window's frame is the GPU's next image of it: the first batch of a frame clears it (its pixels are not kept, so
+ * they cannot be read back), show-frame presents it - at the screen's rate - and takes in what happened meanwhile; it
+ * gives false once the window was closed.
  *
  * Coordinates are floats or f32s. Without a GPU every one of these is a runtime error: a canvas only exists there. */
 
@@ -26,14 +32,23 @@ typedef struct {
 
 static struct {
 	int used, w, h;
-	WgHandle tex, view, ubuf, bg;
-	int clear_pending; /* a draw-clear waits for the next batch */
+	i32 win, pipe;                 /* its window in wayland.c (-1: an image), its pipeline in g_gfx_pipes */
+	WgHandle tex, view, ubuf, bg;  /* an image's texture and view; the uniform with the size, and its bind group */
+	WgHandle surface, ftex, fview; /* a window's surface, and the image of the frame being drawn */
+	u32 format;
+	int clear_pending;             /* a draw-clear waits for the next batch */
 	u32 clear;
 } g_canvas[MAX_CANVAS];
 
+static struct {
+	u32 format;
+	WgHandle pipeline, layout;
+} g_gfx_pipes[4]; /* one pipeline per texture format: an image's, and a window's (BGRA, mostly) */
+static i32 g_ngfx_pipes;
+
 static GVert g_gv[GFX_VERTS];
 static i32 g_ngv, g_gv_canvas = -1; /* the batch, and the canvas it is for */
-static WgHandle g_gfx_module, g_gfx_pipeline, g_gfx_layout, g_gfx_vbuf;
+static WgHandle g_gfx_module, g_gfx_vbuf;
 
 static const char *const g_gfx_wgsl[] = { /* C89 keeps a string literal under 510 bytes: the lines are joined at the start */
 	"struct U { size: vec2<f32> }\n",
@@ -61,20 +76,14 @@ static const char *const g_gfx_wgsl[] = { /* C89 keeps a string literal under 51
 	0
 };
 
-/* gfx_ready: the GPU and the one pipeline everything is drawn with; 0 with the reason in g_gpu_error */
+/* gfx_ready: the GPU, the shader and the vertex buffer every canvas shares; 0 with the reason in g_gpu_error */
 static int gfx_ready(void)
 {
 	WgShaderSourceWGSL src;
 	WgShaderModuleDescriptor md;
-	WgRenderPipelineDescriptor pd;
-	WgVertexAttribute attrs[4];
-	WgVertexBufferLayout vbl;
-	WgFragmentState fs;
-	WgColorTargetState ct;
-	WgBlendState blend;
 	WgBufferDescriptor bd;
 	int errors, k;
-	if (g_gfx_pipeline) return 1;
+	if (g_gfx_vbuf) return 1;
 	if (!gpu_ready()) {
 		sprintf(g_gpu_error, "drawing needs a GPU, and there is none (%.400s)", g_gpu.why);
 		return 0;
@@ -91,6 +100,36 @@ static int gfx_ready(void)
 	src.chain.sType = WG_STYPE_SHADER_SOURCE_WGSL;
 	md.nextInChain = &src.chain;
 	g_gfx_module = g_gpu.wgpuDeviceCreateShaderModule(g_gpu.device, &md);
+	memset(&bd, 0, sizeof(bd));
+	bd.size = (u64)sizeof(g_gv);
+	bd.usage = WG_BUFFER_VERTEX | WG_BUFFER_COPY_DST;
+	if (g_gfx_module) g_gfx_vbuf = g_gpu.wgpuDeviceCreateBuffer(g_gpu.device, &bd);
+	if (!g_gfx_vbuf || g_gpu.errors != errors) {
+		sprintf(g_gpu_error, "the GPU did not take gael's drawing shader: %.400s", g_gpu.why);
+		g_gfx_vbuf = 0;
+		return 0;
+	}
+	return 1;
+}
+
+/* gfx_pipe FORMAT: the pipeline that draws into textures of FORMAT, made on first use; -1 with the error said */
+static i32 gfx_pipe(u32 format)
+{
+	WgRenderPipelineDescriptor pd;
+	WgVertexAttribute attrs[4];
+	WgVertexBufferLayout vbl;
+	WgFragmentState fs;
+	WgColorTargetState ct;
+	WgBlendState blend;
+	i32 k;
+	int errors = g_gpu.errors;
+	for (k = 0; k < g_ngfx_pipes; k++) {
+		if (g_gfx_pipes[k].format == format) return k;
+	}
+	if (k == (i32)GAEL_COUNT(g_gfx_pipes)) {
+		strcpy(g_gpu_error, "drawing into more than 4 kinds of image at once");
+		return -1;
+	}
 	memset(attrs, 0, sizeof(attrs));
 	attrs[0].format = WG_VERTEX_FLOAT32X2;
 	attrs[0].offset = 0;
@@ -117,7 +156,7 @@ static int gfx_ready(void)
 	blend.alpha.srcFactor = WG_BLEND_ONE;
 	blend.alpha.dstFactor = WG_BLEND_ONE_MINUS_SRC_ALPHA;
 	memset(&ct, 0, sizeof(ct));
-	ct.format = WG_FORMAT_RGBA8_UNORM;
+	ct.format = format;
 	ct.blend = &blend;
 	ct.writeMask = WG_COLOR_WRITE_ALL;
 	memset(&fs, 0, sizeof(fs));
@@ -136,28 +175,70 @@ static int gfx_ready(void)
 	pd.multisample.count = 1;
 	pd.multisample.mask = 0xFFFFFFFFu;
 	pd.fragment = &fs;
-	if (g_gfx_module) g_gfx_pipeline = g_gpu.wgpuDeviceCreateRenderPipeline(g_gpu.device, &pd);
-	if (g_gfx_pipeline) g_gfx_layout = g_gpu.wgpuRenderPipelineGetBindGroupLayout(g_gfx_pipeline, 0);
-	memset(&bd, 0, sizeof(bd));
-	bd.size = (u64)sizeof(g_gv);
-	bd.usage = WG_BUFFER_VERTEX | WG_BUFFER_COPY_DST;
-	if (g_gfx_layout) g_gfx_vbuf = g_gpu.wgpuDeviceCreateBuffer(g_gpu.device, &bd);
-	if (!g_gfx_vbuf || g_gpu.errors != errors) {
+	g_gfx_pipes[k].pipeline = g_gpu.wgpuDeviceCreateRenderPipeline(g_gpu.device, &pd);
+	if (g_gfx_pipes[k].pipeline) g_gfx_pipes[k].layout = g_gpu.wgpuRenderPipelineGetBindGroupLayout(g_gfx_pipes[k].pipeline, 0);
+	if (!g_gfx_pipes[k].layout || g_gpu.errors != errors) {
 		sprintf(g_gpu_error, "the GPU did not take gael's drawing pipeline: %.400s", g_gpu.why);
-		g_gfx_pipeline = 0; /* (what was made stays: this happens once, and is gael's mistake) */
+		return -1;
+	}
+	g_gfx_pipes[k].format = format;
+	g_ngfx_pipes++;
+	return k;
+}
+
+/* gfx_size C W H: canvas C's size, in its uniform, and its bind group (made once); 0 with the error said */
+static int gfx_size(i32 c, int w, int h)
+{
+	WgBufferDescriptor bd;
+	WgBindGroupEntry e;
+	WgBindGroupDescriptor bgd;
+	f32 size[4];
+	int errors = g_gpu.errors;
+	if (!g_canvas[c].ubuf) {
+		memset(&bd, 0, sizeof(bd));
+		bd.size = 16;
+		bd.usage = WG_BUFFER_UNIFORM | WG_BUFFER_COPY_DST;
+		g_canvas[c].ubuf = g_gpu.wgpuDeviceCreateBuffer(g_gpu.device, &bd);
+		memset(&e, 0, sizeof(e));
+		e.binding = 0;
+		e.buffer = g_canvas[c].ubuf;
+		e.size = 16;
+		memset(&bgd, 0, sizeof(bgd));
+		bgd.layout = g_gfx_pipes[g_canvas[c].pipe].layout;
+		bgd.entryCount = 1;
+		bgd.entries = &e;
+		if (g_canvas[c].ubuf) g_canvas[c].bg = g_gpu.wgpuDeviceCreateBindGroup(g_gpu.device, &bgd);
+	}
+	size[0] = (f32)w;
+	size[1] = (f32)h;
+	size[2] = size[3] = 0;
+	if (g_canvas[c].ubuf) g_gpu.wgpuQueueWriteBuffer(g_gpu.queue, g_canvas[c].ubuf, 0, size, 16);
+	g_canvas[c].w = w;
+	g_canvas[c].h = h;
+	if (!g_canvas[c].bg || g_gpu.errors != errors) {
+		sprintf(g_gpu_error, "the GPU made no canvas: %.300s", g_gpu.why);
 		return 0;
 	}
 	return 1;
+}
+
+static i32 gfx_free_canvas(void) /* a free canvas number, or -1 with the error said */
+{
+	i32 c;
+	for (c = 0; c < MAX_CANVAS && g_canvas[c].used; c++) {}
+	if (c == MAX_CANVAS) {
+		sprintf(g_gpu_error, "there are %d canvases and windows already, all there can be", MAX_CANVAS);
+		return -1;
+	}
+	memset(&g_canvas[c], 0, sizeof(g_canvas[c]));
+	g_canvas[c].win = -1;
+	return c;
 }
 
 /* gfx_canvas_new W H: a canvas; its number, or -1 with the reason in g_gpu_error */
 static i32 gfx_canvas_new(i64 w, i64 h)
 {
 	WgTextureDescriptor td;
-	WgBufferDescriptor bd;
-	WgBindGroupEntry e;
-	WgBindGroupDescriptor bgd;
-	f32 size[4];
 	i32 c;
 	int errors;
 	if (!gfx_ready()) return -1;
@@ -165,13 +246,10 @@ static i32 gfx_canvas_new(i64 w, i64 h)
 		sprintf(g_gpu_error, "new-canvas: %ldx%ld pixels; a canvas is 1 to 8192 pixels each way", (long)w, (long)h);
 		return -1;
 	}
-	for (c = 0; c < MAX_CANVAS && g_canvas[c].used; c++) {}
-	if (c == MAX_CANVAS) {
-		sprintf(g_gpu_error, "new-canvas: there are %d canvases already, all there can be", MAX_CANVAS);
-		return -1;
-	}
+	if ((c = gfx_free_canvas()) < 0) return -1;
 	errors = g_gpu.errors;
-	memset(&g_canvas[c], 0, sizeof(g_canvas[c]));
+	if ((g_canvas[c].pipe = gfx_pipe(WG_FORMAT_RGBA8_UNORM)) < 0) return -1;
+	g_canvas[c].format = WG_FORMAT_RGBA8_UNORM;
 	memset(&td, 0, sizeof(td));
 	td.usage = WG_TEXTURE_RENDER_ATTACHMENT | WG_TEXTURE_COPY_SRC;
 	td.dimension = WG_TEXTURE_DIMENSION_2D;
@@ -183,32 +261,83 @@ static i32 gfx_canvas_new(i64 w, i64 h)
 	td.sampleCount = 1;
 	g_canvas[c].tex = g_gpu.wgpuDeviceCreateTexture(g_gpu.device, &td);
 	if (g_canvas[c].tex) g_canvas[c].view = g_gpu.wgpuTextureCreateView(g_canvas[c].tex, 0);
-	memset(&bd, 0, sizeof(bd));
-	bd.size = 16;
-	bd.usage = WG_BUFFER_UNIFORM | WG_BUFFER_COPY_DST;
-	g_canvas[c].ubuf = g_gpu.wgpuDeviceCreateBuffer(g_gpu.device, &bd);
-	size[0] = (f32)w;
-	size[1] = (f32)h;
-	size[2] = size[3] = 0;
-	if (g_canvas[c].ubuf) g_gpu.wgpuQueueWriteBuffer(g_gpu.queue, g_canvas[c].ubuf, 0, size, 16);
-	memset(&e, 0, sizeof(e));
-	e.binding = 0;
-	e.buffer = g_canvas[c].ubuf;
-	e.size = 16;
-	memset(&bgd, 0, sizeof(bgd));
-	bgd.layout = g_gfx_layout;
-	bgd.entryCount = 1;
-	bgd.entries = &e;
-	if (g_canvas[c].ubuf) g_canvas[c].bg = g_gpu.wgpuDeviceCreateBindGroup(g_gpu.device, &bgd);
-	if (!g_canvas[c].view || !g_canvas[c].bg || g_gpu.errors != errors) {
-		sprintf(g_gpu_error, "new-canvas: the GPU made no %ldx%ld image: %.300s", (long)w, (long)h, g_gpu.why);
+	if (!g_canvas[c].view || g_gpu.errors != errors || !gfx_size(c, (int)w, (int)h)) {
+		if (!g_canvas[c].view) sprintf(g_gpu_error, "new-canvas: the GPU made no %ldx%ld image: %.300s", (long)w, (long)h, g_gpu.why);
 		return -1;
 	}
 	g_canvas[c].used = 1;
-	g_canvas[c].w = (int)w;
-	g_canvas[c].h = (int)h;
 	g_canvas[c].clear_pending = 1; /* a new canvas starts clear, black */
 	g_canvas[c].clear = 0;
+	return c;
+}
+
+/* gfx_configure C: a window's surface at the window's size */
+static o gfx_configure(i32 c)
+{
+	WgSurfaceConfiguration sc;
+	memset(&sc, 0, sizeof(sc));
+	sc.device = g_gpu.device;
+	sc.format = g_canvas[c].format;
+	sc.usage = WG_TEXTURE_RENDER_ATTACHMENT;
+	sc.width = (u32)g_win[g_canvas[c].win].w;
+	sc.height = (u32)g_win[g_canvas[c].win].h;
+	sc.alphaMode = 0; /* Auto */
+	sc.presentMode = WG_PRESENT_FIFO; /* every GPU has it: frames at the screen's rate */
+	g_gpu.wgpuSurfaceConfigure(g_canvas[c].surface, &sc);
+}
+
+/* gfx_window TITLE W H: a window to draw on; its canvas number, or -1 with the reason in g_gpu_error */
+static i32 gfx_window(const char *title, i64 w, i64 h)
+{
+	WgSurfaceSourceWaylandSurface wl;
+	WgSurfaceDescriptor sd;
+	WgSurfaceCapabilities caps;
+	i32 c, k;
+	size_t i;
+	int errors;
+	if (!gfx_ready()) return -1;
+	if (w < 1 || h < 1 || w > 8192 || h > 8192) {
+		sprintf(g_gpu_error, "open-window: %ldx%ld pixels; a window is 1 to 8192 pixels each way", (long)w, (long)h);
+		return -1;
+	}
+	if ((c = gfx_free_canvas()) < 0) return -1;
+	if ((k = wl_window(title, (int)w, (int)h)) < 0) {
+		sprintf(g_gpu_error, "open-window: %.400s", g_wl.why);
+		return -1;
+	}
+	errors = g_gpu.errors;
+	memset(&wl, 0, sizeof(wl));
+	wl.chain.sType = WG_STYPE_SURFACE_SOURCE_WAYLAND;
+	wl.display = g_wl.display;
+	wl.surface = g_win[k].surface;
+	memset(&sd, 0, sizeof(sd));
+	sd.nextInChain = &wl.chain;
+	g_canvas[c].win = k;
+	if (!(g_canvas[c].surface = g_gpu.wgpuInstanceCreateSurface(g_gpu.inst, &sd))) {
+		sprintf(g_gpu_error, "open-window: wgpu made no surface for the window: %.300s", g_gpu.why);
+		return -1;
+	}
+	memset(&caps, 0, sizeof(caps));
+	g_canvas[c].format = 0;
+	if (g_gpu.wgpuSurfaceGetCapabilities(g_canvas[c].surface, g_gpu.adapter, &caps) == WG_STATUS_OK) {
+		for (i = 0; i < caps.formatCount && !g_canvas[c].format; i++) /* not an sRGB one: colors go out as they are written */
+			if (caps.formats[i] == WG_FORMAT_BGRA8_UNORM || caps.formats[i] == WG_FORMAT_RGBA8_UNORM) g_canvas[c].format = caps.formats[i];
+		if (!g_canvas[c].format && caps.formatCount) g_canvas[c].format = caps.formats[0];
+		g_gpu.wgpuSurfaceCapabilitiesFreeMembers(caps);
+	}
+	if (!g_canvas[c].format) {
+		sprintf(g_gpu_error, "open-window: the GPU cannot draw into this window: %.300s", g_gpu.why);
+		return -1;
+	}
+	if ((g_canvas[c].pipe = gfx_pipe(g_canvas[c].format)) < 0) return -1;
+	gfx_configure(c);
+	if (g_gpu.errors != errors || !gfx_size(c, g_win[k].w, g_win[k].h)) {
+		if (g_gpu.errors != errors) sprintf(g_gpu_error, "open-window: %.400s", g_gpu.why);
+		return -1;
+	}
+	g_canvas[c].used = 1;
+	g_canvas[c].clear_pending = 1;
+	g_canvas[c].clear = 0x000000ff;
 	return c;
 }
 
@@ -227,10 +356,29 @@ static int gfx_flush(i32 c)
 	WgHandle enc, pass, cmd;
 	int errors = g_gpu.errors;
 	i32 n = g_gv_canvas == c ? g_ngv : 0;
+	if (g_canvas[c].win >= 0 && g_win[g_canvas[c].win].closed) { /* a closed window: what is drawn goes nowhere */
+		if (g_gv_canvas == c) g_ngv = 0;
+		g_canvas[c].clear_pending = 0;
+		return 1;
+	}
 	if (!n && !g_canvas[c].clear_pending) return 1;
+	if (g_canvas[c].win >= 0 && !g_canvas[c].fview) { /* a window: its next image, taken for the rest of the frame */
+		WgSurfaceTexture st;
+		memset(&st, 0, sizeof(st));
+		g_gpu.wgpuSurfaceGetCurrentTexture(g_canvas[c].surface, &st);
+		if (st.status != WG_SURFACE_TEXTURE_OPTIMAL && st.status != WG_SURFACE_TEXTURE_SUBOPTIMAL) {
+			if (st.texture) g_gpu.wgpuTextureRelease(st.texture);
+			gfx_configure(c); /* lost or out of date: made again, and this frame is skipped */
+			if (g_gv_canvas == c) g_ngv = 0;
+			return 1;
+		}
+		g_canvas[c].ftex = st.texture;
+		g_canvas[c].fview = g_gpu.wgpuTextureCreateView(st.texture, 0);
+		g_canvas[c].clear_pending = 1; /* what the image held before is not kept */
+	}
 	if (n) g_gpu.wgpuQueueWriteBuffer(g_gpu.queue, g_gfx_vbuf, 0, g_gv, (size_t)n * sizeof(GVert));
 	memset(&ca, 0, sizeof(ca));
-	ca.view = g_canvas[c].view;
+	ca.view = g_canvas[c].win >= 0 ? g_canvas[c].fview : g_canvas[c].view;
 	ca.depthSlice = WG_DEPTH_SLICE_UNDEFINED;
 	ca.loadOp = g_canvas[c].clear_pending ? WG_LOAD_CLEAR : WG_LOAD_LOAD;
 	ca.storeOp = WG_STORE_STORE;
@@ -244,7 +392,7 @@ static int gfx_flush(i32 c)
 	enc = g_gpu.wgpuDeviceCreateCommandEncoder(g_gpu.device, 0);
 	pass = g_gpu.wgpuCommandEncoderBeginRenderPass(enc, &rp);
 	if (n) {
-		g_gpu.wgpuRenderPassEncoderSetPipeline(pass, g_gfx_pipeline);
+		g_gpu.wgpuRenderPassEncoderSetPipeline(pass, g_gfx_pipes[g_canvas[c].pipe].pipeline);
 		g_gpu.wgpuRenderPassEncoderSetBindGroup(pass, 0, g_canvas[c].bg, 0, 0);
 		g_gpu.wgpuRenderPassEncoderSetVertexBuffer(pass, 0, g_gfx_vbuf, 0, (u64)n * sizeof(GVert));
 		g_gpu.wgpuRenderPassEncoderDraw(pass, (u32)n, 1, 0, 0);
@@ -306,6 +454,10 @@ static int gfx_read(i32 c, u32 x, u32 y, u32 w, u32 h, int (*row)(void *, const 
 	u32 stride = (w * 4 + 255) / 256 * 256, r;
 	const unsigned char *got;
 	int ok = 1, errors, k;
+	if (g_canvas[c].win >= 0) {
+		strcpy(g_gpu_error, "a window's pixels are not kept, so they cannot be read; draw into a canvas to read them");
+		return 0;
+	}
 	if (!gfx_flush(c)) return 0;
 	errors = g_gpu.errors;
 	memset(&bd, 0, sizeof(bd));
@@ -478,17 +630,23 @@ static void gpu_close(void)
 	for (k = 0; k < MAX_KERNELS; k++) gpu_forget(k);
 	for (k = 0; k < MAX_CANVAS; k++) {
 		if (!g_canvas[k].used) continue;
+		if (g_canvas[k].fview) g_gpu.wgpuTextureViewRelease(g_canvas[k].fview);
+		if (g_canvas[k].ftex) g_gpu.wgpuTextureRelease(g_canvas[k].ftex);
+		if (g_canvas[k].surface) g_gpu.wgpuSurfaceRelease(g_canvas[k].surface);
 		if (g_canvas[k].bg) g_gpu.wgpuBindGroupRelease(g_canvas[k].bg);
 		if (g_canvas[k].ubuf) g_gpu.wgpuBufferRelease(g_canvas[k].ubuf);
 		if (g_canvas[k].view) g_gpu.wgpuTextureViewRelease(g_canvas[k].view);
 		if (g_canvas[k].tex) g_gpu.wgpuTextureRelease(g_canvas[k].tex);
 		g_canvas[k].used = 0;
 	}
+	for (k = 0; k < g_ngfx_pipes; k++) {
+		g_gpu.wgpuBindGroupLayoutRelease(g_gfx_pipes[k].layout);
+		g_gpu.wgpuRenderPipelineRelease(g_gfx_pipes[k].pipeline);
+	}
+	g_ngfx_pipes = 0;
 	if (g_gfx_vbuf) g_gpu.wgpuBufferRelease(g_gfx_vbuf);
-	if (g_gfx_layout) g_gpu.wgpuBindGroupLayoutRelease(g_gfx_layout);
-	if (g_gfx_pipeline) g_gpu.wgpuRenderPipelineRelease(g_gfx_pipeline);
 	if (g_gfx_module) g_gpu.wgpuShaderModuleRelease(g_gfx_module);
-	g_gfx_vbuf = g_gfx_layout = g_gfx_pipeline = g_gfx_module = 0;
+	g_gfx_vbuf = g_gfx_module = 0;
 	g_gpu.wgpuQueueRelease(g_gpu.queue);
 	g_gpu.wgpuDeviceRelease(g_gpu.device);
 	g_gpu.wgpuAdapterRelease(g_gpu.adapter);
@@ -496,8 +654,57 @@ static void gpu_close(void)
 	g_gpu.ok = 0;
 }
 
-/* gfx_op OP ARGS OUT: the drawing builtin OP (its a) on its arguments; 1 with a value in OUT, 0 without one, -1 an error
- * in g_gpu_error. The path of save-png is a string the caller lets go of */
+/* gfx_show C: the frame of canvas C drawn - for a window, presented, and its events taken in; 0 with the error said */
+static int gfx_show(i32 c, Cell *out)
+{
+	i32 k = g_canvas[c].win;
+	if (k < 0) {
+		out->i = gfx_flush(c);
+		return (int)out->i;
+	}
+	if (!g_win[k].closed) {
+		if (!g_canvas[c].clear_pending && !(g_gv_canvas == c && g_ngv)) g_canvas[c].clear_pending = 1; /* a frame with nothing */
+		if (!gfx_flush(c)) return 0;
+		if (g_canvas[c].fview) {
+			g_gpu.wgpuSurfacePresent(g_canvas[c].surface);
+			g_gpu.wgpuTextureViewRelease(g_canvas[c].fview);
+			g_gpu.wgpuTextureRelease(g_canvas[c].ftex);
+			g_canvas[c].fview = g_canvas[c].ftex = 0;
+		}
+		g_canvas[c].clear_pending = 1; /* the next frame starts from its clear color */
+	}
+	wl_pump();
+	if (g_win[k].closed && g_canvas[c].surface) { /* the close button: the window goes, its canvas number stays */
+		if (g_canvas[c].fview) {
+			g_gpu.wgpuTextureViewRelease(g_canvas[c].fview);
+			g_gpu.wgpuTextureRelease(g_canvas[c].ftex);
+			g_canvas[c].fview = g_canvas[c].ftex = 0;
+		}
+		g_gpu.wgpuSurfaceRelease(g_canvas[c].surface); /* before the wl_surface it draws into */
+		g_canvas[c].surface = 0;
+		wl_close(k);
+	}
+	if (g_win[k].resized && !g_win[k].closed) { /* the compositor gave it a new size */
+		g_win[k].resized = 0;
+		gfx_configure(c);
+		if (!gfx_size(c, g_win[k].w, g_win[k].h)) return 0;
+	}
+	out->i = !g_win[k].closed;
+	return 1;
+}
+
+static i32 gfx_window_of(i64 c) /* canvas C's window; -1 with the error said */
+{
+	if (!gfx_canvas(c)) return -1;
+	if (g_canvas[c].win < 0) {
+		sprintf(g_gpu_error, "canvas %ld is an image, not a window: open-window gives one with keys and a mouse", (long)c);
+		return -1;
+	}
+	return g_canvas[c].win;
+}
+
+/* gfx_op OP ARGS OUT STR: the drawing builtin OP (its a) on its arguments; 1 with a value in OUT, 0 without one, -1 an
+ * error in g_gpu_error. STR is the string argument of save-png, open-window and key-down?, which the caller lets go of */
 static int gfx_op(i32 op, const Cell *a, Cell *out, const char *path)
 {
 	f32 p[8];
@@ -506,6 +713,34 @@ static int gfx_op(i32 op, const Cell *a, Cell *out, const char *path)
 		if ((c = gfx_canvas_new(a[0].i, a[1].i)) < 0) return -1;
 		out->i = c;
 		return 1;
+	}
+	if (op == 8) { /* open-window */
+		if (!path || (c = gfx_window(path, a[1].i, a[2].i)) < 0) return -1;
+		out->i = c;
+		return 1;
+	}
+	if (op >= 9) { /* a window's keys and mouse */
+		i32 k = gfx_window_of(a[0].i);
+		int r;
+		if (k < 0) return -1;
+		switch (op) {
+		case 9:
+			if (!path || (r = wl_key(k, path)) < 0) {
+				sprintf(g_gpu_error, "key-down?: no key \"%.60s\"; keys are letters, digits, f1 to f10, space, enter, escape, tab, backspace, minus, equal, up, down, left, right, shift, ctrl, alt", path ? path : "");
+				return -1;
+			}
+			out->i = r;
+			return 1;
+		case 10: out->f = g_win[k].mx; return 1;
+		case 11: out->f = g_win[k].my; return 1;
+		default:
+			if (a[1].i < 1 || a[1].i > 3) {
+				sprintf(g_gpu_error, "mouse-down?: button %ld; the buttons are 1 (left), 2 (right) and 3 (middle)", (long)a[1].i);
+				return -1;
+			}
+			out->i = g_win[k].buttons[a[1].i];
+			return 1;
+		}
 	}
 	if (!gfx_canvas(a[0].i)) return -1;
 	c = (i32)a[0].i;
@@ -554,9 +789,7 @@ static int gfx_op(i32 op, const Cell *a, Cell *out, const char *path)
 		return gfx_quad(c, p, 0, a[6].i) ? 0 : -1;
 	}
 	case 5: /* show-frame */
-		if (!gfx_flush(c)) return -1;
-		out->i = 1;
-		return 1;
+		return gfx_show(c, out) ? 1 : -1;
 	case 6: { /* canvas-pixel */
 		u32 v = 0;
 		if (a[1].i < 0 || a[2].i < 0 || a[1].i >= g_canvas[c].w || a[2].i >= g_canvas[c].h) {
