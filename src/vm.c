@@ -2135,8 +2135,15 @@ static int vm_run(i32 pc)
 			if (i < 0 || i >= hd[VH_LEN].i) return index_error(in->line, i, hd[VH_LEN].i);
 			sp -= 2;
 			et = vec_elem(v);
-			if (in->a == 1 && !g_tys[et].bits) s[sp] = g_heap[hd[VH_DATA].i + i]; /* a plain array */
-			else vec_load(hd, et, i, s + sp);
+			if (!g_tys[et].bits) { /* no bit columns: cell C at C * cap */
+				const Cell *d = g_heap + hd[VH_DATA].i + i;
+				i64 c, cap = hd[VH_CAP].i;
+				for (c = 0; c < in->a; c++) s[sp + c] = d[c * cap];
+			} else if (in->a == 1) { /* (vec bool): one bit */
+				s[sp].i = (i64)((u64)g_heap[hd[VH_DATA].i + (i >> 6)].i >> (i & 63) & 1);
+			} else {
+				vec_load(hd, et, i, s + sp);
+			}
 			if (g_tys[et].nleaf) refs(s + sp, 1, et, 1);
 			sp += in->a;
 			if (!in->b) obj_release(v);
@@ -2154,8 +2161,17 @@ static int vm_run(i32 pc)
 			if (i < 0 || i >= hd[VH_LEN].i) return index_error(in->line, i, hd[VH_LEN].i);
 			et = vec_elem(v);
 			if (g_tys[et].nleaf) cols_refs(hd[VH_DATA].i, et, hd[VH_CAP].i, i, 0); /* the element it replaces */
-			if (in->a == 1 && !g_tys[et].bits) g_heap[hd[VH_DATA].i + i] = s[sp + 2];
-			else vec_store(hd, et, i, s + sp + 2);
+			if (!g_tys[et].bits) {
+				Cell *d = g_heap + hd[VH_DATA].i + i;
+				i64 c, cap = hd[VH_CAP].i;
+				for (c = 0; c < in->a; c++) d[c * cap] = s[sp + 2 + c];
+			} else if (in->a == 1) { /* (vec bool): one bit */
+				Cell *w = g_heap + hd[VH_DATA].i + (i >> 6);
+				u64 bit = (u64)1 << (i & 63);
+				w->i = (i64)(s[sp + 2].i ? (u64)w->i | bit : (u64)w->i & ~bit);
+			} else {
+				vec_store(hd, et, i, s + sp + 2);
+			}
 			if (!in->b) obj_release(v);
 			NEXT;
 		}
