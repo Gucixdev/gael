@@ -581,7 +581,8 @@ dropping a method's new value; an `init` that does not give the struct.
 A growable array; a reference, so copies share it. `push` adds at the end (unit); `get` gives a copy of element `i`;
 `put` replaces it (unit); `pop` takes the last one off and gives `(some x)`, or `none` when it is empty; `len` counts.
 An index outside is a runtime error (`index 5 is outside a vec of 3`). A vec of structs is kept as columns, one per
-field (SoA); the program sees ordinary values.
+field (SoA); the program sees ordinary values. A column of bools is a run of bits, 64 to a cell: `(vec bool)` and a
+bool field of a struct in a vec (or a pool) take one bit per element instead of a cell, so a million flags are 125 KB.
 
 ## Maps
 

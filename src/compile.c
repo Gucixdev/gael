@@ -30,6 +30,7 @@ typedef struct {
 	u8 broken;    /* its declaration had an error (already reported): uses of it stay quiet */
 	i32 leaf_first, nleaf; /* the objects inside a value: g_leaves[leaf_first...] */
 	i32 gem;      /* the gem that declared it, 0 for the program and the built-in types */
+	u64 bits;     /* bit C: cell C of a value is a bool, which a vec or a pool keeps as one bit (0 past 64 cells) */
 } TyInfo;
 
 typedef struct {
@@ -45,23 +46,23 @@ typedef struct {
 #define MAX_FIELDS (1 << 18)
 #define MAX_VARIANTS (1 << 18)
 static const TyInfo g_prim_tys[T_USER] = {
-	{ "<error>", K_PRIM, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
-	{ "unit", K_PRIM, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
-	{ "int", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0 },
-	{ "float", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0 },
-	{ "bool", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0 },
-	{ "string", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0 },
-	{ "<none>", K_PRIM, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
-	{ "any value", K_PRIM, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
-	{ "i8", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0 },
-	{ "i16", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0 },
-	{ "i32", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0 },
-	{ "u8", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0 },
-	{ "u16", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0 },
-	{ "u32", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0 },
-	{ "u64", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0 },
-	{ "f32", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0 },
-	{ "NodePath", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0 } /* $Player/Sprite, the program's own text */
+	{ "<error>", K_PRIM, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+	{ "unit", K_PRIM, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+	{ "int", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+	{ "float", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+	{ "bool", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1 },
+	{ "string", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0 },
+	{ "<none>", K_PRIM, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+	{ "any value", K_PRIM, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+	{ "i8", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+	{ "i16", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+	{ "i32", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+	{ "u8", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+	{ "u16", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+	{ "u32", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+	{ "u64", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+	{ "f32", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+	{ "NodePath", K_PRIM, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0 } /* $Player/Sprite, the program's own text */
 };
 static TyInfo *g_tys; /* the built-in ones first */
 static i32 g_ntys = T_USER;
@@ -521,16 +522,21 @@ static o add_leaf(const Leaf *from, i32 shift, int guard)
 	for (j = 0; j < from->nguards; j++) g_guards[g_nguards++] = g_guards[from->guard_first + j] + shift;
 }
 
-/* set_leaves TYPE: where the objects inside a value of TYPE are, from the leaves of the types it holds */
+/* set_leaves TYPE: where the objects inside a value of TYPE are, from the leaves of the types it holds; and which of
+ * its cells are bools */
 static o set_leaves(Ty t)
 {
 	TyInfo *ti = &g_tys[t];
 	i32 first = g_nleaves, i, k;
+	ti->bits = 0;
 	if (ti->kind == K_VEC || ti->kind == K_MAP || ti->kind == K_POOL || ti->kind == K_TASK || ti->kind == K_FN) {
 		ti->leaf_first = 0;
 		ti->nleaf = 1;
 		return;
 	}
+	if (ti->cells <= 64 && ti->kind == K_OPTION) ti->bits = g_tys[ti->elem].bits << 1;
+	for (i = 0; ti->cells <= 64 && ti->kind == K_STRUCT && i < ti->n; i++)
+		ti->bits |= g_tys[g_fields[ti->first + i].type].bits << g_fields[ti->first + i].offset;
 	if (ti->kind == K_OPTION) {
 		const TyInfo *e = &g_tys[ti->elem];
 		for (k = 0; k < e->nleaf; k++) add_leaf(&g_leaves[e->leaf_first + k], 1, 1);

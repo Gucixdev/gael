@@ -406,6 +406,8 @@ tests/errors/div-zero.gael:1: runtime error: division by zero
   shows the fused code.
 - A map keeps its entries in insertion order and an index of slots; each slot holds an entry's number and 32 bits of
   its key's hash, so a probe reads an entry only when those agree.
+- A vec and a pool keep their elements as columns, one per cell of the element type (SoA); a column of bools is a run
+  of bits, so `(vec bool)` and the bool fields of structs in them take one bit each.
 - The VM's cells carry no type tag: the compiler has already proved the types, so `ADD_I` reads two ints. A value
   takes as many cells as its type says: one for a number, a bool, a string, an enum value or a vec, the sum of its
   fields for a struct, and one more than the value inside for an option. A string is one cell too: the program's own

@@ -65,6 +65,14 @@ potwierdzenia:
   1,2-3,9 raza szybsza od gaela, C 8-47 razy. Start 1,6 ms (C 1,4, Godot 0,9 s). Do poprawy: bool w vecu zajmuje 8 bajtów
   (sito: 104 MB, C 6 MB). Z tego: VM da się przyspieszyć (rejestry zamiast stosu, jak Lua), ale do C dojdzie się tylko
   przez gael → C.
+- **Bool jako bit (2026-10-25, jego pomysł „bool space”):** kolumna booli w vecu i w puli to ciąg bitów, 64 w komórce:
+  `(vec bool)` i pola bool structów trzymanych w vecach i pulach (flagi encji) zajmują bit zamiast 8 bajtów. Typ zna
+  swoje komórki-boole (maska `bits`, do 64 komórek); układ kolumn liczy przesunięcia z niej, więc reszta VM-u się nie
+  zmienia. Pojedynczy bool w zmiennej zostaje komórką - w rejestrze i tak jest 64-bitowy. Sito na 5 mln liczb: 104 MB →
+  3 MB. Tag opcji nie jest pakowany (na razie).
+- **Przezroczystość (jego słowa, 2026-10-25):** wszystko oczywiste, bez zbędnych komplikacji, każdy ma rozumieć, co się
+  dzieje na jego maszynie. Narzędzia do tego: `gael -d` (bytecode, także złożone rozkazy), dalej `gael -m`
+  (macroexpand) i podgląd C z gael → C.
 - **`@` = dla narzędzi, nie dla programu:** adnotacje, które nie wychodzą poza edytor i build deweloperski (`@export`,
   później `@debug`, `@test`); build wydania je pomija.
 - **Kolejność, język najpierw:** zmiana nazw zadań na korutyny; `gael -m` (macroexpand - przejrzystość makr);

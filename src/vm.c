@@ -335,24 +335,98 @@ static o refs(const Cell *v, i64 stride, Ty t, int retain)
 	}
 }
 
-/* A vec: [count][kind][len][cap][data]; its elements are columns (SoA): cell C of element I sits at data + C * cap + I,
- * so one field of every element is one run of memory. With one-cell elements that is a plain array */
+/* Columns. A vec's and a pool's elements are columns (SoA): cell C of every element in one run, CAP long, so one
+ * field of every element is one run of memory - with one-cell elements a plain array. A column of bools (the cells a
+ * type's bits mark) is a run of bits instead, 64 to a cell: (vec bool) and the flags of many structs take a bit each. */
+static i64 col_words(i64 cap) { return (cap + 63) >> 6; }
+
+static i64 popcount(u64 m)
+{
+	i64 n = 0;
+	for (; m; m &= m - 1) n++;
+	return n;
+}
+
+/* col_off TYPE C CAP: where column C of CAP elements of TYPE starts, in cells from the data */
+static i64 col_off(Ty et, i64 c, i64 cap)
+{
+	u64 m = g_tys[et].bits;
+	i64 nb;
+	if (!m) return c * cap;
+	nb = popcount(m & (((u64)1 << c) - 1)); /* a type with bools has at most 64 cells, so c < 64 */
+	return (c - nb) * cap + nb * col_words(cap);
+}
+
+/* cols_size TYPE CAP: the cells the columns of CAP elements of TYPE take */
+static i64 cols_size(Ty et, i64 cap)
+{
+	i64 nb = popcount(g_tys[et].bits);
+	return (cells(et) - nb) * cap + nb * col_words(cap);
+}
+
+/* cols_load DATA TYPE CAP I TO: element I of the columns at DATA into the cells at TO */
+static o cols_load(i64 data, Ty et, i64 cap, i64 i, Cell *to)
+{
+	const Cell *d = g_heap + data;
+	u64 m = g_tys[et].bits;
+	i64 c, n = cells(et), off = 0, w;
+	if (!m) {
+		for (c = 0; c < n; c++) to[c] = d[c * cap + i];
+		return;
+	}
+	for (c = 0, w = col_words(cap); c < n; c++) {
+		if (m >> c & 1) { to[c].i = (i64)((u64)d[off + (i >> 6)].i >> (i & 63) & 1); off += w; }
+		else { to[c] = d[off + i]; off += cap; }
+	}
+}
+
+/* cols_store DATA TYPE CAP I FROM: the cells at FROM become element I */
+static o cols_store(i64 data, Ty et, i64 cap, i64 i, const Cell *from)
+{
+	Cell *d = g_heap + data;
+	u64 m = g_tys[et].bits;
+	i64 c, n = cells(et), off = 0, w;
+	if (!m) {
+		for (c = 0; c < n; c++) d[c * cap + i] = from[c];
+		return;
+	}
+	for (c = 0, w = col_words(cap); c < n; c++) {
+		if (m >> c & 1) {
+			u64 word = (u64)d[off + (i >> 6)].i, bit = (u64)1 << (i & 63);
+			d[off + (i >> 6)].i = (i64)(from[c].i ? word | bit : word & ~bit);
+			off += w;
+		} else {
+			d[off + i] = from[c];
+			off += cap;
+		}
+	}
+}
+
+/* cols_refs DATA TYPE CAP I RETAIN: the objects element I holds get one owner more (RETAIN) or lose one; a bool is
+ * never one, nor an option's tag, so their cells are whole */
+static o cols_refs(i64 data, Ty et, i64 cap, i64 i, int retain)
+{
+	const Cell *d = g_heap + data;
+	i32 k, j, n = g_tys[et].nleaf, first = g_tys[et].leaf_first;
+	for (k = 0; k < n; k++) {
+		const Leaf *lf = &g_leaves[first + k];
+		i64 at;
+		for (j = 0; j < lf->nguards && d[col_off(et, g_guards[lf->guard_first + j], cap) + i].i; j++) {}
+		if (j < lf->nguards) continue;
+		at = d[col_off(et, lf->off, cap) + i].i;
+		if (retain) obj_retain(at);
+		else obj_release(at);
+	}
+}
+
+/* A vec: [count][kind][len][cap][data]; its elements are columns */
 enum { VH_LEN = 2, VH_CAP, VH_DATA, VH_CELLS };
 
 static Ty vec_elem(i64 v) { return g_tys[obj_type(v)].elem; }
-static Cell *vec_cell(const Cell *hd, i64 i, i64 c) { return g_heap + hd[VH_DATA].i + c * hd[VH_CAP].i + i; }
+static Cell *vec_cell0(const Cell *hd, i64 i) { return g_heap + hd[VH_DATA].i + i; } /* of a vec of one-cell, non-bool elements */
 
-static o vec_load(const Cell *hd, i64 i, i64 size, Cell *to)
-{
-	i64 c;
-	for (c = 0; c < size; c++) to[c] = *vec_cell(hd, i, c);
-}
-
-static o vec_store(const Cell *hd, i64 i, i64 size, const Cell *from)
-{
-	i64 c;
-	for (c = 0; c < size; c++) *vec_cell(hd, i, c) = from[c];
-}
+static o vec_load(const Cell *hd, Ty et, i64 i, Cell *to) { cols_load(hd[VH_DATA].i, et, hd[VH_CAP].i, i, to); }
+static o vec_store(const Cell *hd, Ty et, i64 i, const Cell *from) { cols_store(hd[VH_DATA].i, et, hd[VH_CAP].i, i, from); }
 
 /* A map: [count][kind][entries][used][cap][ent][slots][idx][info][shift]; its entries in the order they went in, each
  * an alive flag, the key and the value's cells; an index of SLOTS cells (a power of two), each 0 or an entry's number +
@@ -369,12 +443,11 @@ static i64 map_vsize(i64 m) { return MAP_ESIZE(g_heap + m) - 2; }
 static int map_strkeys(i64 m) { return (int)MAP_STRKEYS(g_heap + m); }
 
 /* A pool: [count][kind][cap][elements][free][data][gens]; a fixed number of slots, the elements as columns like a
- * vec's (cell C of slot I at data + C * cap + I). gens holds each slot's generation, odd while the slot holds an
+ * vec's. gens holds each slot's generation, odd while the slot holds an
  * element, then the free list: the next free slot after slot I at gens + cap + I, -1 at the end. A handle is the slot
  * in its low 32 bits and the generation it had in the high 32; the element is still there when they match */
 enum { PH_CAP = 2, PH_COUNT, PH_FREE, PH_DATA, PH_GENS, PH_CELLS };
 
-static Cell *slot_cell(const Cell *hd, i64 i, i64 c) { return g_heap + hd[PH_DATA].i + c * hd[PH_CAP].i + i; }
 
 /* pool_slot POOL HANDLE: the slot whose element HANDLE names, or -1 when the handle is stale */
 static i64 pool_slot(const Cell *hd, i64 h)
@@ -397,9 +470,9 @@ static o obj_free(i64 h)
 		break;
 	case KIND_VEC: {
 		Ty et = vec_elem(h);
-		i64 i, size = cells(et);
-		for (i = 0; g_tys[et].nleaf && i < hd[VH_LEN].i; i++) refs(vec_cell(hd, i, 0), hd[VH_CAP].i, et, 0);
-		part_free(hd[VH_DATA].i, hd[VH_CAP].i * size);
+		i64 i;
+		for (i = 0; g_tys[et].nleaf && i < hd[VH_LEN].i; i++) cols_refs(hd[VH_DATA].i, et, hd[VH_CAP].i, i, 0);
+		part_free(hd[VH_DATA].i, cols_size(et, hd[VH_CAP].i));
 		part_free(h, VH_CELLS);
 		break;
 	}
@@ -408,9 +481,9 @@ static o obj_free(i64 h)
 		i64 i, cap = hd[PH_CAP].i;
 		const Cell *gens = g_heap + hd[PH_GENS].i;
 		for (i = 0; g_tys[et].nleaf && i < cap; i++) {
-			if (gens[i].i & 1) refs(slot_cell(hd, i, 0), cap, et, 0);
+			if (gens[i].i & 1) cols_refs(hd[PH_DATA].i, et, cap, i, 0);
 		}
-		part_free(hd[PH_DATA].i, cap * cells(et));
+		part_free(hd[PH_DATA].i, cols_size(et, cap));
 		part_free(hd[PH_GENS].i, 2 * cap);
 		part_free(h, PH_CELLS);
 		break;
@@ -638,7 +711,7 @@ static o print_value(Ty type, const Cell *c)
 			st[n].t = ti->elem;
 			st[n].i = -1;
 			st[n].mark = top;
-			vec_load(hd, *i, cells(ti->elem), g_print_scratch + top);
+			vec_load(hd, ti->elem, *i, g_print_scratch + top);
 			st[n].c = g_print_scratch + top;
 			top += cells(ti->elem);
 			(*i)++;
@@ -890,14 +963,15 @@ static int read_into(FILE *in, i64 *res)
  * the heap is full */
 static i64 vec_new(Ty vt, i64 n, const Cell *from)
 {
-	i64 size = cells(g_tys[vt].elem), cap = n < 4 ? 4 : n, h = obj_alloc(VH_CELLS), data = obj_alloc(cap * size), i;
+	Ty et = g_tys[vt].elem;
+	i64 size = cells(et), cap = n < 4 ? 4 : n, h = obj_alloc(VH_CELLS), data = obj_alloc(cols_size(et, cap)), i;
 	if (h < 0 || data < 0) return -1;
 	obj_born(h, KIND_VEC, vt);
 	g_heap[h + VH_LEN].i = n;
 	g_heap[h + VH_CAP].i = cap;
 	g_heap[h + VH_DATA].i = data;
-	if (data) memset(g_heap + data, 0, (size_t)(cap * size) * sizeof(Cell));
-	for (i = 0; from && i < n; i++) vec_store(g_heap + h, i, size, from + i * size); /* the stack has them in a row */
+	if (data) memset(g_heap + data, 0, (size_t)cols_size(et, cap) * sizeof(Cell));
+	for (i = 0; from && i < n; i++) vec_store(g_heap + h, et, i, from + i * size); /* the stack has them in a row */
 	return h;
 }
 
@@ -905,22 +979,23 @@ static i64 vec_new(Ty vt, i64 n, const Cell *from)
 static int vec_push(i64 v, const Cell *from)
 {
 	Cell *hd = g_heap + v;
-	i64 size = cells(vec_elem(v));
+	Ty et = vec_elem(v);
 	if (hd[VH_LEN].i == hd[VH_CAP].i) { /* twice the room; each column moves to its place in it */
-		i64 old = hd[VH_CAP].i, cap = old * 2, data = hd[VH_DATA].i, c;
-		if (part_grow(data, old * size)) { /* in place: the last column first, each moves up */
-			for (c = size - 1; c > 0; c--)
-				memmove(g_heap + data + c * cap, g_heap + data + c * old, (size_t)hd[VH_LEN].i * sizeof(Cell));
-		} else {
-			if ((data = part_alloc(v, cap * size)) < 0) return 0;
-			for (c = 0; c < size; c++)
-				memcpy(g_heap + data + c * cap, vec_cell(hd, 0, c), (size_t)hd[VH_LEN].i * sizeof(Cell));
-			part_free(hd[VH_DATA].i, old * size);
+		i64 old = hd[VH_CAP].i, cap = old * 2, data = hd[VH_DATA].i, c, n = cells(et), len = hd[VH_LEN].i;
+		if (!g_tys[et].bits && part_grow(data, old * n)) { /* in place: the last column first, each moves up */
+			for (c = n - 1; c > 0; c--) memmove(g_heap + data + c * cap, g_heap + data + c * old, (size_t)len * sizeof(Cell));
+		} else { /* a bit column does not double with the room, so such a vec always moves */
+			if ((data = part_alloc(v, cols_size(et, cap))) < 0) return 0;
+			for (c = 0; c < n; c++) {
+				i64 run = c < 64 && (g_tys[et].bits >> c & 1) ? col_words(len) : len;
+				memcpy(g_heap + data + col_off(et, c, cap), g_heap + hd[VH_DATA].i + col_off(et, c, old), (size_t)run * sizeof(Cell));
+			}
+			part_free(hd[VH_DATA].i, cols_size(et, old));
 		}
 		hd[VH_DATA].i = data;
 		hd[VH_CAP].i = cap;
 	}
-	vec_store(hd, hd[VH_LEN].i, size, from);
+	vec_store(hd, et, hd[VH_LEN].i, from);
 	hd[VH_LEN].i++;
 	return 1;
 }
@@ -1058,7 +1133,7 @@ static int map_insert(i64 m, i64 key, const Cell *val)
 /* pool_new TYPE CAP: a pool of this type with CAP free slots; -1 when the heap is full */
 static i64 pool_new(Ty pt, i64 cap)
 {
-	i64 size = cells(g_tys[pt].elem), h = obj_alloc(PH_CELLS), data = obj_alloc(cap * size), gens = obj_alloc(2 * cap), i;
+	i64 h = obj_alloc(PH_CELLS), data = obj_alloc(cols_size(g_tys[pt].elem, cap)), gens = obj_alloc(2 * cap), i;
 	if (h < 0 || data < 0 || gens < 0) return -1;
 	obj_born(h, KIND_POOL, pt);
 	g_heap[h + PH_CAP].i = cap;
@@ -1080,6 +1155,23 @@ static i64 pool_new(Ty pt, i64 cap)
 static i64 *g_kept;      /* pairs: an object copied, its count */
 static Cell **g_kwork;   /* cells of the copies that still hold an object of the arena */
 static i64 g_nkept, g_nkwork, g_kcap;
+
+/* cols_keep DATA TYPE CAP I: keep_leaves for element I of columns */
+static int cols_keep(i64 data, Ty et, i64 cap, i64 i)
+{
+	Cell *d = g_heap + data;
+	i32 k, j, n = g_tys[et].nleaf, first = g_tys[et].leaf_first;
+	for (k = 0; k < n; k++) {
+		const Leaf *lf = &g_leaves[first + k];
+		Cell *c = d + col_off(et, lf->off, cap) + i;
+		for (j = 0; j < lf->nguards && d[col_off(et, g_guards[lf->guard_first + j], cap) + i].i; j++) {}
+		if (j < lf->nguards) continue;
+		if (!in_inner(c->i)) obj_retain(c->i); /* shared by the copy */
+		else if (g_nkwork == g_kcap) return 0;
+		else g_kwork[g_nkwork++] = c;
+	}
+	return 1;
+}
 
 static int keep_leaves(Cell *v, i64 stride, Ty t)
 {
@@ -1113,13 +1205,13 @@ static i64 keep_copy(i64 h)
 		if ((n = heap_alloc(size)) < 0) return -1;
 		memcpy(g_heap + n, hd, (size_t)size * sizeof(Cell));
 	} else if (kind == KIND_VEC) {
-		i64 size = cells(g_tys[t].elem) * hd[VH_CAP].i;
+		i64 size = cols_size(g_tys[t].elem, hd[VH_CAP].i);
 		if ((n = heap_alloc(VH_CELLS)) < 0 || (a = heap_alloc(size)) < 0) return -1;
 		memcpy(g_heap + n, hd, VH_CELLS * sizeof(Cell));
 		if (a) memcpy(g_heap + a, g_heap + hd[VH_DATA].i, (size_t)size * sizeof(Cell));
 		g_heap[n + VH_DATA].i = a;
 		for (i = 0; g_tys[g_tys[t].elem].nleaf && i < hd[VH_LEN].i; i++)
-			if (!keep_leaves(vec_cell(g_heap + n, i, 0), hd[VH_CAP].i, g_tys[t].elem)) return -1;
+			if (!cols_keep(a, g_tys[t].elem, hd[VH_CAP].i, i)) return -1;
 	} else if (kind == KIND_MAP) {
 		i64 esize = 2 + cells(g_tys[t].elem);
 		if ((n = heap_alloc(MH_CELLS)) < 0 || (a = heap_alloc(hd[MH_CAP].i * esize)) < 0 || (b = heap_alloc(hd[MH_SLOTS].i)) < 0) return -1;
@@ -1135,7 +1227,7 @@ static i64 keep_copy(i64 h)
 			if (!keep_leaves(ent + 2, 1, g_tys[t].elem)) return -1;
 		}
 	} else if (kind == KIND_POOL) {
-		i64 cap = hd[PH_CAP].i, size = cells(g_tys[t].elem) * cap;
+		i64 cap = hd[PH_CAP].i, size = cols_size(g_tys[t].elem, cap);
 		if ((n = heap_alloc(PH_CELLS)) < 0 || (a = heap_alloc(size)) < 0 || (b = heap_alloc(2 * cap)) < 0) return -1;
 		memcpy(g_heap + n, hd, PH_CELLS * sizeof(Cell));
 		if (a) memcpy(g_heap + a, g_heap + hd[PH_DATA].i, (size_t)size * sizeof(Cell));
@@ -1143,7 +1235,7 @@ static i64 keep_copy(i64 h)
 		g_heap[n + PH_DATA].i = a;
 		g_heap[n + PH_GENS].i = b;
 		for (i = 0; g_tys[g_tys[t].elem].nleaf && i < cap; i++)
-			if ((g_heap[b + i].i & 1) && !keep_leaves(slot_cell(g_heap + n, i, 0), cap, g_tys[t].elem)) return -1;
+			if ((g_heap[b + i].i & 1) && !cols_keep(a, g_tys[t].elem, cap, i)) return -1;
 	}
 	g_heap[n + OB_RC].i = 1;
 	g_objects[kind]++;
@@ -1906,7 +1998,7 @@ static int vm_run(i32 pc)
 			int ok = text_room();
 			MADE(v);
 			for (k = 0; ok && k < hd[VH_LEN].i; k++) {
-				i64 e = vec_cell(hd, k, 0)->i;
+				i64 e = vec_cell0(hd, k)->i;
 				if (k) ok = text_put(STR_P(sep), STR_LEN(sep));
 				if (ok) ok = text_put(STR_P(e), STR_LEN(e));
 			}
@@ -2007,7 +2099,7 @@ static int vm_run(i32 pc)
 		CASE(OP_ARGS) {
 			i64 h = vec_new(g_vec_str, g_nargs, 0), k;
 			if (h < 0) return vm_error(in->line, HEAP_FULL);
-			for (k = 0; k < g_nargs; k++) vec_cell(g_heap + h, k, 0)->i = g_arg_cells[k];
+			for (k = 0; k < g_nargs; k++) vec_cell0(g_heap + h, k)->i = g_arg_cells[k];
 			s[sp++].i = h;
 			NEXT;
 		}
@@ -2038,11 +2130,14 @@ static int vm_run(i32 pc)
 		CASE(OP_VEC_GET) { /* a copy of the element: the vec keeps its own */
 			i64 v = s[sp - 2].i, i = s[sp - 1].i;
 			const Cell *hd = g_heap + v;
+			Ty et;
 			MADE(v);
 			if (i < 0 || i >= hd[VH_LEN].i) return index_error(in->line, i, hd[VH_LEN].i);
 			sp -= 2;
-			vec_load(hd, i, in->a, s + sp);
-			refs(s + sp, 1, vec_elem(v), 1);
+			et = vec_elem(v);
+			if (in->a == 1 && !g_tys[et].bits) s[sp] = g_heap[hd[VH_DATA].i + i]; /* a plain array */
+			else vec_load(hd, et, i, s + sp);
+			if (g_tys[et].nleaf) refs(s + sp, 1, et, 1);
 			sp += in->a;
 			if (!in->b) obj_release(v);
 			NEXT;
@@ -2050,14 +2145,17 @@ static int vm_run(i32 pc)
 		CASE(OP_VEC_PUT) {
 			const Cell *hd;
 			i64 i, v;
+			Ty et;
 			sp -= in->a + 2;
 			v = s[sp].i;
 			hd = g_heap + v;
 			i = s[sp + 1].i;
 			MADE(v);
 			if (i < 0 || i >= hd[VH_LEN].i) return index_error(in->line, i, hd[VH_LEN].i);
-			refs(vec_cell(hd, i, 0), hd[VH_CAP].i, vec_elem(v), 0); /* the element it replaces */
-			vec_store(hd, i, in->a, s + sp + 2);
+			et = vec_elem(v);
+			if (g_tys[et].nleaf) cols_refs(hd[VH_DATA].i, et, hd[VH_CAP].i, i, 0); /* the element it replaces */
+			if (in->a == 1 && !g_tys[et].bits) g_heap[hd[VH_DATA].i + i] = s[sp + 2];
+			else vec_store(hd, et, i, s + sp + 2);
 			if (!in->b) obj_release(v);
 			NEXT;
 		}
@@ -2071,7 +2169,7 @@ static int vm_run(i32 pc)
 			} else {
 				hd[VH_LEN].i--;
 				s[sp - 1].i = 1;
-				vec_load(hd, hd[VH_LEN].i, in->a, s + sp);
+				vec_load(hd, vec_elem(v), hd[VH_LEN].i, s + sp);
 			}
 			sp += in->a;
 			if (!in->b) obj_release(v);
@@ -2142,14 +2240,14 @@ static int vm_run(i32 pc)
 		}
 		CASE(OP_MAP_KEYS)
 		CASE(OP_MAP_VALUES) { /* a: the vec type made; its elements are copies */
-			i64 m = s[sp - 1].i, e, k = 0, v, size = cells(g_tys[in->a].elem), esize = 2 + map_vsize(m);
+			i64 m = s[sp - 1].i, e, k = 0, v, esize = 2 + map_vsize(m);
 			MADE(m);
 			if ((v = vec_new((Ty)in->a, g_heap[m + MH_COUNT].i, 0)) < 0) return vm_error(in->line, HEAP_FULL);
 			for (e = 0; e < g_heap[m + MH_USED].i; e++) {
 				const Cell *ent = g_heap + g_heap[m + MH_ENT].i + e * esize;
 				if (!ent[0].i) continue;
 				refs(in->op == OP_MAP_KEYS ? ent + 1 : ent + 2, 1, g_tys[in->a].elem, 1);
-				vec_store(g_heap + v, k++, size, in->op == OP_MAP_KEYS ? ent + 1 : ent + 2);
+				vec_store(g_heap + v, g_tys[in->a].elem, k++, in->op == OP_MAP_KEYS ? ent + 1 : ent + 2);
 			}
 			if (!in->b) obj_release(m);
 			s[sp - 1].i = v;
@@ -2168,7 +2266,7 @@ static int vm_run(i32 pc)
 		}
 		CASE(OP_POOL_SPAWN) { /* the element moves into the first free slot */
 			Cell *hd, *gens;
-			i64 p, i, c, cap, h;
+			i64 p, i, cap, h;
 			sp -= in->a + 1;
 			p = s[sp].i;
 			MADE(p);
@@ -2183,19 +2281,19 @@ static int vm_run(i32 pc)
 			hd[PH_FREE].i = gens[cap + i].i;
 			gens[i].i = (gens[i].i + 1) & 0xffffffff; /* odd: it holds an element */
 			hd[PH_COUNT].i++;
-			for (c = 0; c < in->a; c++) *slot_cell(hd, i, c) = s[sp + 1 + c];
+			cols_store(hd[PH_DATA].i, g_tys[obj_type(p)].elem, cap, i, s + sp + 1);
 			h = handle_of(hd, i);
 			if (!in->b) obj_release(p);
 			s[sp++].i = h;
 			NEXT;
 		}
 		CASE(OP_POOL_GET) { /* a copy of the element: the pool keeps its own */
-			i64 p = s[sp - 2].i, i, c;
+			i64 p = s[sp - 2].i, i;
 			const Cell *hd = g_heap + p;
 			MADE(p);
 			if ((i = pool_slot(hd, s[sp - 1].i)) < 0) return vm_error(in->line, STALE);
 			sp -= 2;
-			for (c = 0; c < in->a; c++) s[sp + c] = *slot_cell(hd, i, c);
+			cols_load(hd[PH_DATA].i, g_tys[obj_type(p)].elem, hd[PH_CAP].i, i, s + sp);
 			refs(s + sp, 1, g_tys[obj_type(p)].elem, 1);
 			sp += in->a;
 			if (!in->b) obj_release(p);
@@ -2203,14 +2301,14 @@ static int vm_run(i32 pc)
 		}
 		CASE(OP_POOL_PUT) {
 			const Cell *hd;
-			i64 p, i, c;
+			i64 p, i;
 			sp -= in->a + 2;
 			p = s[sp].i;
 			MADE(p);
 			hd = g_heap + p;
 			if ((i = pool_slot(hd, s[sp + 1].i)) < 0) return vm_error(in->line, STALE);
-			refs(slot_cell(hd, i, 0), hd[PH_CAP].i, g_tys[obj_type(p)].elem, 0); /* the element it replaces */
-			for (c = 0; c < in->a; c++) *slot_cell(hd, i, c) = s[sp + 2 + c];
+			cols_refs(hd[PH_DATA].i, g_tys[obj_type(p)].elem, hd[PH_CAP].i, i, 0); /* the element it replaces */
+			cols_store(hd[PH_DATA].i, g_tys[obj_type(p)].elem, hd[PH_CAP].i, i, s + sp + 2);
 			if (!in->b) obj_release(p);
 			NEXT;
 		}
@@ -2222,7 +2320,8 @@ static int vm_run(i32 pc)
 			i = pool_slot(hd, s[sp - 1].i);
 			sp -= 2;
 			s[sp].i = i >= 0;
-			for (c = 0; c < in->a; c++) s[sp + 1 + c].i = i >= 0 ? slot_cell(hd, i, c)->i : 0;
+			if (i >= 0) cols_load(hd[PH_DATA].i, g_tys[obj_type(p)].elem, hd[PH_CAP].i, i, s + sp + 1);
+			else for (c = 0; c < in->a; c++) s[sp + 1 + c].i = 0;
 			if (i >= 0 && in->op == OP_POOL_LOOKUP) {
 				refs(s + sp + 1, 1, g_tys[obj_type(p)].elem, 1); /* a copy: the pool keeps its own */
 			} else if (i >= 0) { /* the element moves out, the slot goes back on the free list */
