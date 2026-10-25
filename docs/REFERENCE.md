@@ -56,6 +56,7 @@ How the entries read:
 | `char` | the one-byte string of a byte | [Strings](#strings) |
 | `coroutine` | start a function in a coroutine, a function on a stack of its own; its type | [Coroutines](#coroutines) |
 | `coroutine-time` | the coroutines' clock | [Coroutines](#coroutines) |
+| `compile-error` | in a macro's template: a compile error with these words where the macro is used | [Macros](#macros) |
 | `cos` | cosine | [Math](#math) |
 | `def` | a global | [Top level](#top-level) |
 | `defmacro` | a macro | [Macros](#macros) |
@@ -740,6 +741,10 @@ the top level, even where the use has a local of that name. A macro can be used 
 definition) and in the files that use it. At the top level it can make globals, functions, types and macros; what it
 makes with `(do ...)` there is spliced in as separate forms.
 
+A template that turns a use down writes `(compile-error "what is wrong")`: when the use expands to it, that is a compile
+error with these words at the place of the use. `gael -m FILE` prints the file with every macro expanded, those inside
+functions as well, laid out to read - the code the compiler checks.
+
 Compile errors at the definition: a rule that is not `(pattern template)`, a pattern variable twice or with a dot in
 its name, `...` with nothing before it or twice in a list, a variable used under fewer `...` than it was matched under,
 a `...` that repeats nothing. At a use: no rule matches, variables under one `...` that matched different numbers of
@@ -879,6 +884,7 @@ gael run FILE ARGS...  the same
 gael check FILE        only compile: report every error and warning, run nothing (also gael -c)
 gael test FILE...      run the files' defs, then each of their (@test "name" ...): ok or FAIL each
 gael -d FILE           compile and print the bytecode
+gael -m FILE           print FILE with its macros expanded
 gael -e CODE ARGS...   compile and run CODE
 gael -x FILE           list FILE's @export globals and its (@warn ...) and (@err ...) marks
 gael -n                the built-in names, one a line

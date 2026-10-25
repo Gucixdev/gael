@@ -181,6 +181,8 @@ static struct {
 } g_tests[MAX_TESTS];
 static i32 g_ntests;
 static int g_test_mode; /* gael test: the top level's own forms are compiled but jumped over; defs run, then tests */
+static int g_show_expanded; /* gael -m: the unit's forms are printed once its macros have expanded */
+
 
 static Gem g_gems[MAX_GEMS]; /* zero until used, so it costs the binary nothing; gem 0 is set in compile_init */
 static i32 g_ngems = 1;
@@ -548,7 +550,7 @@ static const char *const g_reserved[] = {
 	"nand", "nor", "xor", "xnor", "bit-and", "bit-or", "bit-xor", "bit-not", "shl", "shr",
 	"pool", "spawn", "handle", "arena", "keep", "fn", "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64",
 	"defmacro", "...", "gem", "enable", "disable", "return", "coroutine", "poll", "sleep", "yield", "step-coroutines", "run-coroutines", "done?", "coroutine-time",
-	"string-of", "name-of", "assert"
+	"string-of", "name-of", "assert", "compile-error"
 };
 
 
@@ -1995,6 +1997,12 @@ static o start_list(Frame *f)
 		return;
 	}
 	else if (!strcmp(s, "assert")) f->form = F_ASSERT;
+	else if (!strcmp(s, "compile-error")) { /* a macro says its use is wrong: a compile error with its words, where it is used */
+		if (f->k != 1 || g_nodes[f->cur].kind != N_STR) err_node(f->node, "compile-error takes one string: (compile-error \"what is wrong\")");
+		else err_node(f->node, "%.800s", g_nodes[f->cur].text);
+		finish(T_ERR);
+		return;
+	}
 	else if (!strcmp(s, "coroutine")) { /* (coroutine (f args...)): the call, compiled to run in a new coroutine */
 		i32 call = f->cur, h = call >= 0 && g_nodes[call].kind == N_LIST ? first_of(call) : -1;
 		if (f->k != 1 || !is_sym(h) || (fi = find_fn(g_nodes[h].text)) < 0 || find_local(g_nodes[h].text, g_nodes[h].stamp) >= 0) {
@@ -2096,6 +2104,12 @@ static o start_list(Frame *f)
 		if ((fi = find_macro(s)) >= 0) { /* a macro: what it expands to is compiled in its place */
 			i32 x = gem_use(head, g_macros[fi].gem) ? macro_expand(fi, f->node) : -1;
 			if (x < 0) { finish(T_ERR); return; }
+			if (g_show_expanded) { /* gael -m: the expansion takes the use's place in the tree, to be printed */
+				i32 nx = g_nodes[f->node].next;
+				g_nodes[f->node] = g_nodes[x];
+				g_nodes[f->node].next = nx;
+				x = f->node;
+			}
 			f->node = x;
 			f->cur = -1;
 			f->k = 0;
@@ -4926,6 +4940,66 @@ static o fuse(i32 from, i32 to)
 	}
 }
 
+/* show_form NODE: one top-level form as source on stdout, the way a person would lay it out: a list that fits in
+ * 118 columns on one line; else its head with the names and values after it and its first list (a defn's parameters,
+ * a let's bindings), then each part after that on a line of its own, two spaces further in, laid out the same way */
+static o show_form(i32 n)
+{
+	static char buf[1 << 16];
+	static struct {
+		i32 node, indent, child;
+		u8 open;
+	} st[MAX_DEPTH];
+	i32 sp = 0, c, k;
+	size_t at, line;
+	int lists;
+	st[sp].node = n;
+	st[sp].indent = 0;
+	st[sp].open = 0;
+	sp++;
+	while (sp > 0) {
+		i32 me = st[sp - 1].node, ind = st[sp - 1].indent;
+		if (st[sp - 1].open) {
+			if ((c = st[sp - 1].child) < 0) { putchar(')'); sp--; continue; }
+			st[sp - 1].child = next_of(c);
+			putchar('\n');
+			for (k = 0; k < ind + 2; k++) putchar(' ');
+			if (sp == MAX_DEPTH) { fputs("...", stdout); continue; }
+			st[sp].node = c;
+			st[sp].indent = ind + 2;
+			st[sp].open = 0;
+			sp++;
+			continue;
+		}
+		at = 0;
+		buf[0] = 0;
+		nprint(g_nodes, me, buf, sizeof(buf), &at);
+		if ((i32)at + ind <= 118 || g_nodes[me].kind != N_LIST || first_of(me) < 0) {
+			fputs(buf, stdout);
+			sp--;
+			continue;
+		}
+		putchar('(');
+		at = 0;
+		nprint(g_nodes, first_of(me), buf, sizeof(buf), &at);
+		fputs(buf, stdout);
+		line = (size_t)ind + 1 + at;
+		lists = 0;
+		for (c = next_of(first_of(me)); c >= 0; c = next_of(c)) { /* what stays on the head's line */
+			at = 0;
+			nprint(g_nodes, c, buf, sizeof(buf), &at);
+			if (line + 1 + at > 118 || (g_nodes[c].kind == N_LIST && lists)) break;
+			putchar(' ');
+			fputs(buf, stdout);
+			line += 1 + at;
+			lists += g_nodes[c].kind == N_LIST;
+		}
+		st[sp - 1].child = c;
+		st[sp - 1].open = 1;
+	}
+	putchar('\n');
+}
+
 /* everything a failed unit may have added, so the REPL can forget it */
 static struct {
 	i32 ncode, nints, nfloats, nstrs, nfns, nglobals, nglobal_cells, ntys, nfields, nvariants, nfmts, nfmt_tys, nleaves, nguards,
@@ -5041,6 +5115,12 @@ static i32 compile_unit(i32 top, int repl)
 		if (!ended && head_is(n, "exit") && !g_nodes[n].stamp) ended = g_nodes[n].line;
 	}
 	emit(OP_HALT, 0, 0, 0);
+	if (g_show_expanded) { /* gael -m: compiling expanded the macros inside the forms too, in place */
+		for (n = top; n >= 0; n = next_of(n)) {
+			if (!head_is(n, "defmacro")) show_form(n);
+		}
+		g_show_expanded = 0;
+	}
 	g_code[entry].a = g_maxslots;
 	g_code[entry].b = g_maxdepth;
 	if (!g_unit.nerrors) {

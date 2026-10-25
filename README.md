@@ -36,6 +36,7 @@ gael check FILE        only compile: report every error and warning, run nothing
 gael test FILE...      compile the files, run their defs (not the rest of their top level), then each
                        (@test "name" ...) in them: ok or FAIL for each; exit 1 when one failed
 gael -d FILE           compile and print the bytecode
+gael -m FILE           print FILE with its macros expanded: the code the compiler checks
 gael -e CODE ARGS...   compile and run CODE
 gael -x FILE           compile FILE and list its @export globals (name : type = value) and its
                        (@warn ...) and (@err ...) marks, the way an editor shows them
@@ -348,7 +349,17 @@ level, even where the use has a local of that name. A macro can be used anywhere
 use that file; at the top level it can make globals, functions and types, several at once with `(do ...)`.
 `examples/macros.gael` has more. In a template, `(string-of x)` and `(name-of "print-" x)` do what `#` and `##` do in
 C, so one list written once can make an enum, a table of its names and a function per entry: the x-macros of
-`examples/xmacros.gael`.
+`examples/xmacros.gael`. A macro that refuses a use says why with `(compile-error "...")`, at the place of the use.
+
+`gael -m FILE` prints the code the compiler checks, every macro expanded - also those inside functions - and laid
+out to read:
+
+```
+$ ./gael -m tests/expand/swap.gael
+(let ((x 1) (y 2))
+  (let ((tmp x)) (set x y) (set y tmp))
+  (when (not (< x y)) (println "x %d is not below y %d now" x y)))
+```
 
 A `fn` can use the locals of the code around it, a closure: it keeps a copy of each one it uses, made when the `fn`
 is made (as a GDScript lambda does). Setting one inside changes the fn's own copy, which stays from call to call, so
@@ -490,8 +501,8 @@ tests/errors/div-zero.gael:1: runtime error: division by zero
 
 ## Status
 
-Version 0.3, tested on Linux x86-64 with gcc 13.3 and clang 18.1. `./test` passes 137 checks per build (43 examples, 79
-compile and runtime error cases, three warning cases, one gael test case, three REPL sessions, eight README examples)
+Version 0.3, tested on Linux x86-64 with gcc 13.3 and clang 18.1. `./test` passes 139 checks per build (43 examples, 80
+compile and runtime error cases, three warning cases, one gael test case, three REPL sessions, nine README examples)
 with gcc, clang, gcc with the plain switch dispatch and gcc with both sanitizers, every run with `GAEL_CHECK=1`. GitHub
 Actions runs shellcheck on the scripts and `./test` on every push (`.github/workflows/test.yml`, ubuntu-24.04).
 

@@ -31,13 +31,13 @@ dokumentacja mieści się w kontekście.
       wytnie je, gdy powstanie.
 - [x] `gael test PLIK...` (definicje się wykonują, reszta najwyższego poziomu nie; każdy test osobno, ok/FAIL, kod 1
       przy porażce), `gael run`, `gael check`; `examples/testing.gael`.
-- [ ] `(compile-error "...")` dla makr: błąd kompilacji z własnym komunikatem, gdy makro dostało złe argumenty.
+- [x] `(compile-error "...")` dla makr: błąd kompilacji z własnym komunikatem w miejscu użycia makra.
 - [x] Nawiasy: przy brakującym albo nadmiarowym `)` gael czyta wcięcia jak parinfer i wskazuje linię
       (`a ')' is missing at the end of line 4: line 5 is indented as if the ( at 4:8 ended there`) (`0e3e2a2`).
 - [ ] Przegląd wszystkich komunikatów: plik:linia:kolumna, co jest źle, poprawna forma.
 - [ ] Ściąga dla modeli (`docs/MODELS.md`, 2-4 tys. tokenów) i skill `gael` w claude-config; test pilnuje, że każda
       nazwa z `gael -n` jest w ściądze.
-- [ ] `gael -m`: rozwinięte makra, żeby było widać, co z nich wychodzi.
+- [x] `gael -m`: plik z rozwiniętymi makrami (także w funkcjach), ułożony do czytania - to, co sprawdza kompilator.
 
 ## 1b. Biblioteka: porty z holyc do `gems/`
 

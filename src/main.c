@@ -46,6 +46,7 @@ static const char *const g_usage[] = {
 	"       gael test FILE...      compile the files, run their defs (not the rest of their top level), then each\n",
 	"                              (@test \"name\" ...) in them: ok or FAIL for each; exit 1 when one failed\n",
 	"       gael -d FILE           compile and print the bytecode\n",
+	"       gael -m FILE           print FILE with its macros expanded: the code the compiler checks\n",
 	"       gael -e CODE ARGS...   compile and run CODE\n",
 	"       gael -x FILE           compile FILE and list its @export globals (name : type = value) and its\n",
 	"                              (@warn ...) and (@err ...) marks, the way an editor shows them\n",
@@ -62,7 +63,7 @@ static const char *const g_usage_env[] = { /* one string each: C89 promises only
 	0
 };
 
-enum { RUN, CHECK, DIS };
+enum { RUN, CHECK, DIS, EXPAND };
 
 /* Every file a program uses, once, by its canonical path */
 #define MAX_MODULES (1 << 14)
@@ -421,6 +422,7 @@ static int load(const char *name, const char *src, size_t len, int repl, int mod
 		}
 		g_unit_gem = so->gem;
 		g_unit_main = so->main;
+		g_show_expanded = mode == EXPAND && depth == 1; /* gael -m: the file it was given, not those it uses */
 		entry = compile_unit(top, repl && depth == 1);
 		if (entry < 0) return load_failed();
 		g_unit_gem = 0;
@@ -650,8 +652,8 @@ int main(int argc, char **argv)
 		args_init(argc - 2 - k, argv + 2 + k);
 		st = load(argv[1 + k], 0, 0, 0, RUN);
 		if (!st) st = leaks();
-	} else if (argc == 3 && (!strcmp(argv[1], "-c") || !strcmp(argv[1], "-d"))) {
-		st = load(argv[2], 0, 0, 0, argv[1][1] == 'c' ? CHECK : DIS);
+	} else if (argc == 3 && (!strcmp(argv[1], "-c") || !strcmp(argv[1], "-d") || !strcmp(argv[1], "-m"))) {
+		st = load(argv[2], 0, 0, 0, argv[1][1] == 'c' ? CHECK : argv[1][1] == 'd' ? DIS : EXPAND);
 	} else if (argc == 3 && !strcmp(argv[1], "-x")) { /* the inspector, as text */
 		i32 i;
 		st = load(argv[2], 0, 0, 0, CHECK);
