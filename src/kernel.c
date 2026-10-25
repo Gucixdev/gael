@@ -7,13 +7,15 @@
  * go to the GPU once per run, as constants), and uses let, set, if, when, do, arithmetic, comparisons, logic, bits,
  * math, min, max, abs, clamp and the conversions between the three types. Anything else does not run on a GPU and is
  * a compile error that says what to write. The same body is compiled for the VM too, as a for over the vec that puts
- * each element back; that runs when there is no GPU, so a program works the same with or without one - as far as the
- * GPU's arithmetic goes: WGSL lets division and sin be a few ulps off, an int divided by zero gives the int, and a
- * float too big for an int gives the nearest int, where the VM stops with an error.
+ * each element back; that runs when there is no GPU, so a program works the same with or without one, but for the
+ * GPU's floats: WGSL lets division and sin be a few ulps off. Where the VM stops with an error - an int divided by
+ * zero, a float too big for an int, a shift past the bits - the kernel calls a function that marks the run failed
+ * instead of giving WGSL's number; then nothing comes back and the VM runs the loop, which stops where it should.
  *
  * Here the body becomes WGSL: one storage buffer per field it uses (a vec's fields are columns already, so each is
  * copied as it is), a uniform with the count and the values from around, and the body as statements, element idx.
- * gpu.c runs it through wgpu. No recursion: the body is walked with a stack of things to write. */
+ * The WGSL is written after the VM's compile of the body, which gives every literal and every form its type (2.0f,
+ * and whether a / divides ints). gpu.c runs it through wgpu. No recursion: the body is walked with a stack. */
 
 #define MAX_KERNELS 256
 #define MAX_KCOLS 8     /* WebGPU's default for storage buffers in one stage */
@@ -37,6 +39,7 @@ typedef struct {
 	u8 cap_ty[MAX_KCAPS];
 	i32 cap_at[MAX_KCAPS];
 	i32 body, enode, inode;     /* the body and the names of p and i, for the WGSL, written after the VM's compile */
+	u8 fault;                   /* it divides ints, makes ints of floats or shifts: it can fail where the VM stops */
 } Kernel;
 
 static Kernel g_kernels[MAX_KERNELS];
@@ -336,6 +339,44 @@ static o kw_expr(i32 n)
 		g_kw.bad |= 2; /* the wrong number of values: the VM's compile of the body says what is wrong */
 		return;
 	}
+	/* where the VM stops with an error - an int divided by zero, a float too big for an int, a shift past the bits -
+	 * WGSL would give a number; these call a function that marks the run failed instead, and the VM runs it again */
+	if ((!strcmp(s, "/") || !strcmp(s, "%")) && (g_nodes[n].lty == T_I32 || g_nodes[n].lty == T_U32)) {
+		static char name[3][2][16];
+		i32 t = g_nodes[n].lty == T_I32 ? 0 : 1, o = s[0] == '/' ? 0 : 1;
+		sprintf(name[0][0], "gael_div_i32");
+		sprintf(name[0][1], "gael_rem_i32");
+		sprintf(name[1][0], "gael_div_u32");
+		sprintf(name[1][1], "gael_rem_u32");
+		g_kw.k.fault = 1;
+		for (k = na - 1; k >= 1; k--) {
+			kw_push(KW_TEXT, -1, ")");
+			kw_push(KW_EXPR, args[k], 0);
+			kw_push(KW_TEXT, -1, ", ");
+		}
+		kw_push(KW_EXPR, args[0], 0);
+		for (k = 1; k < na; k++) {
+			kw_put(name[t][o]);
+			kw_put("(");
+		}
+		return;
+	}
+	if ((!strcmp(s, "i32") || !strcmp(s, "u32")) && na == 1 && g_nodes[args[0]].lty == T_F32) {
+		g_kw.k.fault = 1;
+		kw_push(KW_TEXT, -1, ")");
+		kw_push(KW_EXPR, args[0], 0);
+		kw_put(s[0] == 'i' ? "gael_f2i32(" : "gael_f2u32(");
+		return;
+	}
+	if (g_kops[op].shape == KF_SHIFT && (g_nodes[n].lty == T_I32 || g_nodes[n].lty == T_U32)) {
+		g_kw.k.fault = 1;
+		kw_push(KW_TEXT, -1, "))");
+		kw_push(KW_EXPR, args[1], 0);
+		kw_push(KW_TEXT, -1, ", u32(");
+		kw_push(KW_EXPR, args[0], 0);
+		kw_put(s[2] == 'l' ? (g_nodes[n].lty == T_I32 ? "gael_shl_i32(" : "gael_shl_u32(") : (g_nodes[n].lty == T_I32 ? "gael_shr_i32(" : "gael_shr_u32("));
+		return;
+	}
 	switch (g_kops[op].shape) {
 	case KF_MINUS:
 		if (na == 1) {
@@ -556,6 +597,12 @@ static i32 kernel_body(i32 each, i32 body)
 	return g_kw.bad ? -1 : 0;
 }
 
+static o kt_add(char *to, size_t size, size_t *at, const char *s) /* S at the end of TO, as much as fits */
+{
+	while (*s && *at + 1 < size) to[(*at)++] = *s++;
+	to[*at] = 0;
+}
+
 /* kernel_wgsl: the whole shader of the kernel being built, around the body in g_kw.out, into the permanent arena */
 static const char *kernel_wgsl(void)
 {
@@ -564,7 +611,7 @@ static const char *kernel_wgsl(void)
 	size_t at = 0;
 	i32 k;
 	text[0] = 0;
-#define KADD(s) do { size_t n_ = strlen(s); if (at + n_ < sizeof(text)) { memcpy(text + at, s, n_ + 1); at += n_; } } while (0)
+#define KADD(s) kt_add(text, sizeof(text), &at, s)
 	KADD("struct U {\n  n: u32,\n");
 	for (k = 0; k < g_kw.k.ncaps; k++) {
 		sprintf(line, "  k%ld: %s,\n", (long)k, g_kt_wgsl[g_kw.k.cap_ty[k]]);
@@ -574,6 +621,21 @@ static const char *kernel_wgsl(void)
 	for (k = 0; k < g_kw.k.ncols; k++) {
 		sprintf(line, "@group(0) @binding(%ld) var<storage, read_write> c%ld: array<%s>;\n", (long)k + 1, (long)k, g_kt_wgsl[g_kw.k.col_ty[k]]);
 		KADD(line);
+	}
+	if (g_kw.k.fault) { /* the run fails here as the VM's loop would: the VM runs it again and says where */
+		sprintf(line, "@group(0) @binding(%ld) var<storage, read_write> fault: atomic<u32>;\n", (long)g_kw.k.ncols + 1);
+		KADD(line);
+		KADD("fn gael_fail() { atomicStore(&fault, 1u); }\n");
+		KADD("fn gael_div_i32(a: i32, b: i32) -> i32 { if (b == 0i) { gael_fail(); return 0i; } return a / b; }\n");
+		KADD("fn gael_rem_i32(a: i32, b: i32) -> i32 { if (b == 0i) { gael_fail(); return 0i; } return a % b; }\n");
+		KADD("fn gael_div_u32(a: u32, b: u32) -> u32 { if (b == 0u) { gael_fail(); return 0u; } return a / b; }\n");
+		KADD("fn gael_rem_u32(a: u32, b: u32) -> u32 { if (b == 0u) { gael_fail(); return 0u; } return a % b; }\n");
+		KADD("fn gael_f2i32(x: f32) -> i32 { if (!(x >= -2147483648.0 && x < 2147483648.0)) { gael_fail(); return 0i; } return i32(x); }\n");
+		KADD("fn gael_f2u32(x: f32) -> u32 { if (!(x > -1.0 && x < 4294967296.0)) { gael_fail(); return 0u; } return u32(x); }\n");
+		KADD("fn gael_shl_i32(a: i32, n: u32) -> i32 { if (n >= 32u) { gael_fail(); return 0i; } return a << n; }\n");
+		KADD("fn gael_shr_i32(a: i32, n: u32) -> i32 { if (n >= 32u) { gael_fail(); return 0i; } return a >> n; }\n");
+		KADD("fn gael_shl_u32(a: u32, n: u32) -> u32 { if (n >= 32u) { gael_fail(); return 0u; } return a << n; }\n");
+		KADD("fn gael_shr_u32(a: u32, n: u32) -> u32 { if (n >= 32u) { gael_fail(); return 0u; } return a >> n; }\n");
 	}
 	KADD("@compute @workgroup_size(64)\n");
 	KADD("fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {\n");
@@ -601,6 +663,7 @@ static o kernel_text(i32 k)
 	g_kw.k.vwhere = kn->vwhere; /* the rest as the first walk found it */
 	g_kw.k.vat = kn->vat;
 	kn->wgsl = kernel_wgsl();
+	kn->fault = g_kw.k.fault; /* which only this walk can tell: it needs the types the VM's compile found */
 }
 
 /* gpu_each FRAME: (gpu-each (p v [i]) body...) - its kernel for the GPU, and in its place

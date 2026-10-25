@@ -12,7 +12,8 @@ typedef struct {
 	i32 line, col;
 	i64 ival;
 	u8 big;   /* an int literal above 2^63 - 1: its bits are in ival, and only a u64 holds it */
-	u8 lty;   /* a number literal: the type it took where it stands, once compiled (kernel.c writes it with that) */
+	u8 lty;   /* the type it got when compiled, when that is a built-in one (kernel.c writes WGSL with it) */
+	i32 src;  /* the node this one is a copy of, which then gets its lty too; -1 */
 	f64 fval;
 	const char *text; /* symbols, keywords, strings: NUL-terminated, in the unit arena */
 	u32 len;
@@ -115,7 +116,7 @@ static i32 new_node(NodeKind kind, i32 line, i32 col)
 	n = &g_nodes[g_nnodes];
 	memset(n, 0, sizeof(*n));
 	n->kind = (u8)kind;
-	n->first = n->next = -1;
+	n->first = n->next = n->src = -1;
 	n->line = line;
 	n->col = col;
 	return g_nnodes++;

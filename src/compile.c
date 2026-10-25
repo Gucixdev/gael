@@ -1255,6 +1255,11 @@ static o push_body(i32 first, int keep, Ty want)
 
 static o finish(Ty t)
 {
+	i32 n = g_work[g_nwork - 1].node;
+	if (n >= 0 && t < 256) { /* the form's type, kept on it and on what it is a copy of */
+		g_nodes[n].lty = (u8)t;
+		if (g_nodes[n].src >= 0) g_nodes[g_nodes[n].src].lty = (u8)t;
+	}
 	push_type(t);
 	g_nwork--;
 }
@@ -1680,6 +1685,7 @@ static o compile_atom(i32 n, Ty want)
 	pl.type = T_ERR;
 	r = resolve_place(n, &pl);
 	if (r > 0) {
+		if (pl.type < 256) nd->lty = (u8)pl.type;
 		emit_copy(pl.where, pl.at, pl.type, nd->line);
 		push_type(pl.type);
 		return;
@@ -1941,6 +1947,7 @@ static i32 method_on_value(i32 call, i32 e, i32 path)
 	i32 body = new_node(N_LIST, line, col), mh = new_node(N_SYM, g_nodes[path].line, g_nodes[path].col);
 	char buf[300];
 	g_nodes[value] = g_nodes[e]; /* e itself, without the path after it */
+	g_nodes[value].src = g_nodes[e].src >= 0 ? g_nodes[e].src : e;
 	g_nodes[value].next = -1;
 	g_nodes[lh].text = "let";
 	g_nodes[lh].len = 3;
@@ -1972,6 +1979,7 @@ static i32 node_copy(i32 n) /* N on its own: the same node with its siblings cut
 	i32 c = new_node((NodeKind)g_nodes[n].kind, g_nodes[n].line, g_nodes[n].col);
 	g_nodes[c] = g_nodes[n];
 	g_nodes[c].next = -1;
+	g_nodes[c].src = g_nodes[n].src >= 0 ? g_nodes[n].src : n;
 	return c;
 }
 

@@ -9,7 +9,8 @@
 #   gems/NAME.gael          each gem that comes with gael has tests of its own, and gael test on its file passes them all
 #   tests/gpu/NAME.gael     gael -g prints NAME.wgsl, the WGSL of its gpu-each, and it prints NAME.out; with GAEL_WGPU
 #                           set to a libwgpu_native.so it also runs on that GPU (GAEL_GPU=1), as does examples/gpu.gael,
-#                           and prints the same; tests/gpu/abi.c checks src/wgpu89.h against tests/gpu/webgpu.h
+#                           and prints the same, and tests/errors/gpu-fault*.gael stop with the same error there;
+#                           tests/gpu/abi.c checks src/wgpu89.h against tests/gpu/webgpu.h
 #   (for both, NAME.env holds VAR=value words for its environment, like a smaller heap)
 #   tests/repl.in           the REPL's stdout must equal tests/repl.out, every line of tests/repl.err on stderr, and
 #                           what it saved to repldump.gael (its header lines aside, the time of each form as TIME)
@@ -134,6 +135,16 @@ for bin in "${builds[@]}"; do
 			GAEL_GPU=1 "$bin" "$f" > "$out/stdout" 2> "$out/stderr" || ok=0
 			cmp -s "$out/stdout" "${f%.gael}.out" || { ok=0; diff "${f%.gael}.out" "$out/stdout" | head -5; }
 			[ -s "$out/stderr" ] && { ok=0; head -3 "$out/stderr"; }
+			check "$b on the GPU: $f" "$ok"
+		done
+		for f in tests/errors/gpu-fault*.gael; do # a run that fails on the GPU stops as on the VM
+			ok=1
+			GAEL_GPU=1 "$bin" "$f" > "$out/stdout" 2> "$out/stderr"
+			[ $? = 1 ] || ok=0
+			[ -s "$out/stdout" ] && { ok=0; echo "  stdout: $(head -1 "$out/stdout")"; }
+			while IFS= read -r line; do
+				grep -qxF -- "$line" "$out/stderr" || { ok=0; echo "  missing: $line"; }
+			done < "${f%.gael}.err"
 			check "$b on the GPU: $f" "$ok"
 		done
 	fi

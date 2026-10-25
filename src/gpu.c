@@ -233,8 +233,8 @@ static Cell gpu_cell(u32 v, u8 kt) /* and back */
 static int gpu_run(i32 k, const Cell *frame)
 {
 	const Kernel *kn = &g_kernels[k];
-	WgHandle cols[MAX_KCOLS], ubuf = 0, rb = 0, bg = 0, enc, pass, cmd;
-	WgBindGroupEntry ents[MAX_KCOLS + 1];
+	WgHandle cols[MAX_KCOLS], ubuf = 0, rb = 0, bg = 0, fb = 0, enc, pass, cmd;
+	WgBindGroupEntry ents[MAX_KCOLS + 2];
 	WgBufferDescriptor bd;
 	WgBindGroupDescriptor bgd;
 	WgBufferMapCallbackInfo mi;
@@ -244,7 +244,7 @@ static int gpu_run(i32 k, const Cell *frame)
 	u64 rbsize = 0, at;
 	u32 groups, gx, gy;
 	i32 c, e;
-	int ok = 1;
+	int ok = 1, errors;
 	if (!g_gpu.tried) {
 		const char *env = getenv("GAEL_GPU");
 		g_gpu.tried = 1;
@@ -264,6 +264,7 @@ static int gpu_run(i32 k, const Cell *frame)
 	data = hd[VH_DATA].i;
 	if (n == 0) return 1;
 	if (n > 0xffffffffL / 64) return 0; /* more than the GPU's index counts: the VM */
+	errors = g_gpu.errors; /* wgpu stops the program at an error in a submit, so each step is checked before it */
 	memset(cols, 0, sizeof(cols));
 	memset(&bd, 0, sizeof(bd));
 	for (c = 0; c < kn->ncols && ok; c++) { /* each column, written into its buffer as it is made */
@@ -293,8 +294,21 @@ static int gpu_run(i32 k, const Cell *frame)
 		if (!(ubuf = g_gpu.wgpuDeviceCreateBuffer(g_gpu.device, &bd))) ok = 0;
 		else g_gpu.wgpuQueueWriteBuffer(g_gpu.queue, ubuf, 0, uni, (size_t)bd.size);
 	}
+	if (ok && kn->fault) { /* one u32 the kernel sets when a run fails as the VM's would */
+		u32 *zero;
+		bd.size = 4;
+		bd.usage = WG_BUFFER_STORAGE | WG_BUFFER_COPY_SRC;
+		bd.mappedAtCreation = 1;
+		if (!(fb = g_gpu.wgpuDeviceCreateBuffer(g_gpu.device, &bd)) || !(zero = (u32 *)g_gpu.wgpuBufferGetMappedRange(fb, 0, 4))) ok = 0;
+		else {
+			*zero = 0;
+			g_gpu.wgpuBufferUnmap(fb);
+			rbsize += 4;
+		}
+	}
 	if (ok && rbsize) {
 		bd.size = rbsize;
+		bd.mappedAtCreation = 0;
 		bd.usage = WG_BUFFER_MAP_READ | WG_BUFFER_COPY_DST;
 		if (!(rb = g_gpu.wgpuDeviceCreateBuffer(g_gpu.device, &bd))) ok = 0;
 	}
@@ -308,12 +322,18 @@ static int gpu_run(i32 k, const Cell *frame)
 			ents[c + 1].buffer = cols[c];
 			ents[c + 1].size = (u64)n * 4;
 		}
+		if (kn->fault) {
+			ents[kn->ncols + 1].binding = (u32)kn->ncols + 1;
+			ents[kn->ncols + 1].buffer = fb;
+			ents[kn->ncols + 1].size = 4;
+		}
 		memset(&bgd, 0, sizeof(bgd));
 		bgd.layout = g_kgpu[k].layout;
-		bgd.entryCount = (size_t)kn->ncols + 1;
+		bgd.entryCount = (size_t)kn->ncols + 1 + kn->fault;
 		bgd.entries = ents;
 		if (!(bg = g_gpu.wgpuDeviceCreateBindGroup(g_gpu.device, &bgd))) ok = 0;
 	}
+	if (g_gpu.errors != errors) ok = 0;
 	if (ok) {
 		groups = (u32)((n + 63) / 64);
 		gx = groups < 65535 ? groups : 65535;
@@ -330,6 +350,7 @@ static int gpu_run(i32 k, const Cell *frame)
 			g_gpu.wgpuCommandEncoderCopyBufferToBuffer(enc, cols[c], 0, rb, at, (u64)n * 4);
 			at += (u64)n * 4;
 		}
+		if (fb) g_gpu.wgpuCommandEncoderCopyBufferToBuffer(enc, fb, 0, rb, at, 4);
 		cmd = g_gpu.wgpuCommandEncoderFinish(enc, 0);
 		g_gpu.wgpuQueueSubmit(g_gpu.queue, 1, &cmd);
 		g_gpu.wgpuCommandBufferRelease(cmd);
@@ -348,6 +369,9 @@ static int gpu_run(i32 k, const Cell *frame)
 		}
 		if (g_mapped < 0 || !(got = (const u32 *)g_gpu.wgpuBufferGetConstMappedRange(rb, 0, (size_t)rbsize))) {
 			ok = 0;
+		} else if (fb && got[rbsize / 4 - 1]) { /* a run failed: nothing comes back, and the VM runs the loop to say where */
+			g_gpu.wgpuBufferUnmap(rb);
+			rbsize = 0;
 		} else {
 			for (c = 0; c < kn->ncols; c++) {
 				Cell *to;
@@ -363,11 +387,12 @@ static int gpu_run(i32 k, const Cell *frame)
 		if (cols[c]) g_gpu.wgpuBufferRelease(cols[c]);
 	}
 	if (ubuf) g_gpu.wgpuBufferRelease(ubuf);
+	if (fb) g_gpu.wgpuBufferRelease(fb);
 	if (rb) g_gpu.wgpuBufferRelease(rb);
 	if (bg) g_gpu.wgpuBindGroupRelease(bg);
 	if (!ok) { /* before any column came back: the VM runs the loop instead */
 		fprintf(stderr, "gael: the GPU failed the gpu-each at %s:%ld, so it runs on the VM: %s\n", kn->file, (long)kn->line, g_gpu.why);
 		return 0;
 	}
-	return 1;
+	return rbsize || !fb ? 1 : 0;
 }

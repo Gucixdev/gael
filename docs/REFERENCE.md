@@ -761,9 +761,10 @@ Android), Metal (macOS, iOS), Direct3D 12 or OpenGL. Without the library or a GP
 everything on the VM, `GAEL_GPU=1` makes a missing GPU a runtime error. Each field the body uses goes to the GPU as
 it is, since a vec keeps each field as a column already, and the fields it sets come back.
 
-Where the GPU and the VM differ, because WGSL says so: division and the math functions may be a few ulps off, an int
-divided by zero gives the int, a float too big for an int gives the nearest one, and a shift past the type's bits is
-taken modulo them - on the VM each of the last three is a runtime error.
+A run that would stop the VM's loop with a runtime error - an int divided by zero, a float too big for the int it is
+made into, a shift past the type's bits - stops the program the same way on the GPU: the kernel marks the run failed,
+nothing of it comes back, and the VM runs the loop, which says where. Floats may differ: WGSL lets division and the
+math functions be a few ulps off.
 
 Compile errors, each with what to write: a field or a variable of another type (`float`, `int`, `string`, a struct as a
 whole, a `bool` field, which a vec keeps as one bit); setting anything but `p`'s fields and the body's own variables; a
