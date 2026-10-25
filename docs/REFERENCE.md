@@ -821,8 +821,11 @@ none.
 
 The REPL: a form may span lines; `:q` quits. Each form is compiled and run on its own, and the value of the last one
 is shown as `=> value : type`. A function or a global can be defined again with the same type (the new body or value
-replaces the old), a struct or an enum with the same fields or values, a macro freely. It first runs `main.gael` from gael's folder, and appends every form that ran without an error to
-`repldump.gael` there, so `gael < ~/.gael/repldump.gael` replays a session.
+replaces the old), a struct or an enum with the same fields or values, a macro freely. It first runs `main.gael` from
+gael's folder, and appends every form that ran without an error to `repldump.gael` there, each after a line with its
+date and time and the functions of files it gave new bodies,
+`;; 2026-10-25 16:28:57, replaces width (lib/shapes.gael:3)`; the files are never written.
+`gael < ~/.gael/repldump.gael` replays a session.
 
 ## Limits
 

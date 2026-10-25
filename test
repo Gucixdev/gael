@@ -6,7 +6,8 @@
 #   tests/errors/NAME.gael  every line of NAME.err must appear on stderr, exit 1; stdout must equal NAME.out if there is one
 #   (for both, NAME.env holds VAR=value words for its environment, like a smaller heap)
 #   tests/repl.in           the REPL's stdout must equal tests/repl.out, every line of tests/repl.err on stderr, and
-#                           what it saved to repldump.gael (its header lines aside) must equal tests/repl.dump; then
+#                           what it saved to repldump.gael (its header lines aside, the time of each form as TIME)
+#                           must equal tests/repl.dump; then
 #                           the REPL with a main.gael, and with a gem from gael's folder turned on and off
 #   README.md               every "$ ./gael ARGS" example prints exactly the lines shown under it
 #   docs/REFERENCE.md       its index has every built-in name gael -n lists
@@ -92,7 +93,8 @@ for bin in "${builds[@]}"; do
 	ok=1
 	GAEL_HOME="$out/home-$b" "$bin" < tests/repl.in > "$out/stdout" 2> "$out/stderr" || ok=0
 	cmp -s "$out/stdout" tests/repl.out || { ok=0; diff tests/repl.out "$out/stdout" | head -5; }
-	grep -v '^; REPL session, ' "$out/home-$b/repldump.gael" | cmp -s - tests/repl.dump || { ok=0; echo "  repldump.gael differs"; }
+	sed -e '/^; REPL session, /d' -e 's/^;; [0-9][0-9-]* [0-9][0-9:]*/;; TIME/' "$out/home-$b/repldump.gael" |
+		cmp -s - tests/repl.dump || { ok=0; echo "  repldump.gael differs"; }
 	while IFS= read -r line; do
 		grep -qxF -- "$line" "$out/stderr" || { ok=0; echo "  missing: $line"; }
 	done < tests/repl.err

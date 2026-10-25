@@ -11,8 +11,10 @@
  *   gael -h                this help
  *
  * gael's own folder is $GAEL_HOME or ~/.gael (like ~/.emacs.d). The REPL first runs main.gael from there when there is
- * one (like init.el), then appends every form that ran without an error to repldump.gael there, under a line with the
- * date and the directory it ran in. GAEL_HOME= (empty) turns both off.
+ * one (like init.el), then appends every form that ran without an error to repldump.gael there: a session starts with
+ * a line that says when and in which directory, and each form comes after a line with its date and time and the
+ * functions of files it gave new bodies. The files themselves are never written: what changed lives in the running
+ * program and in the dump. GAEL_HOME= (empty) turns both off.
  *
  * A file can use others: (use "lib.gael") at its top level, the path relative to the file. Every file is compiled
  * once, the used ones first, and the program runs only when none of them has an error.
@@ -442,6 +444,19 @@ static long balance(const char *s)
 	return in_str ? 1 : depth;
 }
 
+/* has_form TEXT: the text holds more than spaces and comments - something the dump keeps */
+static int has_form(const char *s)
+{
+	for (; *s; s++) {
+		if (*s == ';') {
+			while (s[1] && s[1] != '\n') s++;
+		} else if (*s != ' ' && *s != '\t' && *s != '\n' && *s != '\r') {
+			return 1;
+		}
+	}
+	return 0;
+}
+
 /* leaks: with GAEL_CHECK=1, after a program ran to its end its globals are freed too, and then nothing may be left on
  * the heap. What is left was kept alive by a cycle (a vec, map or pool that holds itself) or lost by a counting bug */
 static int leaks(void)
@@ -480,20 +495,27 @@ static int gael_home(char *path)
 static FILE *g_dump; /* repldump.gael, opened for appending when the REPL starts */
 static int g_dumped; /* the session's first line is written */
 
-/* dump FORM: append a form that ran without an error, after a line that says when and where the session ran */
+/* dump FORM: append a form that ran without an error, after a line with its date and time and the functions of files
+ * it replaced (";; 2026-10-25 16:26:03, replaces width (lib/shapes.gael:3)"); the session's first form comes after a
+ * line that says when and where the session ran */
 static o dump(const char *form)
 {
 	char stamp[64], dir[900];
 	time_t now = time(0);
 	size_t n = strlen(form);
+	i32 k;
 	if (!g_dump) return;
+	strftime(stamp, sizeof(stamp), "%Y-%m-%d %H:%M:%S", localtime(&now));
 	if (!g_dumped) {
-		strftime(stamp, sizeof(stamp), "%Y-%m-%d %H:%M:%S", localtime(&now));
 		if (!getcwd(dir, sizeof(dir))) strcpy(dir, "?");
 		fseek(g_dump, 0, SEEK_END);
 		fprintf(g_dump, "%s; REPL session, %s, in %s\n", ftell(g_dump) > 0 ? "\n" : "", stamp, dir);
 		g_dumped = 1;
 	}
+	fprintf(g_dump, ";; %s", stamp);
+	for (k = 0; k < g_nreplaced; k++)
+		fprintf(g_dump, "%s %.64s (%.300s:%ld)", k ? "," : ", replaces", g_replaced[k].name, g_replaced[k].file, (long)g_replaced[k].line);
+	fputc('\n', g_dump);
 	fputs(form, g_dump);
 	if (n && form[n - 1] != '\n') fputc('\n', g_dump);
 	fflush(g_dump); /* on disk now, even if the session is killed */
@@ -533,7 +555,7 @@ static int repl(void)
 			continue;
 		}
 		if (balance(g_line_buf) > 0) continue;
-		if (!load("<repl>", g_line_buf, used, 1, RUN)) dump(g_line_buf);
+		if (!load("<repl>", g_line_buf, used, 1, RUN) && has_form(g_line_buf)) dump(g_line_buf);
 		fflush(stdout);
 		used = 0;
 	}

@@ -44,8 +44,11 @@ GAEL_HOME=DIR   gael's own folder (default ~/.gael): the REPL runs main.gael fro
 ```
 
 gael's own folder is like `~/.emacs.d`: the REPL starts by running `main.gael` from it, and every form that ran
-without an error is appended to `repldump.gael` there, under a line with the date and the directory of the session.
-`gael < ~/.gael/repldump.gael` plays a session again.
+without an error is appended to `repldump.gael` there. A session starts with a line that says when and in which
+directory; each form comes after a line with its date and time and, when it gave a function of a file a new body,
+which one (`;; 2026-10-25 16:28:57, replaces width (examples/lib/shapes.gael:3)`). The files themselves are never
+written: a change made while the program runs lives in the running program and in the dump, as in Smalltalk's changes
+file. `gael < ~/.gael/repldump.gael` plays a session again.
 
 The exit status is 0 when everything went fine, 1 after a compile or runtime error (or what `GAEL_CHECK=1` found),
 and 2 for bad usage.

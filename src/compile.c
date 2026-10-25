@@ -138,6 +138,15 @@ typedef struct {
 	i32 nrequires, nprovides, nexcludes;
 	u8 state;
 } Gem;
+/* The REPL: the functions from files that a unit gave new bodies, for the line repldump.gael writes before the unit.
+ * The files stay as they are; the new bodies live in the running program and in the dump */
+#define MAX_REPLACED 16
+static struct {
+	const char *name, *file;
+	i32 line;
+} g_replaced[MAX_REPLACED];
+static i32 g_nreplaced;
+
 static Gem g_gems[MAX_GEMS]; /* zero until used, so it costs the binary nothing; gem 0 is set in compile_init */
 static i32 g_ngems = 1;
 static int g_unit_main; /* the unit is a gem's main file: it starts with the manifest */
@@ -4174,6 +4183,12 @@ static o declare_fn(i32 n, int repl)
 		}
 		old->decl_unit = g_unit_id; /* REPL: same signature, the new body replaces the old one */
 		old->decl_node = n;
+		if (old->file && strcmp(old->file, "<repl>") && g_nreplaced < MAX_REPLACED) {
+			g_replaced[g_nreplaced].name = old->name;
+			g_replaced[g_nreplaced].file = old->file;
+			g_replaced[g_nreplaced].line = old->line;
+			g_nreplaced++;
+		}
 		return;
 	}
 	if (find_global(g_nodes[name].text) >= 0) {
@@ -4713,6 +4728,7 @@ static i32 compile_unit(i32 top, int repl)
 		g_snap_depth[i] = g_fns[i].maxdepth;
 	}
 	g_unit_id++;
+	g_nreplaced = 0;
 	g_nlocals = g_local_floor = 0;
 	g_slots = g_maxslots = 0;
 	g_depth = g_maxdepth = 0;

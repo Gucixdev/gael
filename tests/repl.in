@@ -22,6 +22,8 @@ Light.green
 p
 (use "examples/lib/shapes.gael")
 (width (Rect origin (Vec2 2.0 0.0)))
+(defn width ((r : Rect)) : float 7.0)
+(width (Rect origin origin))
 (defmacro twice ((_ e) (do e e)))
 (twice (println "hi"))
 (defmacro twice ((_ e) (do e e e)))
