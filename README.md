@@ -400,6 +400,8 @@ tests/errors/div-zero.gael:1: runtime error: division by zero
   operand counts and, with gcc and clang, the table of label addresses the VM dispatches through come from that list.
   Each instruction's code jumps straight to the next one's (computed goto, as Lua does; a plain switch with other
   compilers).
+- In `if`, `when` and `while`, `and`, `or`, `not`, `nand` and `nor` compile to jumps alone, the short circuit as code:
+  `(when (or (< x 0.0) (> x w)) ...)` makes no bool and tests none.
 - Once a unit compiles, runs of simple instructions are fused into one superinstruction: a local or a constant fed
   straight into arithmetic (`(- n 1)` is one `SUB_I_LK`), a comparison straight into a jump, the step at the end of a
   `for`. The rest of a run becomes NOPs the superinstruction skips, so nothing moves and no jump changes; `gael -d`
@@ -427,7 +429,7 @@ tests/errors/div-zero.gael:1: runtime error: division by zero
 
 ## Status
 
-Version 0.3, tested on Linux x86-64 with gcc 13.3 and clang 18.1. `./test` passes 121 checks per build (37 examples,
+Version 0.3, tested on Linux x86-64 with gcc 13.3 and clang 18.1. `./test` passes 122 checks per build (38 examples,
 75 compile and runtime error cases, three REPL sessions, six README examples) with gcc, clang, gcc with the plain
 switch dispatch and gcc with both sanitizers, every run with `GAEL_CHECK=1`. GitHub Actions runs shellcheck on the scripts and `./test` on every push
 (`.github/workflows/test.yml`, ubuntu-24.04).

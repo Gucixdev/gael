@@ -221,7 +221,7 @@ static u8 *g_seen;      /* match: the variants an arm already covers */
 typedef enum {
 	F_START, F_CALL, F_TASK, F_RETURN, F_IF, F_WHEN, F_WHILE, F_DO, F_LET, F_SET, F_AND, F_OR, F_NOT, F_ARITH, F_CMP, F_PRINT,
 	F_CONV, F_BUILTIN, F_NEW, F_SOME, F_MATCH, F_VEC, F_VECOP, F_FOR, F_DOT, F_MAP, F_MAPOP, F_SHPIPE, F_POOL, F_ARENA,
-	F_KEEP, F_CALLV, F_LAMBDA, F_XOR, F_BITS
+	F_KEEP, F_CALLV, F_LAMBDA, F_XOR, F_BITS, F_COND
 } Form;
 
 typedef struct {
@@ -243,6 +243,10 @@ typedef struct {
 
 static Frame g_work[MAX_WORK];
 static i32 g_nwork;
+
+/* Conditions (F_COND): the jumps a condition makes when it is false, and when it is true, waiting for their target */
+static i32 g_fjumps[MAX_WORK], g_nfjumps, g_tjumps[MAX_WORK], g_ntjumps;
+enum { CC_IF, CC_WHEN, CC_WHILE, CC_AND, CC_OR, CC_NOT, CC_NAND, CC_NOR }; /* whose words a condition's error uses */
 static i32 g_unit_id; /* counts compiled units; node indices restart in each */
 
 #define NAME_FMT "%.64s"
@@ -1105,6 +1109,43 @@ static Frame *push_frame(i32 node, Form form)
 
 /* push_child NODE WANT: compile NODE next; WANT is the type the parent expects */
 static o push_child(i32 node, Ty want) { push_frame(node, F_START)->want = want; }
+
+/* push_cond NODE WHEN LIST CTX: compile NODE as a condition - no value: a jump when it is false (WHEN 0) or true (WHEN
+ * 1), put on g_fjumps (LIST 0) or g_tjumps (LIST 1) for the code around to aim, and on to what follows otherwise. and,
+ * or, not, nand and nor become jumps alone, as the short circuit goes; anything else is its value and one jump. The
+ * jumps a condition needs inside itself it aims itself, so a list holds only what the code around waits for. CTX words
+ * a type error. */
+static o push_cond(i32 node, int when, int list, int ctx)
+{
+	Frame *f = push_frame(node, F_COND);
+	f->op = (u8)when;
+	f->b = list;
+	f->c = ctx;
+}
+
+/* aim_jumps LIST COUNT MARK TARGET: the jumps on LIST from MARK on go to TARGET, and leave the list */
+static o aim_jumps(const i32 *list, i32 *n, i32 mark, i32 target)
+{
+	i32 i;
+	for (i = mark; i < *n; i++) patch(list[i], target);
+	*n = mark;
+}
+
+/* cond_operand AND_OR: the next operand of an and or an or that is a condition. Each one of an and jumps when it is
+ * false, of an or when it is true; where the whole would jump too, its jump goes on the whole's list, otherwise
+ * (an and jumping when true: a false operand only ends it) on the other list, aimed after the whole when it ends. The
+ * last operand jumps as the whole does */
+static o cond_operand(Frame *f)
+{
+	int when = next_of(f->cur) < 0 ? f->op : f->a == 'o';
+	push_cond(f->cur, when, when == f->op ? f->b : !f->b, f->c);
+}
+
+static o add_jump(i32 *list, i32 *n, i32 at)
+{
+	if (*n == MAX_WORK) die("conditions nested too deep (MAX_WORK)");
+	list[(*n)++] = at;
+}
 
 /* push_body FIRST KEEP WANT: compile the forms FIRST, FIRST.next, ... as one expression; with KEEP the last one's
  * value is the result (and gets WANT), otherwise every value is dropped and the result is unit */
@@ -2374,12 +2415,10 @@ static o run_work(i32 base)
 					break;
 				}
 				f->phase = 1;
-				push_child(f->cur, T_NONE);
+				f->mark2 = g_nfjumps;
+				push_cond(f->cur, 0, 0, CC_IF);
 				break;
-			case 1:
-				t = pop_type();
-				if (t != T_BOOL && t != T_ERR) err_node(f->cur, "if: the condition is %s, it must be bool", tn(t));
-				f->a = emit(OP_JF, -1, 0, line);
+			case 1: /* the condition's false jumps wait on g_fjumps from mark2 */
 				f->depth = g_depth;
 				f->cur = next_of(f->cur);
 				f->phase = 2;
@@ -2389,7 +2428,7 @@ static o run_work(i32 base)
 			case 2:
 				if (next_of(f->cur) < 0) {
 					emit_pop(pop_type(), line);
-					patch(f->a, g_ncode);
+					aim_jumps(g_fjumps, &g_nfjumps, f->mark2, g_ncode);
 					finish(T_UNIT);
 					break;
 				}
@@ -2398,7 +2437,7 @@ static o run_work(i32 base)
 					push_type(T_UNIT);
 				}
 				f->b = emit(OP_JMP, -1, 0, line);
-				patch(f->a, g_ncode);
+				aim_jumps(g_fjumps, &g_nfjumps, f->mark2, g_ncode);
 				g_depth = f->depth;
 				f->cur = next_of(f->cur);
 				f->phase = 3;
@@ -2435,13 +2474,10 @@ static o run_work(i32 base)
 				}
 				f->a = g_ncode; /* while loops back here */
 				f->phase = 1;
-				push_child(f->cur, T_NONE);
+				f->mark2 = g_nfjumps;
+				push_cond(f->cur, 0, 0, f->form == F_WHEN ? CC_WHEN : CC_WHILE);
 				break;
 			case 1:
-				t = pop_type();
-				if (t != T_BOOL && t != T_ERR)
-					err_node(f->cur, "%s: the condition is %s, it must be bool", f->form == F_WHEN ? "when" : "while", tn(t));
-				f->b = emit(OP_JF, -1, 0, line);
 				f->phase = 2;
 				push_body(next_of(f->cur), 0, T_UNIT);
 				if (f->form == F_WHEN) g_work[g_nwork - 1].tail = f->tail;
@@ -2449,11 +2485,65 @@ static o run_work(i32 base)
 			default:
 				(void)pop_type();
 				if (f->form == F_WHILE) emit(OP_JMP, f->a, 0, line);
-				patch(f->b, g_ncode);
+				aim_jumps(g_fjumps, &g_nfjumps, f->mark2, g_ncode);
 				finish(T_UNIT);
 				break;
 			}
 			break;
+
+		case F_COND: { /* a condition (push_cond): f->op 0 jumps when false, 1 when true; f->b the list it goes on */
+			i32 head = g_nodes[f->node].kind == N_LIST ? first_of(f->node) : -1, at;
+			const char *hs = is_sym(head) ? g_nodes[head].text : "";
+			if (f->phase == 0) {
+				i32 k = head >= 0 ? count_from(next_of(head)) : 0;
+				if (!strcmp(hs, "not") && k == 1) { /* the condition inside, with the jump's sense turned */
+					f->node = next_of(head);
+					f->op ^= 1;
+					f->c = CC_NOT;
+					break;
+				}
+				if (k >= 1 && (!strcmp(hs, "and") || !strcmp(hs, "or") || !strcmp(hs, "nand") || !strcmp(hs, "nor"))) {
+					f->a = hs[0] == 'n' ? hs[1] : hs[0]; /* 'a' or 'o'; nand is not and, nor is not or */
+					f->op ^= (u8)(hs[0] == 'n');
+					f->c = hs[0] == 'a' ? CC_AND : hs[0] == 'o' ? CC_OR : hs[1] == 'a' ? CC_NAND : CC_NOR;
+					f->mark = g_ntjumps;
+					f->mark2 = g_nfjumps;
+					f->cur = next_of(head);
+					f->phase = 1;
+					cond_operand(f);
+					break;
+				}
+				f->phase = 2;
+				push_child(f->node, T_NONE);
+				break;
+			}
+			if (f->phase == 1) { /* one operand of an and or an or is done */
+				f->cur = next_of(f->cur);
+				if (f->cur >= 0) {
+					cond_operand(f);
+					break;
+				}
+				if ((f->a == 'a') == f->op) { /* the jumps its operands made to after it, on the other list, land here */
+					if (f->b) aim_jumps(g_fjumps, &g_nfjumps, f->mark2, g_ncode);
+					else aim_jumps(g_tjumps, &g_ntjumps, f->mark, g_ncode);
+				}
+				g_nwork--;
+				break;
+			}
+			t = pop_type(); /* a value: one jump */
+			if (t != T_BOOL && t != T_ERR) {
+				static const char *const forms[] = { "if", "when", "while", "and", "or", "not", "nand", "nor" };
+				if (f->c <= CC_WHILE) err_node(f->node, "%s: the condition is %s, it must be bool", forms[f->c], tn(t));
+				else if (f->c == CC_NOT) err_node(f->node, "not takes a bool, this is %s", tn(t));
+				else err_node(f->node, "%s takes bool values, this one is %s%s", forms[f->c], tn(t),
+				              t == T_STR ? "; (run \"cmd\") is true when a command succeeds" : "");
+			}
+			at = emit(f->op ? OP_JT : OP_JF, -1, 0, line);
+			if (f->b) add_jump(g_tjumps, &g_ntjumps, at);
+			else add_jump(g_fjumps, &g_nfjumps, at);
+			g_nwork--;
+			break;
+		}
 
 		case F_LET:
 			switch (f->phase) {
@@ -4627,6 +4717,7 @@ static i32 compile_unit(i32 top, int repl)
 	g_slots = g_maxslots = 0;
 	g_depth = g_maxdepth = 0;
 	g_ntypes = g_npatches = g_nwork = 0;
+	g_nfjumps = g_ntjumps = 0;
 
 	g_expansions = 0;
 	for (n = top; n >= 0; n = next_of(n)) { /* macros first: anything below may use them, and so may the passes below */
