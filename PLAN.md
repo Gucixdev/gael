@@ -43,7 +43,8 @@ dokumentacja mieści się w kontekście.
       (`a1345ec`).
 - [x] `events`: `EventLog` (rodzaj, tick, dwie dane; nagrywanie i odtwarzanie, `at`, `since`) i `Schedule` (zdarzenia
       na przyszłe ticki, wyjmowane po ticku) (`a1345ec`).
-- [ ] `fsm` i `hfsm` w gaelu: stany, przejścia, wejście i wyjście.
+- [x] `hfsm` w gaelu (płaski FSM to ten sam gem, gdy każdy rodzic to `-`): drzewo stanów, kod wejścia i wyjścia,
+      przejście przez wspólnego przodka; stan to wartość enuma, więc siedzi w kolumnie ECS (`examples/guards.gael`).
 - [ ] `rng` (PCG32), `noise`, `easing`, `curve`.
 - [ ] ECS dalej, gdy będzie potrzeba: `Changed` (znacznik zmiany kolumny, jak w Bevy), systemy równolegle na fgjob
       (kompilator widzi, które kolumny pisze każde zapytanie), archetypy po generykach.

@@ -797,6 +797,7 @@ The gems that come with gael:
 | `ecs` | an entity component system the way flecs and the C ones go: 64-bit entity ids with a generation, a column per component, tags and components as bits of one mask per entity, queries `(ecs-each World (e c...) :with (tags) :not (tags) body...)`. The header of `gems/ecs.gael` has the whole of it; `examples/ecs.gael` uses it |
 | `pqueue` | a priority queue, a binary heap in a vec: `(PQ)`, `(q.push id priority)`, `(q.pop)` and `(q.peek)` give an option, `(len q)`, `(q.clear)`. Priority 1 comes out first, 0 or less after everything; ties in the order they went in. Ported from holyc |
 | `events` | events with their tick: `(EventLog)` keeps what happened in order (`add`, `at`, `since`, a `for` over it), to record a run and play it back; `(Schedule)` holds what will happen, and `(s.due tick)` takes out everything up to a tick, by tick. Ported from holyc; `examples/queues.gael` uses both |
+| `hfsm` | a hierarchical state machine: `(hfsm Mood (e : Ctx) (alive -) (calm alive) ... :enter ((calm code)...) :exit (...))` makes the enum `Mood` and `(Mood.start s e)`, `(s.go to e)` - exits up to the state the two share, enters down to `to` - `(s.in? t)` and `(s.parent)`. A flat machine is one where every parent is `-`. `examples/guards.gael` gives each entity of an ecs world one |
 
 `(enable a b)` in the program reads only the manifests of the gems named and loads each one after the gems it
 requires. A requirement is met by the gem of that name or by one that provides it; when none is on, the gem of that
