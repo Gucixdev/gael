@@ -29,7 +29,7 @@
 
 (println "%d %d" (add5 1) (twice add5 0))
 (println "%d %d %d" (next-id) (next-id) (next-id))
-(println "%s" ((greeter "hello") "kacper"))
+(println "%s" ((greeter "hello") "ada"))
 (println "%d" (((curry3 1) 2) 3))
 (warn "low fuel")
 (warn "no ammo")

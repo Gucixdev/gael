@@ -467,7 +467,7 @@ written as a literal:
 ```
 $ ./gael -x examples/export.gael
 speed : float = 10.0	examples/export.gael:3
-player-name : string = "Kacper"	examples/export.gael:4
+player-name : string = "Ada"	examples/export.gael:4
 lives : u8 = 3	examples/export.gael:5
 spawn-point : NodePath = $Level/Start	examples/export.gael:7
 ```
