@@ -52,13 +52,14 @@ How the entries read:
 | `bit-xor` | the bits set in an odd number | [Bits](#bits) |
 | `bool` | `true` or `false` | [Types](#types) |
 | `byte` | one byte of a string, as an int | [Strings](#strings) |
+| `canvas-pixel` | a pixel of a canvas | [Drawing](#drawing) |
 | `ceil` | round up to a whole number | [Math](#math) |
-| `clamp` | a value kept between two bounds | [Comparing](#comparing) |
 | `chain` | hand a value through steps: `(chain x (f a) g)` | [Control](#control) |
 | `char` | the one-byte string of a byte | [Strings](#strings) |
+| `clamp` | a value kept between two bounds | [Comparing](#comparing) |
+| `compile-error` | in a macro's template: a compile error with these words where the macro is used | [Macros](#macros) |
 | `coroutine` | start a function in a coroutine, a function on a stack of its own; its type | [Coroutines](#coroutines) |
 | `coroutine-time` | the coroutines' clock | [Coroutines](#coroutines) |
-| `compile-error` | in a macro's template: a compile error with these words where the macro is used | [Macros](#macros) |
 | `cos` | cosine | [Math](#math) |
 | `def` | a global | [Top level](#top-level) |
 | `defmacro` | a macro | [Macros](#macros) |
@@ -66,6 +67,10 @@ How the entries read:
 | `disable` | turn a gem off | [Gems](#gems) |
 | `do` | forms in order, the last one's value | [Control](#control) |
 | `done?` | whether a coroutine has ended | [Coroutines](#coroutines) |
+| `draw-circle` | a circle on a canvas | [Drawing](#drawing) |
+| `draw-clear` | a canvas all one color | [Drawing](#drawing) |
+| `draw-line` | a line on a canvas | [Drawing](#drawing) |
+| `draw-rect` | a rectangle on a canvas | [Drawing](#drawing) |
 | `enable` | turn gems on, loading them | [Gems](#gems) |
 | `enum` | a type with named values | [Enums](#enums) |
 | `env` | an environment variable, `""` when unset | [Files and the system](#files-and-the-system) |
@@ -84,8 +89,8 @@ How the entries read:
 | `format` | print into a new string | [Printing](#printing) |
 | `gem` | a gem's manifest | [Gems](#gems) |
 | `get` | an element of a vec or a pool | [Vecs](#vecs), [Pools](#pools) |
-| `gpu-each` | a body run once per element of a vec, on the GPU when there is one | [GPU](#gpu) |
 | `getenv` | an environment variable as an option | [Files and the system](#files-and-the-system) |
+| `gpu-each` | a body run once per element of a vec, on the GPU when there is one | [GPU](#gpu) |
 | `handle` | the type of a pool element's name | [Pools](#pools) |
 | `has` | whether a map has a key, a pool an element | [Maps](#maps), [Pools](#pools) |
 | `i16` `i32` `i64` `i8` | signed int types; convert to them | [Types](#types), [Numbers](#numbers) |
@@ -105,6 +110,7 @@ How the entries read:
 | `min` | the smallest of values | [Comparing](#comparing) |
 | `name-of` | a name joined from a macro's parts, like C's `##` | [Macros](#macros) |
 | `nand` | not all true | [Logic](#logic) |
+| `new-canvas` | an image the GPU draws on | [Drawing](#drawing) |
 | `none` | the empty option | [Options](#options) |
 | `nor` | none true | [Logic](#logic) |
 | `not` | the opposite bool | [Logic](#logic) |
@@ -115,8 +121,8 @@ How the entries read:
 | `pid` | the process id | [Files and the system](#files-and-the-system) |
 | `pipe` | commands joined like bash's `\|`, their output | [Files and the system](#files-and-the-system) |
 | `pipe-in` | the same, with text on the first one's stdin | [Files and the system](#files-and-the-system) |
-| `pool` | a fixed number of slots with generational handles | [Pools](#pools) |
 | `poll` | a coroutine's result if it has ended, at once: an option | [Coroutines](#coroutines) |
+| `pool` | a fixed number of slots with generational handles | [Pools](#pools) |
 | `pop` | take a vec's last element off | [Vecs](#vecs) |
 | `pow` | a number to a power | [Math](#math) |
 | `print` | print to stdout | [Printing](#printing) |
@@ -129,9 +135,11 @@ How the entries read:
 | `return` | leave the function now, with a value | [Control](#control) |
 | `run` | run a command; true when it succeeds | [Files and the system](#files-and-the-system) |
 | `run-coroutines` | run the coroutines until none is left | [Coroutines](#coroutines) |
+| `save-png` | a canvas as a PNG file | [Drawing](#drawing) |
 | `set` | give a variable or a field a new value | [Control](#control) |
 | `sh` | run a command, get its output | [Files and the system](#files-and-the-system) |
 | `shl` | shift left | [Bits](#bits) |
+| `show-frame` | draw what is batched for a canvas | [Drawing](#drawing) |
 | `shr` | shift right | [Bits](#bits) |
 | `sin` | sine | [Math](#math) |
 | `sleep` | pause a coroutine for seconds; in the main program, sleep | [Coroutines](#coroutines) |
@@ -159,9 +167,6 @@ How the entries read:
 | `xnor` | an even number true | [Logic](#logic) |
 | `xor` | an odd number true | [Logic](#logic) |
 | `yield` | a coroutine pauses until the next step | [Coroutines](#coroutines) |
-
-Not names but syntax: `;` comments, `"..."` strings, `:keyword`, `$Node/Path`, `@export`, `a.b.c` field paths and
-`(expr).field` - see [Reading](#reading).
 
 ## Reading
 
@@ -770,6 +775,28 @@ Compile errors, each with what to write: a field or a variable of another type (
 whole, a `bool` field, which a vec keeps as one bit); setting anything but `p`'s fields and the body's own variables; a
 call of a function of the program, printing, a loop, a string, a `gpu-each` inside another; more than 8 fields or 16
 values from around in one body.
+
+## Drawing
+
+```
+(def c (new-canvas 640 480))         ; an image of that many pixels on the GPU, black; its number
+(draw-clear c 0x202030ff)            ; all of it one color, 0xRRGGBBAA
+(draw-rect c x y width height color) ; x and y the top left, in pixels from the top left of the canvas
+(draw-circle c x y radius color)     ; smoothed over a pixel at its edge
+(draw-line c x1 y1 x2 y2 width color)
+(show-frame c)                       ; draws what is batched; true while the canvas is there
+(canvas-pixel c x y)                 ; a pixel, 0xRRGGBBAA
+(save-png c "frame.png")             ; true when the file was written
+```
+
+A canvas is an image that the GPU draws on, through wgpu as `gpu-each` runs ([GPU](#gpu)). The shapes are batched and
+drawn when the frame is shown, when the batch is full (16384 shapes), or when the program reads a pixel or saves the
+canvas; a color's alpha blends it over what is there, and `draw-clear` starts a new frame. Coordinates are floats or
+f32s, so a `gpu-each` vec's fields go in as they are. There can be 16 canvases, each up to 8192 pixels each way.
+`(format "%x" color)` writes a color the way it is written here.
+
+Runtime errors: no GPU (drawing has no VM version), a canvas number that `new-canvas` did not give, a size or a pixel
+outside the canvas.
 
 ## Macros
 

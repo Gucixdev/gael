@@ -414,6 +414,10 @@ gael writes the body as WGSL (`gael -g FILE` shows it) and runs it through wgpu-
 with Wayland and on Android, Metal on Apple and Direct3D 12 on Windows; gael itself needs nothing of it to build.
 `GAEL_GPU=0` keeps everything on the VM. `examples/gpu.gael` bounces balls.
 
+The same GPU draws: `(new-canvas 640 480)` is an image on it, `draw-rect`, `draw-circle` and `draw-line` batch shapes
+in 0xRRGGBBAA colors, `show-frame` draws them, and `save-png` and `canvas-pixel` read the result back. A window to show
+a canvas in (Wayland first) comes next.
+
 A gem is a package by name: `gems/NAME.gael`, or a folder `gems/NAME/` whose `main.gael` uses the rest, next to the
 program, in gael's own folder, or in the `gems/` that comes with gael, next to its binary. Its main file starts with a
 manifest:
@@ -532,7 +536,7 @@ tests/errors/div-zero.gael:1: runtime error: division by zero
 
 ## Status
 
-Version 0.3, tested on Linux x86-64 with gcc 13.3 and clang 18.1. `./test` passes 157 checks per build (44 examples, 83
+Version 0.3, tested on Linux x86-64 with gcc 13.3 and clang 18.1. `./test` passes 158 checks per build (44 examples, 84
 compile and runtime error cases, three warning cases, four gael test cases, the tests of each of the ten gems that come
 with gael, one WGSL case, three REPL sessions, nine README examples), the C89 mirror of WebGPU's structs against
 `webgpu.h`, and with `GAEL_WGPU` set the GPU runs of `gpu-each` (tested on Mesa's lavapipe, Vulkan on the CPU)

@@ -19,6 +19,7 @@
 
 static int exe_dir(char *path);
 static int gael_home(char *path);
+static void gpu_close(void); /* gfx.c: everything given back to the GPU at the end */
 
 #define WGFN(ret, name, args) ret (*name) args;
 #define WGPU_FNS(X) \
@@ -54,7 +55,26 @@ static int gael_home(char *path);
 	X(WgHandle, wgpuCommandEncoderFinish, (WgHandle, const void *)) \
 	X(void, wgpuCommandBufferRelease, (WgHandle)) \
 	X(void, wgpuQueueSubmit, (WgHandle, size_t, const WgHandle *)) \
-	X(u32, wgpuDevicePoll, (WgHandle, u32, const u64 *))
+	X(u32, wgpuDevicePoll, (WgHandle, u32, const u64 *)) \
+	X(WgHandle, wgpuDeviceCreateTexture, (WgHandle, const WgTextureDescriptor *)) \
+	X(WgHandle, wgpuTextureCreateView, (WgHandle, const void *)) \
+	X(WgHandle, wgpuDeviceCreateRenderPipeline, (WgHandle, const WgRenderPipelineDescriptor *)) \
+	X(WgHandle, wgpuRenderPipelineGetBindGroupLayout, (WgHandle, u32)) \
+	X(WgHandle, wgpuCommandEncoderBeginRenderPass, (WgHandle, const WgRenderPassDescriptor *)) \
+	X(void, wgpuRenderPassEncoderSetPipeline, (WgHandle, WgHandle)) \
+	X(void, wgpuRenderPassEncoderSetBindGroup, (WgHandle, u32, WgHandle, size_t, const u32 *)) \
+	X(void, wgpuRenderPassEncoderSetVertexBuffer, (WgHandle, u32, WgHandle, u64, u64)) \
+	X(void, wgpuRenderPassEncoderDraw, (WgHandle, u32, u32, u32, u32)) \
+	X(void, wgpuRenderPassEncoderEnd, (WgHandle)) \
+	X(void, wgpuRenderPassEncoderRelease, (WgHandle)) \
+	X(void, wgpuCommandEncoderCopyTextureToBuffer, (WgHandle, const WgTexelCopyTextureInfo *, const WgTexelCopyBufferInfo *, const WgExtent3D *)) \
+	X(void, wgpuTextureRelease, (WgHandle)) \
+	X(void, wgpuTextureViewRelease, (WgHandle)) \
+	X(void, wgpuRenderPipelineRelease, (WgHandle)) \
+	X(void, wgpuQueueRelease, (WgHandle)) \
+	X(void, wgpuDeviceRelease, (WgHandle)) \
+	X(void, wgpuAdapterRelease, (WgHandle)) \
+	X(void, wgpuInstanceRelease, (WgHandle))
 
 static struct {
 	int tried, ok, need;     /* tried to start; a device is there; GAEL_GPU=1 */
@@ -166,6 +186,7 @@ static int gpu_open(void)
 	}
 	g_gpu.queue = g_gpu.wgpuDeviceGetQueue(g_gpu.device);
 	g_gpu.why[0] = 0;
+	atexit(gpu_close);
 	return 1;
 }
 
@@ -228,6 +249,19 @@ static Cell gpu_cell(u32 v, u8 kt) /* and back */
 	return c;
 }
 
+/* gpu_ready: the GPU, opened on the first call; 0 when there is none or GAEL_GPU=0 (the reason in g_gpu.why) */
+static int gpu_ready(void)
+{
+	if (!g_gpu.tried) {
+		const char *env = getenv("GAEL_GPU");
+		g_gpu.tried = 1;
+		g_gpu.need = env && !strcmp(env, "1");
+		if (env && !strcmp(env, "0")) strcpy(g_gpu.why, "GAEL_GPU=0");
+		else g_gpu.ok = gpu_open();
+	}
+	return g_gpu.ok;
+}
+
 /* gpu_run K FRAME: run kernel K over its vec; 1 when it ran on the GPU, 0 when the VM should run the loop, -1 with
  * the error in g_gpu_error */
 static int gpu_run(i32 k, const Cell *frame)
@@ -245,14 +279,7 @@ static int gpu_run(i32 k, const Cell *frame)
 	u32 groups, gx, gy;
 	i32 c, e;
 	int ok = 1, errors;
-	if (!g_gpu.tried) {
-		const char *env = getenv("GAEL_GPU");
-		g_gpu.tried = 1;
-		g_gpu.need = env && !strcmp(env, "1");
-		if (env && !strcmp(env, "0")) strcpy(g_gpu.why, "GAEL_GPU=0");
-		else g_gpu.ok = gpu_open();
-	}
-	if (!g_gpu.ok) {
+	if (!gpu_ready()) {
 		if (!g_gpu.need) return 0;
 		sprintf(g_gpu_error, "gpu-each: GAEL_GPU=1, and there is no GPU to run it on (%.400s)", g_gpu.why);
 		return -1;

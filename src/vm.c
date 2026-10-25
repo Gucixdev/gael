@@ -1585,6 +1585,7 @@ static int coro_grow(i64 cells_needed, i64 frames_needed)
 	CASE(OP_J##op##_SS) sp -= 2; if ((s[sp].F R s[sp + 1].F) == in->b) pc = in->a; else pc++; NEXT;
 
 static int gpu_run(i32 k, const Cell *frame); /* gpu.c: 1 when kernel K ran on the GPU, 0 to run it here, -1 an error */
+static int gfx_op(i32 op, const Cell *a, Cell *out, const char *path); /* gfx.c */
 static char g_gpu_error[512];
 
 static int vm_run(i32 pc)
@@ -2518,6 +2519,16 @@ static int vm_run(i32 pc)
 		}
 		CASE(OP_CORO_TIME) s[sp++].f = g_coro_time; NEXT;
 		CASE(OP_FAIL) return vm_error(in, g_strs[in->a].p);
+		CASE(OP_GFX) { /* gfx.c: b arguments; save-png's last one is the path, a string to let go of */
+			Cell out;
+			const char *path = in->a == 7 ? c_str(s[sp - 1].i) : 0;
+			int r = gfx_op(in->a, s + sp - in->b, &out, path);
+			if (in->a == 7) obj_release(s[sp - 1].i);
+			sp -= in->b;
+			if (r < 0) return vm_error(in, g_gpu_error);
+			if (r > 0) s[sp++] = out;
+			NEXT;
+		}
 		CASE(OP_GPU) { /* gpu.c; a runtime error there stops the program, as on the VM */
 			int r = gpu_run(in->a, s + fp);
 			if (r < 0) return vm_error(in, g_gpu_error);

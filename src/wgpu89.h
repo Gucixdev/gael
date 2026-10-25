@@ -126,6 +126,136 @@ typedef struct {
 	const WgBindGroupEntry *entries;
 } WgBindGroupDescriptor;
 
+typedef struct {
+	u32 width, height, depthOrArrayLayers;
+} WgExtent3D;
+
+typedef struct {
+	u32 x, y, z;
+} WgOrigin3D;
+
+typedef struct {
+	WgChained *nextInChain;
+	WgStringView label;
+	u64 usage;
+	u32 dimension;
+	WgExtent3D size;
+	u32 format, mipLevelCount, sampleCount;
+	size_t viewFormatCount;
+	const u32 *viewFormats;
+} WgTextureDescriptor;
+
+typedef struct {
+	WgChained *nextInChain;
+	u32 format;
+	u64 offset;
+	u32 shaderLocation;
+} WgVertexAttribute;
+
+typedef struct {
+	WgChained *nextInChain;
+	u32 stepMode;
+	u64 arrayStride;
+	size_t attributeCount;
+	const WgVertexAttribute *attributes;
+} WgVertexBufferLayout;
+
+typedef struct {
+	WgChained *nextInChain;
+	WgHandle module;
+	WgStringView entryPoint;
+	size_t constantCount;
+	const void *constants;
+	size_t bufferCount;
+	const WgVertexBufferLayout *buffers;
+} WgVertexState;
+
+typedef struct {
+	WgChained *nextInChain;
+	u32 topology, stripIndexFormat, frontFace, cullMode, unclippedDepth;
+} WgPrimitiveState;
+
+typedef struct {
+	WgChained *nextInChain;
+	u32 count, mask, alphaToCoverageEnabled;
+} WgMultisampleState;
+
+typedef struct {
+	u32 operation, srcFactor, dstFactor;
+} WgBlendComponent;
+
+typedef struct {
+	WgBlendComponent color, alpha;
+} WgBlendState;
+
+typedef struct {
+	WgChained *nextInChain;
+	u32 format;
+	const WgBlendState *blend;
+	u64 writeMask;
+} WgColorTargetState;
+
+typedef struct {
+	WgChained *nextInChain;
+	WgHandle module;
+	WgStringView entryPoint;
+	size_t constantCount;
+	const void *constants;
+	size_t targetCount;
+	const WgColorTargetState *targets;
+} WgFragmentState;
+
+typedef struct {
+	WgChained *nextInChain;
+	WgStringView label;
+	WgHandle layout;
+	WgVertexState vertex;
+	WgPrimitiveState primitive;
+	const void *depthStencil;
+	WgMultisampleState multisample;
+	const WgFragmentState *fragment;
+} WgRenderPipelineDescriptor;
+
+typedef struct {
+	f64 r, g, b, a;
+} WgColor;
+
+typedef struct {
+	WgChained *nextInChain;
+	WgHandle view;
+	u32 depthSlice;
+	WgHandle resolveTarget;
+	u32 loadOp, storeOp;
+	WgColor clearValue;
+} WgRenderPassColorAttachment;
+
+typedef struct {
+	WgChained *nextInChain;
+	WgStringView label;
+	size_t colorAttachmentCount;
+	const WgRenderPassColorAttachment *colorAttachments;
+	const void *depthStencilAttachment;
+	WgHandle occlusionQuerySet;
+	const void *timestampWrites;
+} WgRenderPassDescriptor;
+
+typedef struct {
+	WgHandle texture;
+	u32 mipLevel;
+	WgOrigin3D origin;
+	u32 aspect;
+} WgTexelCopyTextureInfo;
+
+typedef struct {
+	u64 offset;
+	u32 bytesPerRow, rowsPerImage;
+} WgTexelCopyBufferLayout;
+
+typedef struct {
+	WgTexelCopyBufferLayout layout;
+	WgHandle buffer;
+} WgTexelCopyBufferInfo;
+
 #define WG_STYPE_SHADER_SOURCE_WGSL 0x2u
 #define WG_CALLBACK_ALLOW_PROCESS_EVENTS 0x2u
 #define WG_FEATURE_LEVEL_CORE 0x2u
@@ -137,5 +267,28 @@ typedef struct {
 #define WG_BUFFER_STORAGE 0x80u
 #define WG_MAP_READ 0x1u
 #define WG_WHOLE_MAP_SIZE ((size_t)-1)   /* WGPU_WHOLE_MAP_SIZE */
+#define WG_BUFFER_VERTEX 0x20u
+#define WG_TEXTURE_COPY_SRC 0x1u
+#define WG_TEXTURE_RENDER_ATTACHMENT 0x10u
+#define WG_TEXTURE_DIMENSION_2D 0x2u
+#define WG_FORMAT_RGBA8_UNORM 0x16u
+#define WG_FORMAT_BGRA8_UNORM 0x1Bu
+#define WG_VERTEX_STEP_VERTEX 0x1u
+#define WG_VERTEX_FLOAT32 0x1Cu
+#define WG_VERTEX_FLOAT32X2 0x1Du
+#define WG_VERTEX_UNORM8X4 0x9u
+#define WG_TOPOLOGY_TRIANGLE_LIST 0x4u
+#define WG_FRONT_CCW 0x1u
+#define WG_CULL_NONE 0x1u
+#define WG_BLEND_ADD 0x1u
+#define WG_BLEND_ONE 0x2u
+#define WG_BLEND_SRC_ALPHA 0x5u
+#define WG_BLEND_ONE_MINUS_SRC_ALPHA 0x6u
+#define WG_COLOR_WRITE_ALL 0xFu
+#define WG_LOAD_LOAD 0x1u
+#define WG_LOAD_CLEAR 0x2u
+#define WG_STORE_STORE 0x1u
+#define WG_DEPTH_SLICE_UNDEFINED 0xFFFFFFFFu
+#define WG_ASPECT_ALL 0x1u
 
 #endif

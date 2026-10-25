@@ -135,6 +135,14 @@ The body sets only its element's fields and its own `let`s, reads `f32` `i32` `u
 arithmetic, comparisons, `if` `when` `let` `do`, math, `min` `max` `abs` `clamp`; no calls, prints or loops. A `let`
 from a literal says its type: `(k : f32 0.5)`. With no GPU it runs on the VM, with the same result.
 
+## Drawing
+
+```lisp
+(def c (new-canvas 640 480))               ; on the GPU; colors are 0xRRGGBBAA
+(draw-clear c 0x202030ff) (draw-rect c 10.0 10.0 50.0 20.0 0xff0000ff) (draw-circle c 320.0 240.0 8.0 0xffcc00ff)
+(draw-line c 0.0 0.0 640.0 480.0 2.0 0xffffffff) (show-frame c) (canvas-pixel c 5 5) (save-png c "out.png")
+```
+
 ## Macros
 
 ```lisp

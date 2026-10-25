@@ -10,6 +10,7 @@
 #   tests/gpu/NAME.gael     gael -g prints NAME.wgsl, the WGSL of its gpu-each, and it prints NAME.out; with GAEL_WGPU
 #                           set to a libwgpu_native.so it also runs on that GPU (GAEL_GPU=1), as does examples/gpu.gael,
 #                           and prints the same, and tests/errors/gpu-fault*.gael stop with the same error there;
+#   tests/draw/NAME.gael    with GAEL_WGPU set: drawing on a canvas on the GPU prints NAME.out
 #                           tests/gpu/abi.c checks src/wgpu89.h against tests/gpu/webgpu.h
 #   (for both, NAME.env holds VAR=value words for its environment, like a smaller heap)
 #   tests/repl.in           the REPL's stdout must equal tests/repl.out, every line of tests/repl.err on stderr, and
@@ -130,16 +131,25 @@ for bin in "${builds[@]}"; do
 		check "$b gael -g $f" "$ok"
 	done
 	if [ -n "${GAEL_WGPU:-}" ]; then # the same kernels on a GPU, through wgpu-native
+		# the GPU's driver (lavapipe's threads) does not free everything at the end; gael's own memory is GAEL_CHECK's
+		gpu_env=(env ASAN_OPTIONS=detect_leaks=0)
 		for f in tests/gpu/*.gael examples/gpu.gael; do
 			ok=1
-			GAEL_GPU=1 "$bin" "$f" > "$out/stdout" 2> "$out/stderr" || ok=0
+			GAEL_GPU=1 "${gpu_env[@]}" "$bin" "$f" > "$out/stdout" 2> "$out/stderr" || ok=0
 			cmp -s "$out/stdout" "${f%.gael}.out" || { ok=0; diff "${f%.gael}.out" "$out/stdout" | head -5; }
 			[ -s "$out/stderr" ] && { ok=0; head -3 "$out/stderr"; }
 			check "$b on the GPU: $f" "$ok"
 		done
+		for f in tests/draw/*.gael; do # drawing: pixels in the middle of shapes, and a PNG
+			ok=1
+			env TMPDIR="$out" "${gpu_env[@]}" "$bin" "$f" > "$out/stdout" 2> "$out/stderr" || ok=0
+			cmp -s "$out/stdout" "${f%.gael}.out" || { ok=0; diff "${f%.gael}.out" "$out/stdout" | head -5; }
+			[ -s "$out/stderr" ] && { ok=0; head -3 "$out/stderr"; }
+			check "$b drawing: $f" "$ok"
+		done
 		for f in tests/errors/gpu-fault*.gael; do # a run that fails on the GPU stops as on the VM
 			ok=1
-			GAEL_GPU=1 "$bin" "$f" > "$out/stdout" 2> "$out/stderr"
+			GAEL_GPU=1 "${gpu_env[@]}" "$bin" "$f" > "$out/stdout" 2> "$out/stderr"
 			[ $? = 1 ] || ok=0
 			[ -s "$out/stdout" ] && { ok=0; echo "  stdout: $(head -1 "$out/stdout")"; }
 			while IFS= read -r line; do
@@ -190,7 +200,7 @@ for bin in "${builds[@]}"; do
 	done
 done
 
-[ -n "${GAEL_WGPU:-}" ] || echo "skipped: gpu-each on a GPU (set GAEL_WGPU to a libwgpu_native.so to run it)"
+[ -n "${GAEL_WGPU:-}" ] || echo "skipped: gpu-each and drawing on a GPU (set GAEL_WGPU to a libwgpu_native.so to run them)"
 if command -v cc > /dev/null; then # the C89 mirror of WebGPU's structs, against the header it was written from
 	ok=1
 	if cc -std=c11 -o "$out/abi" tests/gpu/abi.c 2> "$out/abi.log"; then

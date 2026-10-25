@@ -802,7 +802,15 @@ static const Builtin g_builtins[] = {
 	{ "floor", "f", "x", 'f', OP_MATH, 9, 0 },
 	{ "ceil", "f", "x", 'f', OP_MATH, 10, 0 },
 	{ "atan2", "ff", "y x", 'f', OP_MATH2, 0, 0 },
-	{ "pow", "ff", "x y", 'f', OP_MATH2, 1, 0 }
+	{ "pow", "ff", "x y", 'f', OP_MATH2, 1, 0 },
+	{ "new-canvas", "ii", "width height", 'i', OP_GFX, 0, 2 },
+	{ "draw-clear", "ii", "canvas color", 'u', OP_GFX, 1, 2 },
+	{ "draw-rect", "iffffi", "canvas x y width height color", 'u', OP_GFX, 2, 6 },
+	{ "draw-circle", "ifffi", "canvas x y radius color", 'u', OP_GFX, 3, 5 },
+	{ "draw-line", "ifffffi", "canvas x1 y1 x2 y2 width color", 'u', OP_GFX, 4, 7 },
+	{ "show-frame", "i", "canvas", 'b', OP_GFX, 5, 1 },
+	{ "canvas-pixel", "iii", "canvas x y", 'i', OP_GFX, 6, 3 },
+	{ "save-png", "is", "canvas path", 'b', OP_GFX, 7, 2 }
 };
 
 static Ty code_type(char c)
@@ -3472,7 +3480,7 @@ static o run_work(i32 base)
 				else if (is_map(t)) f->c = 2;
 				else if (is_pool(t)) f->c = 3;
 				else if (t != T_STR && t != T_ERR) err_node(f->cur, "len takes a string, a vec, a map or a pool, not %s", tn(t));
-			} else if (t != T_ERR && t != t2) {
+			} else if (t != T_ERR && t != t2 && !(bi->op == OP_GFX && t2 == T_FLOAT && t == T_F32)) { /* drawing takes f32s too */
 				if (nargs == 1) err_node(f->cur, "%s takes %s, not %s", bi->name, a_type(t2), tn(t));
 				else err_node(f->cur, "%s: %s is %s, it must be %s", bi->name, param_name(bi, f->k, pname), tn(t), tn(t2));
 			}
