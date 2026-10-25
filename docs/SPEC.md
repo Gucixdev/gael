@@ -122,6 +122,22 @@ potwierdzenia:
   zakleszczeń - nie ma już czego wykrywać. Prędkość ma przyjść z rdzeni: fgjob dzieli pętlę na kawałki na wszystkie
   rdzenie, masterslave to wątek główny rozdający robotę; punkt zbiegu raz na klatkę (jak Unity DOTS i silnik Naughty
   Dog), a kompilator pilnuje, że kawałek pisze tylko do swojego elementu - bez data race i bez locków.
+- **ECS jako gem, który przychodzi z gaelem (2026-10-25; jego słowa: „ecs z tagami albo hashtagami, co lepsze i
+  szybsze, jako gem, bo to będzie bardzo kluczowy gem w gamedev”, „konkurencja: flecs i inne ECS w surowym C z tagami
+  i query”):** `gems/ecs.gael` obok binarki - gael szuka gemu obok programu, potem w swoim folderze, potem w `gems/`
+  obok binarki. Jak flecs i ECS-y w C: id encji 64-bit (slot i generacja, więc stare id nie trafia w nową encję),
+  kolumna na komponent (vec structów to kolumny pól), komponenty i tagi to bity jednej maski 64-bit na encję,
+  zapytania `(ecs-each W (e c...) :with (tagi) :not (tagi) ciało...)` przez makro, bez kosztu ponad samą pętlę.
+  Tagi czy hashtagi - zmierzone na 100 zapytaniach po 100 tys. encji: tag jako bit kontra zbiór nazw na encję (mapa
+  string → bool). W VM bity to 1,26 raza mniej instrukcji (3,67 mld kontra 4,63 mld, callgrind) i 10 razy mniej
+  pamięci (5 MB kontra 55 MB); w kodzie natywnym test bitu to kilka instrukcji, szukanie w mapie dziesiątki, więc
+  różnica urośnie (do zmierzenia z JIT-em). Nazwa tagu jako dana (`(Game.bit "burning")`) zamienia się na bit raz.
+  Na razie bez archetypów (tabel jak we flecs): bez generyków kolumny są stałe, a skan maski po ciągłej kolumnie
+  wystarcza do ~100 tys. encji; archetypy i więcej niż 64 komponenty i tagi - po generykach.
+- **Biblioteka z holyc (jego słowa, 2026-10-25):** „większy porządek, bo wszystko mogłoby być wrzucone z tamtego do
+  lib”, „a nawet priority event queue tam było”. Gemy, które przychodzą z gaelem (`gems/`), to porty modułów z
+  `holyc/base` na gaela: kolejka priorytetowa (jego konwencja: 1 najważniejsze, 0 i mniej na końcu), kolejka zdarzeń z
+  tickiem do nagrywania i odtwarzania, FSM, RNG (PCG32), szum, easing, krzywe - po kolei w `PLAN.md`.
 - **Comptime, traity, GPU (2026-10-25):** comptime - kod gaela wykonywany w trakcie kompilacji przez ten sam VM;
   traity - zbiór haków `Typ.nazwa` sprawdzany w kompilacji, wywołania statyczne; MLIR nie (ogromna zależność w C++),
   GPU później przez SPIR-V; FSM i HFSM jako gem napisany w gaelu, nie w jądrze.

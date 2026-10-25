@@ -12,6 +12,10 @@ dokumentacja mieści się w kontekście.
 - [x] Wyniki `./bench` po ostatnich zmianach w `benchmarks/RESULTS.md` (`1565df1`).
 - [x] `task` → `coroutine`: typ `(coroutine T)`, `step-coroutines`, `run-coroutines`, `coroutine-time`; `async`,
       `await`, `sleep`, `yield`, `done?` zostają.
+- [x] Gem `ecs` jak flecs: id z generacją, kolumna na komponent, tagi i komponenty jako bity maski, zapytania
+      `ecs-each` z `:with` i `:not`; w `gems/` obok binarki, `examples/ecs.gael` (`0ca7018`). Tagi jako bity wygrały z
+      nazwami: 1,26 raza mniej instrukcji w VM i 10 razy mniej pamięci.
+- [x] `assert`, `_` jako nazwa w `let`, nazwy wbudowane (`:`) jako literały we wzorcach makr (`b59e865`).
 - [x] Bez `async`/`await`: `(coroutine (f x))` startuje, `(poll co)` daje `(option T)` od razu; nic nie czeka.
 - [x] `repldump.gael`: data i godzina przy każdej formie i które funkcje plików podmieniła; pliki nigdy nie są
       nadpisywane, zmiana na żywo żyje w programie i w dzienniku, jak plik changes w Smalltalku (`ba3b807`).
@@ -32,6 +36,14 @@ dokumentacja mieści się w kontekście.
 - [ ] Ściąga dla modeli (`docs/MODELS.md`, 2-4 tys. tokenów) i skill `gael` w claude-config; test pilnuje, że każda
       nazwa z `gael -n` jest w ściądze.
 - [ ] `gael -m`: rozwinięte makra, żeby było widać, co z nich wychodzi.
+
+## 1b. Biblioteka: porty z holyc do `gems/`
+
+- [ ] `pqueue`: kopiec z jego konwencją priorytetów (1 pierwsze, 0 i ujemne na końcu), stabilny przy równych.
+- [ ] `events`: kolejka zdarzeń z tickiem (rodzaj, tick, dwie dane) do nagrywania i odtwarzania; zdarzenia jednego
+      ticku od razu.
+- [ ] `fsm` i `hfsm` w gaelu: stany, przejścia, wejście i wyjście.
+- [ ] `rng` (PCG32), `noise`, `easing`, `curve`.
 
 ## 2. Jedna binarka i build system
 
