@@ -555,6 +555,11 @@ static const char *const g_reserved[] = {
 };
 
 
+/* min, max, abs and clamp: built in, but not reserved (soft_form) */
+static const char *const g_soft_names[] = { "min", "max", "abs", "clamp" };
+#define SOFT_MARK 1000 /* the ival of the < and the if a soft form wrote: SOFT_MARK + its index in g_soft_names */
+static i32 g_soft_k; /* the soft form being rewritten */
+
 /* the forms on coroutines, in the order of F_CORO's op */
 static const char *const g_coro_names[] = { "poll", "sleep", "yield", "step-coroutines", "run-coroutines", "done?", "coroutine-time" };
 static const char *const g_coro_usage[] = { "(poll co)", "(sleep 0.5)", "(yield)", "(step-coroutines dt)", "(run-coroutines)", "(done? co)", "(coroutine-time)" };
@@ -1266,23 +1271,35 @@ static int pure_form(i32 n)
 		"ceil", "atan2", "pow"
 	};
 	static const char *const logic[] = { "and", "or", "not", "nand", "nor", "xor", "xnor" };
+	static i32 st[4 * MAX_DEPTH];
+	i32 sp = 0, head, x;
 	size_t k;
-	i32 head, x;
-	if (n < 0 || g_nodes[n].stamp) return 0; /* a macro wrote it: not the program's mistake */
-	if (g_nodes[n].kind != N_LIST) return 1;
-	head = first_of(n);
-	if (!is_sym(head)) return 0;
-	for (k = 0; k < GAEL_COUNT(logic); k++) { /* (and (run "a") (run "b")) runs b when a succeeds, as bash's && does */
-		if (strcmp(g_nodes[head].text, logic[k])) continue;
-		for (x = next_of(head); x >= 0; x = next_of(x)) {
-			if (!pure_form(x)) return 0;
+	const char *s;
+	st[sp++] = n;
+	while (sp > 0) { /* every form here, and every operand of a logic one, must be pure */
+		n = st[--sp];
+		if (n < 0 || g_nodes[n].stamp) return 0; /* a macro wrote it: not the program's mistake */
+		if (g_nodes[n].kind != N_LIST) continue;
+		head = first_of(n);
+		if (!is_sym(head)) return 0;
+		s = g_nodes[head].text;
+		for (k = 0; k < GAEL_COUNT(logic) && strcmp(s, logic[k]); k++) {}
+		if (k < GAEL_COUNT(logic)) { /* (and (run "a") (run "b")) runs b when a succeeds, as bash's && does */
+			for (x = next_of(head); x >= 0; x = next_of(x)) {
+				if (sp == (i32)GAEL_COUNT(st)) return 0; /* too many to look at: say nothing */
+				st[sp++] = x;
+			}
+			continue;
 		}
-		return 1;
+		for (k = 0; k < GAEL_COUNT(pure) && strcmp(s, pure[k]); k++) {}
+		if (k < GAEL_COUNT(pure)) continue;
+		for (k = 0; k < GAEL_COUNT(g_soft_names) && strcmp(s, g_soft_names[k]); k++) {}
+		if (k < GAEL_COUNT(g_soft_names) && find_fn(s) < 0 && find_macro(s) < 0 && find_global(s) < 0 &&
+		    find_local(s, g_nodes[head].stamp) < 0)
+			continue; /* min and the like, unless the program has its own of that name */
+		return 0;
 	}
-	for (k = 0; k < GAEL_COUNT(pure); k++) {
-		if (!strcmp(g_nodes[head].text, pure[k])) return 1;
-	}
-	return 0;
+	return 1;
 }
 
 /* thrown_away NODE: the warning for a pure form whose value nothing takes */
@@ -1777,9 +1794,6 @@ static i32 arith_hook(Frame *f, Ty t)
 /* min, max, abs and clamp are built in but not reserved: a variable, a field, a macro or a function of that name comes
  * first, so (let ((max 0)) ...) and (struct Rect (min : Vec2) (max : Vec2)) stay fine. Each use is rewritten into an
  * if over < (soft_form, below), so they work on whatever < orders: numbers of one type, or a type with a compare hook */
-static const char *const g_soft_names[] = { "min", "max", "abs", "clamp" };
-#define SOFT_MARK 1000 /* the ival of the < and the if a soft form wrote: SOFT_MARK + its index in g_soft_names */
-static i32 g_soft_k; /* the soft form being rewritten */
 
 static i32 soft_of(const Frame *f) /* the soft form that wrote this < or if, -1 when the program did */
 {
