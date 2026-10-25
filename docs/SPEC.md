@@ -49,22 +49,37 @@ potwierdzenia:
   sprawdzenia co plik. Dynamika Lispa, która się liczy, to podmiana funkcji na żywo i makra - obie działają z typami,
   dopóki sygnatura i układ structa się nie zmieniają (wtedy restart). Bez tego artemacs nie byłby Emacsem.
 - **Statyczny kompilowany Lisp nie jest za trudny** - gael już nim jest (bytecode); są też inne (Carp: statyczny Lisp
-  bez GC kompilowany do C, z REPL-em). Kod natywny przez **gael → C89 → dowolny kompilator C**: działa na wszystkim, co
-  ma kompilator C; wywołanie funkcji z C to wywołanie w C (FFI bez narzutu - albo żadnego, jak chce braindump); kod
-  maszynowy zamiast bytecode'u Godota utrudnia reverse engineering; bez LLVM, libgccjit i Cranelifta. VM zostaje do
-  REPL-a i podmiany na żywo, gra wychodzi natywnie.
+  bez GC kompilowany do C, z REPL-em).
+- **Jedna binarka (decyzja 2026-10-25, jego słowa):** „1 binarka bez zależności od gcc, tcc (...) i to będzie jako
+  jedno: REPL, kompilator, JIT etc w jednym; build system też inspirowany cargo czy pip czy make/cmake/ninja/meson”.
+  Czyli własny generator kodu maszynowego w C89 w środku gaela (jak Go i Zig): JIT i AOT z tego samego generatora,
+  VM zostaje do REPL-a, podmiany na żywo i jako pierwszy poziom; LLVM opcjonalnie (tekst `.ll`), gdy jest
+  zainstalowany. Odrzucone: gael → C (jego słowa: „nie chcę kompilować do C jak Nim” i „nie chcę 100 flag gcc”),
+  libgccjit (to gcc: wbudowany driver woła `as` i `ld`, potem `dlopen`), tcc (LGPL-2.1, bez optymalizatora, kod
+  na poziomie -O0), MIR (MIT, C11, autor podaje 91% gcc -O2 i ~100× szybszą kompilację; cudzy kod wbrew manifestowi -
+  zostaje jako miara i plan B). Kroki: `gael build` jako kopia gaela z doklejonym programem (od razu, szybkość VM);
+  JIT bazowy x86-64 z bytecode'u; JIT optymalizujący (SSA, rejestry, inlining, wycinanie sprawdzeń); AOT z tego samego
+  generatora; potem arm64, riscv64, WASM. Kod maszynowy w pliku utrudnia też reverse engineering (braindump: „o wiele
+  lepiej niż Godot”). Konsole i iOS zabraniają JIT-a - tam tylko AOT.
+- **Build system w tej samej binarce:** z cargo plik projektu, lock i jedna komenda (`gael new`, `run`, `check`,
+  `test`, `build`); z pip `gael get NAZWA` (gem z gita albo ze ścieżki); z make/ninja graf zależności i przebudowa po
+  hashu treści; z mesona zero flag. Plik projektu w gaelu: `(project game :version "0.1.0" :main "src/main.gael"
+  :requires (shapes fsm))`.
 - **Wydajność jak C/Rust/C++, bez ich bólu głowy (2026-10-25, jego słowa):** cel to kod natywny na poziomie C, bez
   undefined behavior i z aliasowaniem, które kompilator zna. Bez UB już jest: int się zawija, dzielenie przez zero,
   indeks poza vecem i przesunięcie poza zakres to błędy czasu działania, wiszącej referencji nie ma (liczniki, uchwyty
   z generacją, kontrola aren). Aliasowanie: struct to wartość, więc dwie zmienne nigdy nie dzielą pól; vec i mapa to
-  referencje, a kompilator wie, gdzie która jest - z tym gael → C może pisać `restrict` tam, gdzie wolno, zamiast
-  zgadywać jak kompilator C. Ownership (owned/borrowed/shared) opcjonalnie dołoży resztę gwarancji. Generowany C też
-  bez UB: arytmetyka bez znaku tam, gdzie gael się zawija, sprawdzenia, które kompilator może wyciąć, gdy udowodni.
+  referencje, a kompilator wie, gdzie która jest - z tym własny generator kodu wie, co może trzymać w rejestrach i
+  przestawiać, zamiast zgadywać jak kompilator C. Ownership (owned/borrowed/shared) opcjonalnie dołoży resztę
+  gwarancji. Generowany kod też bez UB: int zawija się jak w VM, sprawdzenia zostają, chyba że generator udowodni, że
+  są zbędne.
 - **Pomiar (2026-10-25, `./bench`, wyniki w `benchmarks/RESULTS.md`):** VM gaela jest szybszy od samego GDScriptu
   (Godot 4.7.2) na wszystkich sześciu programach (1,1-6,5 raza) i od Pythona na pięciu; Lua 5.4 (VM na rejestrach) jest
   1,2-3,9 raza szybsza od gaela, C 8-47 razy. Start 1,6 ms (C 1,4, Godot 0,9 s). Do poprawy: bool w vecu zajmuje 8 bajtów
   (sito: 104 MB, C 6 MB). Z tego: VM da się przyspieszyć (rejestry zamiast stosu, jak Lua), ale do C dojdzie się tylko
-  przez gael → C.
+  przez kod natywny. Po przyspieszeniu VM (`88e71bd`: computed goto, superinstrukcje, warunki jako skoki, nowa mapa,
+  bool jako bit): 1,9-3,6 raza mniej instrukcji (callgrind); gael szybszy od Lua 5.4 na pięciu z sześciu (mapa: Lua
+  1,5 raza szybsza), od GDScriptu 2,3-12,6 raza; C 4-28 razy szybsze; start 1,5 ms; sito 3 MB (C 6).
 - **Bool jako bit (2026-10-25, jego pomysł „bool space”):** kolumna booli w vecu i w puli to ciąg bitów, 64 w komórce:
   `(vec bool)` i pola bool structów trzymanych w vecach i pulach (flagi encji) zajmują bit zamiast 8 bajtów. Typ zna
   swoje komórki-boole (maska `bits`, do 64 komórek); układ kolumn liczy przesunięcia z niej, więc reszta VM-u się nie
@@ -72,13 +87,32 @@ potwierdzenia:
   3 MB. Tag opcji nie jest pakowany (na razie).
 - **Przezroczystość (jego słowa, 2026-10-25):** wszystko oczywiste, bez zbędnych komplikacji, każdy ma rozumieć, co się
   dzieje na jego maszynie. Narzędzia do tego: `gael -d` (bytecode, także złożone rozkazy), dalej `gael -m`
-  (macroexpand) i podgląd C z gael → C.
-- **`@` = dla narzędzi, nie dla programu:** adnotacje, które nie wychodzą poza edytor i build deweloperski (`@export`,
-  później `@debug`, `@test`); build wydania je pomija.
-- **Kolejność, język najpierw:** zmiana nazw zadań na korutyny; `gael -m` (macroexpand - przejrzystość makr);
-  `load`/`reload` w działającym programie; generyki (kopia na każdy typ, zero kosztu) i `result`; biblioteka w gaelu
-  na generykach (`sort`, `min`, `max`, `range`); pomiar względem GDScriptu; gael → C; wątki (masterslave, fgjob);
-  potem artemacs.
+  (macroexpand) i podgląd kodu maszynowego z własnego generatora.
+- **`@` siedzi w edytorze i nie wychodzi poza (jego słowa, 2026-10-25; „test i debug też powinny mieć @”):** edytor
+  to sam gael (jedna binarka: język, kompilator, edytor), więc „w edytorze” znaczy w środowisku deweloperskim: REPL,
+  `gael run`, `gael check`, `gael test`, inspektor, artemacs. `gael build` (wydanie) wycina wszystko, co ma `@`.
+  Znaczniki: `@export` (inspektor), `@warn` i `@err` (komunikat przy linii i na liście; niczego nie blokują),
+  `@test` - blok `(@test "nazwa" ...)`, który uruchamia `gael test` - i `@debug` (kod tylko w trakcie pracy, np.
+  dodatkowe wypisy i sprawdzenia). Nieznany znacznik albo znacznik w złym miejscu to błąd (literówka `@exprot`).
+  Makro, które ma odrzucić złe użycie, woła `(compile-error "...")` bez `@`, bo to musi działać też w wydaniu.
+- **Język pisany głównie przez modele (jego słowa, 2026-10-25):** „język głównie pod vibecode, więc ty i mniejszy,
+  może jakiś chat na moim sprzęcie, będziemy klepać w gaelu; musi pozwalać modelowi dobrze pisać maksymalnie wydajny
+  kod i bezpieczny”. Z tego zasady: (1) komunikat mówi, co wpisać - plik:linia:kolumna, co źle, poprawna forma;
+  (2) nawiasy - przy brakującym `)` linia, w której wcięcie mówi, że forma się skończyła; (3) jeden sposób na rzecz i
+  nazwy, które modele znają z Clojure, Go i Rusta, bez synonimów; (4) oczywisty kod jest szybki i bez UB - pomyłka
+  modelu to błąd kompilacji albo czysty błąd z linią; (5) szybka pętla agenta: `gael check`, `gael test`, `gael -d`,
+  `gael -m`, `gael bench`; (6) dokumentacja w kontekście małego modelu - ściąga na 2-4 tys. tokenów (REFERENCE ma
+  ~47 KB, ~12 tys.), `examples/` jako przykłady; (7) skill `gael` w claude-config, ten sam tekst jako prompt dla
+  lokalnego modelu.
+- **Błędy i ostrzeżenia (2026-10-25):** jeden format `plik:linia:kolumna: error|warning: ...`. Error zatrzymuje
+  zawsze. Warning (nieużyta zmienna lokalna - `_` na początku nazwy ucisza; wartość wyliczona i wyrzucona; kod po
+  `return`) pokazuje się w `run`, REPL-u, `gael check` i edytorze, a program działa dalej - połowiczna funkcja
+  podmieniana na żywo nie blokuje pracy; `gael build` (wydanie) z ostrzeżeniem we własnym kodzie się nie buduje.
+  Bez flag. Nieużyte parametry są w porządku (haki i callbacki mają stałe sygnatury).
+- **Comptime, traity, GPU (2026-10-25):** comptime - kod gaela wykonywany w trakcie kompilacji przez ten sam VM;
+  traity - zbiór haków `Typ.nazwa` sprawdzany w kompilacji, wywołania statyczne; MLIR nie (ogromna zależność w C++),
+  GPU później przez SPIR-V; FSM i HFSM jako gem napisany w gaelu, nie w jądrze.
+- **Kolejność:** w `PLAN.md` (jeden plik, po kolei, odhaczany).
 
 ## Do rozstrzygnięcia
 
@@ -407,7 +441,9 @@ Potem: makra i moduły (0.2), manifest i resolver gemów (0.3), bufor i okno (0.
   nazw. Wcześniej każde szukanie szło po całej tabeli i kompilacja rosła z kwadratem liczby funkcji: 1000/2000/4000
   funkcji kompilowało się w ~11/24/78 ms, teraz ~7/11/17 ms (z ~2 ms startu procesu; callgrind: 689 mln instrukcji
   → 100 mln). Nieudana jednostka REPL-a, która zabiera nazwy, odbudowuje indeks z tabel.
-- **Zadania, czyli korutyny i async (2026-10-20):** `(async (f x))` uruchamia `f` jako zadanie - korutynę ze
+- **Zadania, czyli korutyny i async (2026-10-20; nazwy zmienione 2026-10-25, jego prośba: „task” zostaje na inne
+  rzeczy - `(task T)` → `(coroutine T)`, `tasks-step` → `step-coroutines`, `tasks-run` → `run-coroutines`,
+  `task-time` → `coroutine-time`, `TASK_END` → `CORO_END`):** `(async (f x))` uruchamia `f` jako zadanie - korutynę ze
   stosem (stackful) - od razu, do pierwszego czekania, i daje `(task T)`, gdzie T to wynik `f`. Czekanie: `(sleep s)`
   (sekundy czasu zadań), `(yield)` (do następnego kroku), `(await t)` (wynik innego zadania, typ T sprawdzony w
   kompilacji). Bez kolorowania funkcji (jak w Lua, Go, GDScripcie): czekać można głęboko w wywołaniach, funkcje po
@@ -515,8 +551,8 @@ Każdy punkt z notatek o godot-rs i gaelu, z tym, co się z nim stało. ✓ zrob
 - ✓ makra; ○ makra gemu ecs (`ecs-query`), traits, abstrakcje bez boilerplate i bez pułapek C++.
 - ✓ zasada nazw: typy i formy gemu z prefiksem systemu (`ECSEntity`, `(ecs-query ...)`, `DBQuery`).
 - ✓ x-macro dla opkodów (`src/ops.h`); ✓ x-makra w gaelu (`string-of`, `name-of`, `examples/xmacros.gael`).
-- ✓ async/await, korutyny (zadania ze stosem: `async`, `await`, `sleep`, `yield`, `tasks-step`, `tasks-run`);
-  ○ anulowanie zadań (mapy stosu), joby (fine-grained, master/slave) na wątkach - gemy.
+- ✓ async/await, korutyny ze stosem: `async`, `await`, `sleep`, `yield`, `step-coroutines`, `run-coroutines`;
+  ○ anulowanie korutyn (mapy stosu), joby (fgjob, masterslave) na wątkach.
 - ○ typy deltatime, tick, tag, uuid; ○ typy SIMD i cache-friendly; ○ kluczowa matematyka z czasem do rdzenia w C.
 - ✓ `@export` przed `def` jak w GDScripcie, `gael -x` jako tekstowy inspektor; ○ „lazy export” (eksport bez pisania typu), adnotacje na polach i nodach.
 - ✓ moduły (`use`); ○ gemy rozszerzają typy i pętle, rdzeń daje podstawy.
