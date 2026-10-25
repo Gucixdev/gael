@@ -201,8 +201,9 @@ starts with `;`.
 | `<`, `<=`, `>`, `>=`, `=`, `!=` | compare two numbers of one type; `=` and `!=` also take bools, strings, enum values, handles and node paths |
 | `(bit-and a b...)`, `bit-or`, `bit-xor`, `(bit-not a)`, `(shl a n)`, `(shr a n)` | the bits of ints of one type; a shift count runs from 0 to the type's bits - 1 (anything else is a runtime error), and `shr` keeps the sign of a signed type. Ints can also be written `0xff` and `0b1010` |
 | `$Player`, `$Enemies/Goblin` | a node path, as in GDScript: a value of type `NodePath`; what it points at comes with the scene tree |
-| `(struct Vec2 (x : float) (y : float))` | a struct; a field can have any type declared above it, other structs and options included |
-| `(Vec2 1.0 2.0)`, `(Vec2 :y 2.0 :x 1.0)` | a struct value, with the fields in order or named; every field must be given |
+| `(struct Vec2 (x : float) (y : float))` | a struct; a field can have any type declared above it, other structs and options included; `(hp : int 100)` has a default |
+| `(Vec2 1.0 2.0)`, `(Vec2 :y 2.0 :x 1.0)` | a struct value, with the fields in order or named; a field left out takes its default (only the last ones, in order) |
+| `(defn Vec2.add ((a : Vec2) (b : Vec2)) : Vec2 ...)`, `(a.dot b)` | a function of a struct or an enum, and a method call: `(Vec2.dot a b)`. Hooks: `add`, `sub`, `mul`, `div`, `rem`, `negate` for the operators, `equal` and `compare` for comparing, `text` for printing, `len`, `get`, `put`, `for`, and `init` for `(Vec2 ...)` (below) |
 | `v.x`, `b.pos.x`, `(get bodies 0).pos.x` | a field of a variable, or of any expression's value: `(expr).name` right after the parenthesis reads as `(. expr name)` |
 | `(enum Dir north east south west)`, `Dir.north` | an enum and one of its values |
 | `(vec 1 2 3)`, `(vec)` | a vec; an empty one takes its element type from where it goes, like `none` |
@@ -267,6 +268,22 @@ handed back in one go when it ends. Its objects are counted too, so when an aren
 still held (put in a global, say, or in a cycle), that is a runtime error at the arena instead of a dangling
 reference. Where the compiler can see a value made in an arena go somewhere that outlives it (`set` or `push` to a
 variable from outside, or the arena's own value), that is a compile error. `keep` is the way out: it copies the value.
+
+A struct or an enum can have functions of its own, and some names are hooks the language calls, chosen when compiling,
+the way Python calls `__add__` but with words instead of underscores:
+
+```
+(struct Vec2 (x : float 0.0) (y : float 0.0))
+(defn Vec2.add ((a : Vec2) (b : Vec2)) : Vec2 (Vec2 (+ a.x b.x) (+ a.y b.y)))
+(defn Vec2.text ((a : Vec2)) : string (format "<%f %f>" a.x a.y))
+(defn Vec2.dot ((a : Vec2) (b : Vec2)) : float (+ (* a.x b.x) (* a.y b.y)))
+(let ((a (Vec2 1.0 2.0)) (b (Vec2 3.0)))   ; b.y is 0.0
+  (println "%v %f" (+ a b) (a.dot b)))      ; <4.0 2.0> 3.0
+```
+
+`(a.dot b)` is `(Vec2.dot a b)`; a value goes into a call as a copy, so a method gives a new value instead of changing
+its own (`(set p (p.hurt 10))`). `init` makes `(Player "Ann")` call `Player.init`, and a field can have a default
+value. `examples/methods.gael` has every hook.
 
 A macro rewrites code before its types are checked, as Scheme's `syntax-rules` does:
 
@@ -395,8 +412,8 @@ tests/errors/div-zero.gael:1: runtime error: division by zero
 
 ## Status
 
-Version 0.3, tested on Linux x86-64 with gcc 13.3 and clang 18.1. `./test` passes 117 checks per build (35 examples,
-73 compile and runtime error cases, three REPL sessions, six README examples) with gcc, clang and gcc with both
+Version 0.3, tested on Linux x86-64 with gcc 13.3 and clang 18.1. `./test` passes 120 checks per build (36 examples,
+75 compile and runtime error cases, three REPL sessions, six README examples) with gcc, clang and gcc with both
 sanitizers, every run with `GAEL_CHECK=1`. GitHub Actions runs shellcheck on the scripts and `./test` on every push
 (`.github/workflows/test.yml`, ubuntu-24.04).
 

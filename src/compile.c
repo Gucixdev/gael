@@ -36,6 +36,7 @@ typedef struct {
 	const char *name;
 	Ty type;
 	i32 offset; /* in cells, from the start of the struct */
+	i32 def;    /* (hp : int 100): the function that gives its default value (Type@field), -1 when it has none */
 } Field;
 
 /* The tables that grow with the program are reserved address space (table in base.h): the limits are generous, and
@@ -932,8 +933,9 @@ static i32 find_fn(const char *name)
 	return sl ? sl->fn : -1;
 }
 
-/* names_rebuild: the name index from the tables - at the start, and after a failed REPL unit took names back. A
- * fn's lambdas (named fn@line:col) are not looked up by name. Later entries win, so the REPL's newest macro does. */
+/* names_rebuild: the name index from the tables - at the start, and after a failed REPL unit took names back. The
+ * functions the compiler makes (a fn's, named fn@line:col, and a field's default, Type@field) are not looked up by name.
+ * Later entries win, so the REPL's newest macro does. */
 static o names_rebuild(void)
 {
 	size_t k;
@@ -946,7 +948,7 @@ static o names_rebuild(void)
 		names_put(g_tys[i].name)->type = i;
 	}
 	for (i = 0; i < g_nfns; i++) {
-		if (strncmp(g_fns[i].name, "fn@", 3)) names_put(g_fns[i].name)->fn = i;
+		if (!strchr(g_fns[i].name, '@')) names_put(g_fns[i].name)->fn = i;
 	}
 	for (i = 0; i < g_nglobals; i++) names_put(g_globals[i].name)->global = i;
 	for (i = 0; i < g_nmacros; i++) names_put(g_macros[i].name)->macro = i;
@@ -1021,6 +1023,7 @@ static o add_local(const char *name, u32 stamp, Ty type, i32 slot)
 static i32 g_fn_base = -1;
 static Ty g_fn_ret;
 static i32 g_fn_tbase; /* g_types' height when the function's body began: values above it are the function's own */
+static i32 g_fn_index = -1; /* the named function whose body it is, -1 at the top level; a fn inside it is part of it */
 
 /* tail_ok FRAME RET: a call in FRAME returning RET can be a tail call */
 static int tail_ok(const Frame *f, Ty ret) { return f->tail && g_fn_base >= 0 && ret == g_fn_ret && ret != T_ERR; }
@@ -1037,7 +1040,7 @@ static o emit_tail_releases(i32 line)
 	for (i = g_nwork - 2; i >= g_fn_base; i--) {
 		const Frame *w = &g_work[i];
 		if (w->form == F_MATCH && w->phase >= 3) emit_release(AT_LOCAL, w->a, w->rt, line);
-		else if (w->form == F_FOR && !w->op && w->phase >= 3) emit_release(AT_LOCAL, w->a, w->res, line);
+		else if (w->form == F_FOR && w->op != 1 && w->phase >= 3) emit_release(AT_LOCAL, w->a, w->res, line);
 		else if (w->form == F_CALLV && w->op == 3 && w->phase <= 1) emit_release(AT_LOCAL, w->c, w->rt, line);
 	}
 }
@@ -1464,7 +1467,7 @@ static o compile_atom(i32 n, Ty want)
 		return;
 	}
 	dot = strchr(s, '.');
-	if (dot && (size_t)(dot - s) < 256) { /* Dir.north */
+	if (dot && (size_t)(dot - s) < 256 && find_fn(s) < 0) { /* Dir.north; Vec2.len is a function, below */
 		char base[256], names[256];
 		i32 v;
 		memcpy(base, s, (size_t)(dot - s));
@@ -1530,6 +1533,157 @@ static i32 thread_steps(i32 n)
 	}
 	g_nodes[cur].next = -1;
 	return cur;
+}
+
+/* hook TYPE NAME: the function TYPE.NAME of a struct or an enum - what a form like + or len calls for its values; -1
+ * when the type has none */
+static i32 hook(Ty t, const char *name)
+{
+	char buf[200];
+	if (!is_struct(t) && !is_enum(t)) return -1;
+	sprintf(buf, "%.120s.%.60s", g_tys[t].name, name);
+	return find_fn(buf);
+}
+
+/* arith_hook FRAME TYPE: the function that + - * / % call when the value on their left is of TYPE, a struct or an
+ * enum - its add, sub, mul, div or rem, taking that value and the next one - or that (- x) calls, its negate; -1
+ * after an error it reported */
+static i32 arith_hook(Frame *f, Ty t)
+{
+	static const char ops[] = "+-*/%";
+	static const char *const names[] = { "add", "sub", "mul", "div", "rem" };
+	int unary = f->k == 1;
+	const char *name = unary ? "negate" : names[strchr(ops, f->op) - ops];
+	i32 fi = hook(t, name), at = first_of(f->node);
+	const Fn *fn = fi >= 0 ? &g_fns[fi] : 0;
+	if (!fn) {
+		err_node(at, "%c on %s calls %s.%s, which is not there: (defn %s.%s ((a : %s)%s) : %s ...)", f->op, tn(t), tn(t), name, tn(t), name,
+		         tn(t), unary ? "" : " (b : ...)", tn(t));
+		return -1;
+	}
+	if (fn->nparams != (unary ? 1 : 2) || fn->params[0] != t || fn->ret == T_UNIT) {
+		err_node(at, "%c on %s calls %s, which must take %s and return a value", f->op, tn(t), fn->name,
+		         unary ? "one value, of that type," : "two values, the first of that type,");
+		return -1;
+	}
+	return gem_use(at, fn->gem) ? fi : -1;
+}
+
+/* cmp_hook FRAME TYPE LINE: both values of a comparison are of TYPE, a struct or an enum, and on the stack: = and !=
+ * call its equal, else its compare; < <= > >= call its compare, whose int is below 0 when the first comes first, 0
+ * when they are equal and above 0 otherwise. 0 when it has neither and = compares an enum's values themselves */
+static int cmp_hook(Frame *f, Ty t, i32 line)
+{
+	i32 eq = f->op >= 4 ? hook(t, "equal") : -1, cmp = eq < 0 ? hook(t, "compare") : -1, at = first_of(f->node), fi = eq >= 0 ? eq : cmp;
+	const char *what = g_cmp_names[f->op];
+	if (fi < 0) {
+		if (is_enum(t) && f->op >= 4) return 0;
+		if (f->op >= 4)
+			err_node(at, "%s on %s calls %s.equal, or %s.compare, and neither is there: (defn %s.equal ((a : %s) (b : %s)) : bool ...)", what, tn(t),
+			         tn(t), tn(t), tn(t), tn(t), tn(t));
+		else
+			err_node(at, "%s on %s calls %s.compare, which is not there: (defn %s.compare ((a : %s) (b : %s)) : int ...), below 0 when a comes first",
+			         what, tn(t), tn(t), tn(t), tn(t), tn(t));
+		return 1;
+	}
+	if (g_fns[fi].nparams != 2 || g_fns[fi].params[0] != t || g_fns[fi].params[1] != t || g_fns[fi].ret != (eq >= 0 ? T_BOOL : T_INT)) {
+		err_node(at, "%s on %s calls %s, which must take two %s and return %s", what, tn(t), g_fns[fi].name, tn(t), eq >= 0 ? "bool" : "int");
+		return 1;
+	}
+	if (!gem_use(at, g_fns[fi].gem)) return 1;
+	emit(OP_CALL, fi, 0, line);
+	if (eq >= 0) {
+		if (f->op == 5) emit(OP_NOT, 0, 0, line);
+		return 1;
+	}
+	emit(OP_PUSH_I, add_int(0), 0, line);
+	emit(cmp_op(f->op, T_INT), 0, 0, line);
+	return 1;
+}
+
+/* own_fn TYPE: the code being compiled is one of TYPE's own functions (Type.name, or a field's default), where
+ * (Type ...) makes the struct itself instead of calling Type.init */
+static int own_fn(Ty t)
+{
+	const char *fname, *tname = g_tys[t].name;
+	size_t len = strlen(tname);
+	if (g_fn_index < 0) return 0;
+	fname = g_fns[g_fn_index].name;
+	return !strncmp(fname, tname, len) && (fname[len] == '.' || fname[len] == '@');
+}
+
+/* method_word NAME: a builtin or a function a method call can stand for: (v.push x) is (push v x) */
+static int method_word(const char *m)
+{
+	size_t k;
+	for (k = 0; k < GAEL_COUNT(g_builtins); k++) if (!strcmp(m, g_builtins[k].name)) return 1;
+	for (k = 0; k < GAEL_COUNT(g_vecop_names); k++) if (!strcmp(m, g_vecop_names[k])) return 1;
+	for (k = 0; k < GAEL_COUNT(g_mapop_names); k++) if (!strcmp(m, g_mapop_names[k])) return 1;
+	return !strcmp(m, "await") || !strcmp(m, "done?") || find_fn(m) >= 0;
+}
+
+/* method_call FRAME HEAD: (v.m args...) where v (or a field path like v.pos) is a variable and m none of its fields.
+ * It stands for (T.m v args...) when the type T of v has a function m, else for (m v args...) with a builtin or a
+ * function m, and the frame starts over on that call. 1 when it rewrote the call or reported an error, 0 when HEAD is
+ * something else (Vec2.len, a field holding a function) */
+static int method_call(Frame *f, i32 head)
+{
+	const char *s = g_nodes[head].text, *dot = strrchr(s, '.'), *m;
+	char buf[300], fields[256];
+	i32 recv, call, mh, fi = -1, line = g_nodes[head].line, col = g_nodes[head].col;
+	Place pl;
+	int r;
+	Ty t;
+	if (!dot || dot == s || !dot[1] || (size_t)(dot - s) >= 256) return 0;
+	m = dot + 1;
+	recv = new_node(N_SYM, line, col); /* v, or v.pos: the first argument */
+	g_nodes[recv].text = arena_strndup(&g_unit_arena, s, (size_t)(dot - s));
+	g_nodes[recv].len = (u32)(dot - s);
+	g_nodes[recv].stamp = g_nodes[head].stamp;
+	pl.where = AT_LOCAL;
+	pl.at = 0;
+	pl.type = T_ERR;
+	r = resolve_place(recv, &pl);
+	if (r < 0) return 0;
+	t = pl.type;
+	if (r > 0 && is_struct(t) && find_field(t, m, strlen(m))) return 0; /* a field: called as a function value, or wrong */
+	if (r == 0 || t == T_ERR) { finish(T_ERR); return 1; }
+	if ((fi = hook(t, m)) < 0 && !method_word(m)) {
+		if (is_struct(t))
+			err_node(head, "%.64s is %s; it has no field %.64s and %s has no function %.64s; its fields are %s", g_nodes[recv].text, tn(t), m,
+			         tn(t), m, names_of(t, fields, sizeof(fields)));
+		else if (is_enum(t))
+			err_node(head, "%.64s is %s, which has no function %.64s", g_nodes[recv].text, tn(t), m);
+		else
+			err_node(head, "%.64s is %s; (%.64s.%.64s) stands for (%.64s %.64s), and there is no function %.64s", g_nodes[recv].text, tn(t),
+			         g_nodes[recv].text, m, m, g_nodes[recv].text, m);
+		finish(T_ERR);
+		return 1;
+	}
+	if (fi >= 0 && f->want == T_UNIT && g_fns[fi].ret == t && g_fns[fi].nparams > 0 && g_fns[fi].params[0] == t) {
+		err_node(head, "%s gives a new %s and this drops it; it cannot change %.64s, which it got a copy of, so keep what it gives: (set %.64s (%.64s ...))",
+		         g_fns[fi].name, tn(t), g_nodes[recv].text, g_nodes[recv].text, s);
+		finish(T_ERR);
+		return 1;
+	}
+	mh = new_node(N_SYM, line, col);
+	if (fi >= 0) {
+		sprintf(buf, "%.140s", g_fns[fi].name);
+		g_nodes[mh].stamp = g_nodes[head].stamp;
+	} else {
+		sprintf(buf, "%.140s", m);
+		g_nodes[mh].stamp = ++g_stamps; /* no local sees it: m is the builtin or the function, not a variable */
+	}
+	g_nodes[mh].text = arena_strndup(&g_unit_arena, buf, strlen(buf));
+	g_nodes[mh].len = (u32)strlen(buf);
+	call = new_node(N_LIST, g_nodes[f->node].line, g_nodes[f->node].col);
+	g_nodes[call].first = mh;
+	g_nodes[mh].next = recv;
+	g_nodes[recv].next = next_of(head);
+	f->node = call;
+	f->cur = -1;
+	f->k = 0;
+	return 1;
 }
 
 /* start_list FRAME: decide which form a list is, check its shape, and start it */
@@ -1644,6 +1798,7 @@ static o start_list(Frame *f)
 			if (!strcmp(s, g_mapop_names[k])) { f->form = F_MAPOP; f->op = (u8)k; break; }
 		}
 		if (f->form != F_START) return;
+		if (strchr(s, '.') && method_call(f, head)) return;
 		{ /* one namespace: a variable (or a field) named here comes before a function of that name */
 			Place pl;
 			int r;
@@ -1685,6 +1840,17 @@ static o start_list(Frame *f)
 		}
 		if (is_struct(t = find_named_type(s))) {
 			if (!gem_use(head, g_tys[t].gem)) { finish(T_ERR); return; }
+			fi = hook(t, "init");
+			if (fi >= 0 && !(f->cur >= 0 && g_nodes[f->cur].kind == N_KEY) && !own_fn(t)) { /* (Type args...): its init makes it */
+				if (g_fns[fi].ret != t) {
+					err_node(head, "%s.init must return %s: (%s ...) calls it to make one", tn(t), tn(t), tn(t));
+					finish(T_ERR);
+					return;
+				}
+				f->form = F_CALL;
+				f->a = fi;
+				return;
+			}
 			f->form = F_NEW;
 			f->a = t;
 			return;
@@ -1702,7 +1868,49 @@ static o start_list(Frame *f)
 	}
 }
 
-/* check_named NEW FIRST TYPE: (Vec2 :y 2.0 :x 1.0) - every key a field of TYPE, given once, and no field left out */
+/* emit_default FIELD LINE: push the default value of FIELD. A default made of constants only (100, "none", Dir.north)
+ * is copied in from its function's code once that is compiled; any other is a call of it, so each struct gets its own
+ * (vec) */
+static o emit_default(const Field *fd, i32 line)
+{
+	const Fn *fn = &g_fns[fd->def];
+	i32 pc, end;
+	if (fn->entry >= 0) {
+		for (end = fn->entry; end < g_ncode; end++) {
+			u8 op = g_code[end].op;
+			if (op != OP_PUSH_I && op != OP_PUSH_F && op != OP_PUSH_S && op != OP_PUSH_K && op != OP_ZERO) break;
+		}
+		if (end < g_ncode && (g_code[end].op == OP_RET_V || g_code[end].op == OP_RET_N)) {
+			for (pc = fn->entry; pc < end; pc++) emit((Op)g_code[pc].op, g_code[pc].a, g_code[pc].b, line);
+			return;
+		}
+	}
+	emit(OP_CALL, fd->def, 0, line);
+}
+
+/* new_defaults FRAME LINE: a struct being made (F_NEW) gets the defaults of the fields its use left out - after the
+ * values given in order, or into the scratch struct of named ones, which is then pushed whole */
+static o new_defaults(Frame *f, i32 line)
+{
+	const TyInfo *ty = &g_tys[f->a];
+	i32 i, p;
+	for (i = f->op ? 0 : f->k; i < ty->n; i++) {
+		const Field *fd = &g_fields[ty->first + i];
+		if (f->op) {
+			for (p = f->c; p >= 0 && strcmp(g_nodes[p].text + 1, fd->name); p = next_of(next_of(p))) {}
+			if (p >= 0) continue;
+		}
+		emit_default(fd, line);
+		if (f->op) emit_store(AT_LOCAL, f->b + fd->offset, fd->type, line);
+	}
+	if (f->op) {
+		emit_load(AT_LOCAL, f->b, (Ty)f->a, line);
+		g_slots = f->mark2;
+	}
+}
+
+/* check_named NEW FIRST TYPE: (Vec2 :y 2.0 :x 1.0) - every key a field of TYPE, given once, and no field without a
+ * default left out */
 static int check_named(i32 node, i32 first, Ty st)
 {
 	const TyInfo *ty = &g_tys[st];
@@ -1731,17 +1939,22 @@ static int check_named(i32 node, i32 first, Ty st)
 	}
 	if (ok && count < ty->n) {
 		size_t used = 0;
+		i32 missing = 0;
 		names[0] = 0;
 		for (i = 0; i < ty->n; i++) {
 			const char *fname = g_fields[ty->first + i].name;
+			if (g_fields[ty->first + i].def >= 0) continue; /* left out, it takes its default */
 			for (p = first; p >= 0 && strcmp(g_nodes[p].text + 1, fname); p = next_of(next_of(p))) {}
 			if (p >= 0) continue;
+			missing++;
 			if (used + strlen(fname) + 8 > sizeof(names)) { strcpy(names + used, ", ..."); break; }
 			sprintf(names + used, "%s%s", used ? ", " : "", fname);
 			used = strlen(names);
 		}
-		err_node(node, "%s: missing field%s %s", ty->name, ty->n - count == 1 ? "" : "s", names);
-		ok = 0;
+		if (missing) {
+			err_node(node, "%s: missing field%s %s", ty->name, missing == 1 ? "" : "s", names);
+			ok = 0;
+		}
 	}
 	return ok;
 }
@@ -2051,6 +2264,7 @@ static Ty env_type(i32 lv)
 		g_fields[g_nfields].name = arena_strndup(&g_perm, cp->name, strlen(cp->name));
 		g_fields[g_nfields].type = cp->type;
 		g_fields[g_nfields].offset = cp->off;
+		g_fields[g_nfields].def = -1;
 		g_nfields++;
 	}
 	set_leaves((Ty)g_ntys);
@@ -2467,33 +2681,64 @@ static o run_work(i32 base)
 				break;
 			}
 			t = pop_type();
-			if (t != T_ERR && !numeric(t)) {
-				err_node(f->cur, "%c works on numbers, not %s", f->op, tn(t));
-				t = T_ERR;
-			} else if (is_float(t) && f->op == '%') {
-				if (f->phase == 1 || f->rt != T_ERR) err_node(f->cur, "%% works on ints only; this is %s", a_type(t));
-				t = T_ERR;
-			}
-			if (f->phase == 1) {
+			if (f->c) { /* the right value of a hook, whose function takes the two */
+				const Fn *fn = &g_fns[f->c - 1];
+				if (t != T_ERR && t != fn->params[1]) {
+					err_node(f->cur, "%c: %s takes %s as its second value, this is %s", f->op, fn->name, tn(fn->params[1]), tn(t));
+					f->rt = T_ERR;
+				} else {
+					emit(OP_CALL, f->c - 1, 0, line);
+					f->rt = t == T_ERR ? (Ty)T_ERR : fn->ret;
+				}
+				f->c = 0;
+			} else if (f->phase == 1 && (is_struct(t) || is_enum(t))) { /* a struct or an enum first: its type's hook */
 				f->rt = t;
-				if (f->k == 1) {
-					if (t != T_ERR) emit(is_float(t) ? OP_NEG_F : OP_NEG_I, 0, 0, line);
-					if (t != T_ERR) emit_fit(t, line);
-					finish(t);
+				if (f->k == 1) { /* (- v): its negate */
+					i32 fi = arith_hook(f, t);
+					if (fi >= 0) emit(OP_CALL, fi, 0, line);
+					finish(fi >= 0 ? g_fns[fi].ret : (Ty)T_ERR);
 					break;
 				}
-			} else if (f->rt == T_ERR || t == T_ERR) {
-				f->rt = T_ERR;
-			} else if (t != f->rt) {
-				err_node(f->cur, "%c: %s and %s do not mix; convert one, like (%s x) or (%s x)", f->op, tn(f->rt), tn(t), tn(f->rt), tn(t));
-				f->rt = T_ERR;
 			} else {
-				emit(arith_op(f->op, t), 0, 0, line);
-				emit_fit(t, line);
+				if (t != T_ERR && !numeric(t)) { /* after an error in this form, quiet: one mistake, one message */
+					if (f->phase == 1)
+						err_node(f->cur, "%c works on numbers, not %s", f->op, tn(t));
+					else if (f->rt != T_ERR && (is_struct(t) || is_enum(t)))
+						err_node(f->cur, "%c: %s and %s do not mix; with %s first, %c would call its function", f->op, tn(f->rt), tn(t), tn(t), f->op);
+					else if (f->rt != T_ERR)
+						err_node(f->cur, "%c works on numbers, not %s", f->op, tn(t));
+					t = T_ERR;
+				} else if (is_float(t) && f->op == '%') {
+					if (f->phase == 1 || f->rt != T_ERR) err_node(f->cur, "%% works on ints only; this is %s", a_type(t));
+					t = T_ERR;
+				}
+				if (f->phase == 1) {
+					f->rt = t;
+					if (f->k == 1) {
+						if (t != T_ERR) emit(is_float(t) ? OP_NEG_F : OP_NEG_I, 0, 0, line);
+						if (t != T_ERR) emit_fit(t, line);
+						finish(t);
+						break;
+					}
+				} else if (f->rt == T_ERR || t == T_ERR) {
+					f->rt = T_ERR;
+				} else if (t != f->rt) {
+					err_node(f->cur, "%c: %s and %s do not mix; convert one, like (%s x) or (%s x)", f->op, tn(f->rt), tn(t), tn(f->rt), tn(t));
+					f->rt = T_ERR;
+				} else {
+					emit(arith_op(f->op, t), 0, 0, line);
+					emit_fit(t, line);
+				}
 			}
 			f->phase = 2;
 			f->cur = next_of(f->cur);
-			if (f->cur >= 0) push_child(f->cur, f->rt != T_ERR ? f->rt : f->res); else finish(f->rt);
+			if (f->cur < 0) { finish(f->rt); break; }
+			if (is_struct(f->rt) || is_enum(f->rt)) { /* the value so far is a struct or an enum: its hook takes the next one */
+				i32 fi = arith_hook(f, f->rt);
+				f->c = fi + 1;
+				if (fi < 0) f->rt = T_ERR;
+			}
+			push_child(f->cur, f->c ? g_fns[f->c - 1].params[1] : f->rt != T_ERR ? f->rt : f->res);
 			break;
 
 		case F_CMP:
@@ -2506,17 +2751,20 @@ static o run_work(i32 base)
 			if (f->phase == 1) {
 				f->phase = 2;
 				t = g_types[g_ntypes - 1];
-				if (f->op >= 4) f->b = borrow_last(f->cur, next_of(f->cur)); /* = and != only read their strings */
+				if (f->op >= 4 && (t == T_STR || t == T_PATH)) f->b = borrow_last(f->cur, next_of(f->cur)); /* = and != only read their strings */
 				f->cur = next_of(f->cur);
 				push_child(f->cur, t == T_ERR ? (Ty)T_NONE : t);
 				break;
 			}
-			if (f->op >= 4 && borrow_last(f->cur, -1)) f->b |= 2;
+			t2 = g_types[g_ntypes - 1];
+			if (f->op >= 4 && (t2 == T_STR || t2 == T_PATH) && borrow_last(f->cur, -1)) f->b |= 2;
 			t2 = pop_type();
 			t = pop_type();
 			if (t != T_ERR && t2 != T_ERR) {
 				if (t != t2)
 					err_node(f->cur, "%s compares %s with %s; both sides need the same type", g_cmp_names[f->op], tn(t), tn(t2));
+				else if ((is_struct(t) || is_enum(t)) && cmp_hook(f, t, line))
+					; /* its type's equal or compare */
 				else if (f->op < 4 && !numeric(t))
 					err_node(f->cur, "%s orders numbers, not %s", g_cmp_names[f->op], tn(t));
 				else if (t == T_UNIT)
@@ -2574,6 +2822,19 @@ static o run_work(i32 base)
 			fr = &g_fmts[f->a];
 			t = pop_type();
 			t2 = fmt_type(g_nodes[fmt].text, g_nodes[fmt].len, f->k, 0);
+			if ((t2 == T_ANY || t2 == T_STR) && (i = hook(t, "text")) >= 0) { /* a struct or an enum written by its text */
+				const Fn *fn = &g_fns[i];
+				if (fn->nparams != 1 || fn->params[0] != t || fn->ret != T_STR)
+					err_node(f->cur, "%s: %%%c of %s calls %s, which must take one %s and return string", what, t2 == T_ANY ? 'v' : 's', tn(t), fn->name, tn(t));
+				else if (gem_use(f->cur, fn->gem))
+					emit(OP_CALL, i, 0, line);
+				t = T_STR;
+			}
+			if (t2 == T_STR && (is_struct(t) || is_enum(t))) {
+				err_node(f->cur, "%s: %% code %ld wants a string, this value is %s; %%v writes any value, and %s.text would be what %%s writes: (defn %s.text ((x : %s)) : string ...)",
+				         what, (long)(f->k + 1), tn(t), tn(t), tn(t), tn(t));
+				t = T_ERR;
+			}
 			if (t2 == T_ANY) {
 				if (t == T_UNIT) err_node(f->cur, "%s: %%v needs a value; this is unit", what);
 			} else if (t != T_ERR && t != t2 && !(t2 == T_INT && is_int(t)) && !(t2 == T_FLOAT && is_float(t))) {
@@ -2613,6 +2874,17 @@ static o run_work(i32 base)
 				break;
 			}
 			t = pop_type();
+			if (bi->args[f->k] == 'x' && (is_struct(t) || is_enum(t))) { /* len of a struct or an enum: its len */
+				i = hook(t, "len");
+				if (i < 0)
+					err_node(f->cur, "len on %s calls %s.len, which is not there: (defn %s.len ((x : %s)) : int ...)", tn(t), tn(t), tn(t), tn(t));
+				else if (g_fns[i].nparams != 1 || g_fns[i].params[0] != t || g_fns[i].ret != T_INT)
+					err_node(f->cur, "len on %s calls %s, which must take one %s and return int", tn(t), g_fns[i].name, tn(t));
+				else if (gem_use(f->cur, g_fns[i].gem))
+					emit(OP_CALL, i, 0, line);
+				finish(T_INT);
+				break;
+			}
 			if (!f->k && (bi->op == OP_LEN_S || bi->op == OP_BYTE)) f->b = borrow_last(f->cur, next_of(f->cur));
 			t2 = code_type(bi->args[f->k]);
 			if (bi->args[f->k] == 'x') {
@@ -2756,7 +3028,7 @@ static o run_work(i32 base)
 			break;
 		}
 
-		case F_NEW: { /* (Vec2 1.0 2.0) in field order, or (Vec2 :y 2.0 :x 1.0) by name */
+		case F_NEW: { /* (Vec2 1.0 2.0) in field order, or (Vec2 :y 2.0 :x 1.0) by name; the fields left out take their defaults */
 			const TyInfo *ty = &g_tys[f->a];
 			const Field *fd;
 			i32 value;
@@ -2764,18 +3036,32 @@ static o run_work(i32 base)
 				char names[256];
 				if (ty->broken) { finish(T_ERR); break; }
 				f->op = (u8)(f->cur >= 0 && g_nodes[f->cur].kind == N_KEY);
-				if (!f->op && f->k != ty->n) {
+				for (i = f->k; !f->op && i < ty->n && g_fields[ty->first + i].def >= 0; i++) {}
+				for (value = 0; value < ty->n && g_fields[ty->first + value].def < 0; value++) {} /* a field with a default? */
+				if (!f->op && (f->k > ty->n || (i < ty->n && value == ty->n))) {
 					err_node(f->node, "%s has %ld field%s (%s), got %ld value%s", ty->name, (long)ty->n, ty->n == 1 ? "" : "s",
 					         names_of((Ty)f->a, names, sizeof(names)), (long)f->k, f->k == 1 ? "" : "s");
 					finish(T_ERR);
 					break;
 				}
+				if (!f->op && i < ty->n) {
+					err_node(f->node, "%s has %ld field%s (%s), got %ld value%s; %s has no default, so it must be given", ty->name, (long)ty->n,
+					         ty->n == 1 ? "" : "s", names_of((Ty)f->a, names, sizeof(names)), (long)f->k, f->k == 1 ? "" : "s",
+					         g_fields[ty->first + i].name);
+					finish(T_ERR);
+					break;
+				}
 				if (f->op && !check_named(f->node, f->cur, (Ty)f->a)) { finish(T_ERR); break; }
+				f->c = f->cur; /* named: the first key, to find the fields left out at the end */
 				f->k = 0;
-				if (!ty->n) { finish((Ty)f->a); break; }
 				if (f->op) { /* named values go to a scratch struct in the frame, then the whole struct is pushed */
 					f->mark2 = g_slots;
 					f->b = new_slots(ty->cells);
+				}
+				if (f->cur < 0) { /* no values: every field takes its default */
+					new_defaults(f, line);
+					finish((Ty)f->a);
+					break;
 				}
 				f->phase = 1;
 				fd = f->op ? field_of_key((Ty)f->a, f->cur) : &g_fields[ty->first];
@@ -2795,10 +3081,7 @@ static o run_work(i32 base)
 				push_child(f->op ? next_of(f->cur) : f->cur, fd->type);
 				break;
 			}
-			if (f->op) {
-				emit_load(0, f->b, (Ty)f->a, line);
-				g_slots = f->mark2;
-			}
+			new_defaults(f, line);
 			finish((Ty)f->a);
 			break;
 		}
@@ -2932,6 +3215,26 @@ static o run_work(i32 base)
 				break;
 			}
 			t = pop_type();
+			if (f->phase == 1 && (f->op == VO_GET || f->op == VO_PUT) && (is_struct(t) || is_enum(t))) { /* its type's get or put */
+				i = hook(t, what);
+				if (i < 0)
+					err_node(f->cur, "%s on %s calls %s.%s, which is not there: (defn %s.%s ((x : %s) (i : ...)%s)%s ...)", what, tn(t), tn(t), what,
+					         tn(t), what, tn(t), f->op == VO_PUT ? " (value : ...)" : "", f->op == VO_PUT ? "" : " : ...");
+				else if (g_fns[i].nparams != g_vecop_args[f->op] || g_fns[i].params[0] != t || (f->op == VO_PUT) != (g_fns[i].ret == T_UNIT))
+					err_node(f->cur, "%s on %s calls %s, which must take %s and %s", what, tn(t), g_fns[i].name,
+					         f->op == VO_PUT ? "three values, the first of that type," : "two values, the first of that type,",
+					         f->op == VO_PUT ? "return unit" : "return a value");
+				else if (gem_use(f->cur, g_fns[i].gem)) { /* the rest is a call of it, with this value as its first argument */
+					push_type(t);
+					f->form = F_CALL;
+					f->a = i;
+					f->op = 0;
+					f->k = 0;
+					break;
+				}
+				finish(T_ERR);
+				break;
+			}
 			if (f->phase == 1) { /* the vec or the pool */
 				f->b = borrow_last(f->cur, next_of(f->cur));
 				pool = is_pool(t);
@@ -2989,7 +3292,8 @@ static o run_work(i32 base)
 			break;
 		}
 
-		case F_FOR: /* (for (x v) body...) over a vec, (for (i from to) body...) over from, from + 1, ..., to - 1 */
+		case F_FOR: /* (for (x v) body...) over a vec, a map's keys, a pool's handles or a struct with len and get;
+		             * (for (i from to) body...) over from, from + 1, ..., to - 1 */
 			switch (f->phase) {
 			case 0: {
 				i32 b = f->cur, name = first_of(b), from = next_of(name);
@@ -3040,6 +3344,40 @@ static o run_work(i32 base)
 					push_body(next_of(b), 0, T_UNIT);
 					break;
 				}
+				if (is_struct(t) || is_enum(t)) { /* over a struct or an enum: its len, and its get with an int */
+					i32 fl = hook(t, "len"), fg = hook(t, "get"), idx;
+					if (fl < 0 || fg < 0 || g_fns[fl].nparams != 1 || g_fns[fl].params[0] != t || g_fns[fl].ret != T_INT || g_fns[fg].nparams != 2 ||
+					    g_fns[fg].params[0] != t || g_fns[fg].params[1] != T_INT || g_fns[fg].ret == T_UNIT) {
+						err_node(next_of(name), "for over %s goes through %s.len and %s.get: (defn %s.len ((x : %s)) : int ...) and (defn %s.get ((x : %s) (i : int)) : ... ...)",
+						         tn(t), tn(t), tn(t), tn(t), tn(t), tn(t), tn(t));
+						t = T_ERR;
+					} else if (gem_use(next_of(name), g_fns[fl].gem) && gem_use(next_of(name), g_fns[fg].gem)) {
+						f->op = 2;
+						f->res = t;
+						f->rt = g_fns[fg].ret;
+						f->a = new_slots(cells(t) + 1 + cells(f->rt)); /* the value, the index, the element */
+						idx = f->a + cells(t);
+						emit_store(0, f->a, t, line);
+						emit(OP_PUSH_I, add_int(0), 0, line);
+						emit(OP_STORE_L, idx, 0, line);
+						f->c = g_ncode;
+						emit(OP_LOAD_L, idx, 0, line);
+						emit_copy(0, f->a, t, line); /* each call gets a copy, as any call does */
+						emit(OP_CALL, fl, 0, line);
+						emit(OP_LT_I, 0, 0, line);
+						f->b = emit(OP_JF, -1, 0, line);
+						emit_copy(0, f->a, t, line);
+						emit(OP_LOAD_L, idx, 0, line);
+						emit(OP_CALL, fg, 0, line);
+						emit_store(0, idx + 1, f->rt, line);
+						add_local(g_nodes[name].text, g_nodes[name].stamp, f->rt, idx + 1);
+						f->phase = 3;
+						push_body(next_of(b), 0, T_UNIT);
+						break;
+					} else {
+						t = T_ERR;
+					}
+				}
 				if (is_map(t)) { /* over a map's keys, in the order they went in */
 					t = intern_wrap(K_VEC, key_of(t));
 					emit(OP_MAP_KEYS, t, 0, line);
@@ -3085,12 +3423,13 @@ static o run_work(i32 base)
 				break;
 			}
 			default:
+				i = f->op == 1 ? f->a : f->op == 2 ? f->a + cells(f->res) : f->a + 1; /* the index */
 				(void)pop_type();
-				if (!f->op) emit_release(0, f->a + 2, f->rt, line); /* this round's element */
-				emit(OP_INC_L, f->op ? f->a : f->a + 1, 0, line);
+				if (f->op != 1) emit_release(0, i + 1, f->rt, line); /* this round's element */
+				emit(OP_INC_L, i, 0, line);
 				emit(OP_JMP, f->c, 0, line);
 				patch(f->b, g_ncode);
-				if (!f->op) emit_release(0, f->a, f->res, line); /* the vec */
+				if (f->op != 1) emit_release(0, f->a, f->res, line); /* the vec, the pool, the struct */
 				g_nlocals = f->mark;
 				g_slots = f->mark2;
 				finish(T_UNIT);
@@ -3486,8 +3825,29 @@ static int declared_below(i32 from, const char *name)
 	return 0;
 }
 
-/* declare_struct STRUCT REPL: (struct Name (field : type) ...); a field's type must be declared above, or be the
- * struct itself inside a vec (a tree) */
+/* default_fn TYPE FIELD NODE: the function that gives FIELD of the struct TYPE its default value, the expression
+ * NODE; it is compiled where the struct is (compile_defaults) and is not a name a program can use */
+static i32 default_fn(Ty st, const Field *fd, i32 node)
+{
+	char name[300];
+	Fn *fn;
+	if (g_nfns == MAX_FNS) die("too many functions");
+	fn = &g_fns[g_nfns];
+	memset(fn, 0, sizeof(*fn));
+	sprintf(name, "%.140s@%.140s", g_tys[st].name, fd->name);
+	fn->name = arena_strndup(&g_perm, name, strlen(name));
+	fn->ret = fd->type;
+	fn->line = g_nodes[node].line;
+	fn->file = g_unit.file;
+	fn->entry = -1;
+	fn->decl_unit = g_unit_id;
+	fn->decl_node = node;
+	fn->gem = g_unit_gem;
+	return g_nfns++;
+}
+
+/* declare_struct STRUCT REPL: (struct Name (field : type) ...), a field with its default value (hp : int 100); a
+ * field's type must be declared above, or be the struct itself inside a vec (a tree) */
 static o declare_struct(i32 n, int repl)
 {
 	i32 name = next_of(first_of(n)), p, q, first = g_nfields, ncells = 0, nf = 0, bad = 0, i;
@@ -3499,8 +3859,8 @@ static o declare_struct(i32 n, int repl)
 		i32 fname = first_of(p), colon = next_of(fname), ft = next_of(colon), base = ft;
 		int in_vec = 0;
 		Ty t;
-		if (g_nodes[p].kind != N_LIST || !is_sym(fname) || !sym_is(colon, ":") || ft < 0 || next_of(ft) >= 0) {
-			err_node(p, "a field is (name : type)");
+		if (g_nodes[p].kind != N_LIST || !is_sym(fname) || !sym_is(colon, ":") || ft < 0 || next_of(next_of(ft)) >= 0) {
+			err_node(p, "a field is (name : type), or (name : type default)");
 			bad++;
 			continue;
 		}
@@ -3537,6 +3897,7 @@ static o declare_struct(i32 n, int repl)
 		g_fields[g_nfields].name = arena_strndup(&g_perm, g_nodes[fname].text, g_nodes[fname].len);
 		g_fields[g_nfields].type = t;
 		g_fields[g_nfields].offset = ncells;
+		g_fields[g_nfields].def = next_of(ft); /* the default's node for now; its function below */
 		g_nfields++;
 		ncells += cells(t);
 		nf++;
@@ -3549,6 +3910,9 @@ static o declare_struct(i32 n, int repl)
 	g_tys[self].n = nf;
 	g_tys[self].cells = ncells;
 	g_tys[self].broken = (u8)(bad > 0);
+	for (i = first; i < first + nf; i++) {
+		if (g_fields[i].def >= 0) g_fields[i].def = default_fn(self, &g_fields[i], g_fields[i].def);
+	}
 	set_leaves(self);
 	for (i = self + 1; i < g_ntys; i++) { /* an (option Self) in a field's (vec ...) was made while Self had no size */
 		if (g_tys[i].kind != K_OPTION) continue;
@@ -3613,6 +3977,40 @@ static int fn_shape(i32 n, i32 *name, i32 *params, i32 *ret, i32 *body)
 	return 1;
 }
 
+/* owner_ok NAME: NAME is Type.name - a function of a struct or an enum declared in this gem (Vec2.len): a method, or a
+ * hook that a form calls for values of the type. 0 after an error it reported */
+static int owner_ok(i32 name)
+{
+	const char *s = g_nodes[name].text, *dot = strchr(s, '.');
+	char base[256];
+	Ty t;
+	if (dot == s || !dot[1] || strchr(dot + 1, '.') || (size_t)(dot - s) >= sizeof(base)) {
+		err_node(name, NAME_FMT ": a function's name has a dot only between a type and a name, like Vec2.len", s);
+		return 0;
+	}
+	memcpy(base, s, (size_t)(dot - s));
+	base[dot - s] = 0;
+	t = find_named_type(base);
+	if (t == T_NONE) {
+		err_node(name, NAME_FMT ": %.64s is not a type; a dot in a function's name comes after the struct or enum it belongs to, like Vec2.len", s, base);
+		return 0;
+	}
+	if (!is_struct(t) && !is_enum(t)) {
+		err_node(name, NAME_FMT ": %.64s is a built-in type; only structs and enums have functions of their own", s, base);
+		return 0;
+	}
+	if (g_tys[t].gem != g_unit_gem) {
+		err_node(name, NAME_FMT ": %.64s is %s%.64s's; a type's functions are declared in the gem that declares it", s, base,
+		         g_tys[t].gem ? "gem " : "", g_tys[t].gem ? g_gems[g_tys[t].gem].name : "the program");
+		return 0;
+	}
+	if (is_enum(t) && find_variant(t, dot + 1, strlen(dot + 1)) >= 0) {
+		err_node(name, NAME_FMT " is a variant of %.64s", s, base);
+		return 0;
+	}
+	return 1;
+}
+
 /* declare_fn DEFN REPL: register the signature, so calls can come before the definition */
 static o declare_fn(i32 n, int repl)
 {
@@ -3620,11 +4018,11 @@ static o declare_fn(i32 n, int repl)
 	Fn fn;
 	if (!fn_shape(n, &name, &params, &ret, &body)) return;
 	memset(&fn, 0, sizeof(fn));
-	if (is_reserved(g_nodes[name].text) || strchr(g_nodes[name].text, '.')) {
-		err_node(name, strchr(g_nodes[name].text, '.') ? NAME_FMT ": a function name cannot contain a dot" : NAME_FMT " is a built-in name",
-		         g_nodes[name].text);
+	if (is_reserved(g_nodes[name].text)) {
+		err_node(name, NAME_FMT " is a built-in name", g_nodes[name].text);
 		return;
 	}
+	if (strchr(g_nodes[name].text, '.') && !owner_ok(name)) return;
 	if (find_named_type(g_nodes[name].text) != T_NONE) {
 		err_node(name, NAME_FMT " is already a type", g_nodes[name].text);
 		return;
@@ -3677,21 +4075,21 @@ static o declare_fn(i32 n, int repl)
 	g_fns[g_nfns++] = fn;
 }
 
-static o compile_fn(i32 n)
+/* fn_body FN PARAMS BODY AT FIELD: the code of function FN - its parameters named by the list PARAMS (-1: none), its
+ * body the forms from BODY on. A body that does not end with the return type is reported at AT: as a function's, or
+ * with FIELD as a field's default */
+static o fn_body(i32 fi, i32 params, i32 body, i32 at, const char *field)
 {
-	i32 name, params, ret, body, p, fi, jmp, k = 0, nc;
+	i32 p, jmp, k = 0, line = g_nodes[at].line;
 	i32 s_slots = g_slots, s_max = g_maxslots, s_locals = g_nlocals, s_floor = g_local_floor;
-	i32 s_depth = g_depth, s_maxdepth = g_maxdepth, s_base = g_fn_base, s_tbase = g_fn_tbase;
+	i32 s_depth = g_depth, s_maxdepth = g_maxdepth, s_base = g_fn_base, s_tbase = g_fn_tbase, s_index = g_fn_index;
 	Ty t, rt, s_ret = g_fn_ret;
-	if (!fn_shape(n, &name, &params, &ret, &body)) return;
-	fi = find_fn(g_nodes[name].text);
-	if (fi < 0 || g_fns[fi].decl_unit != g_unit_id || g_fns[fi].decl_node != n) return; /* declare_fn said why */
-	jmp = emit(OP_JMP, -1, 0, g_nodes[n].line);
+	jmp = emit(OP_JMP, -1, 0, line);
 	g_fns[fi].entry = g_ncode;
 	g_slots = g_maxslots = 0;
 	g_depth = g_maxdepth = 0;
 	g_local_floor = g_nlocals; /* the top level's locals live in another frame */
-	for (p = first_of(params); p >= 0; p = next_of(p), k++)
+	for (p = params >= 0 ? first_of(params) : -1; p >= 0; p = next_of(p), k++)
 		add_local(g_nodes[first_of(p)].text, g_nodes[first_of(p)].stamp, g_fns[fi].params[k], new_slots(cells(g_fns[fi].params[k])));
 	rt = g_fns[fi].ret;
 	push_body(body, 1, rt);
@@ -3699,20 +4097,22 @@ static o compile_fn(i32 n)
 	g_fn_base = g_nwork - 1;
 	g_fn_ret = rt;
 	g_fn_tbase = g_ntypes;
+	g_fn_index = fi;
 	run_work(g_nwork - 1);
 	g_fn_base = s_base;
 	g_fn_ret = s_ret;
 	g_fn_tbase = s_tbase;
+	g_fn_index = s_index;
 	t = pop_type();
 	for (k = 0; k < g_fns[fi].nparams; k++) /* the parameters die; the result on top stays */
-		emit_release(0, g_locals[g_local_floor + k].slot, g_fns[fi].params[k], g_nodes[n].line);
+		emit_release(0, g_locals[g_local_floor + k].slot, g_fns[fi].params[k], line);
 	if (rt == T_UNIT) {
-		emit_pop(t, g_nodes[n].line);
+		emit_pop(t, line);
 	} else if (t != T_ERR && rt != T_ERR && t != rt) {
-		err_node(name, NAME_FMT " must return %s, its body ends with %s", g_nodes[name].text, tn(rt), tn(t));
+		if (field) err_node(at, "the default of %.64s is %s, the field is %s", field, tn(t), tn(rt));
+		else err_node(at, NAME_FMT " must return %s, its body ends with %s", g_nodes[at].text, tn(rt), tn(t));
 	}
-	(void)nc;
-	emit_ret(rt, g_nodes[n].line);
+	emit_ret(rt, line);
 	g_fns[fi].nslots = g_maxslots;
 	g_fns[fi].maxdepth = g_maxdepth;
 	g_slots = s_slots;
@@ -3722,6 +4122,30 @@ static o compile_fn(i32 n)
 	g_nlocals = s_locals;
 	g_local_floor = s_floor;
 	patch(jmp, g_ncode);
+}
+
+static o compile_fn(i32 n)
+{
+	i32 name, params, ret, body, fi;
+	if (!fn_shape(n, &name, &params, &ret, &body)) return;
+	fi = find_fn(g_nodes[name].text);
+	if (fi < 0 || g_fns[fi].decl_unit != g_unit_id || g_fns[fi].decl_node != n) return; /* declare_fn said why */
+	fn_body(fi, params, body, name, 0);
+}
+
+/* compile_defaults STRUCT: the functions of the default values its fields have; only the unit that declared the
+ * struct compiles them (in the REPL the same struct may be read again) */
+static o compile_defaults(i32 n)
+{
+	i32 name = next_of(first_of(n)), p;
+	Ty t = is_sym(name) ? find_named_type(g_nodes[name].text) : (Ty)T_NONE;
+	if (!is_struct(t)) return;
+	for (p = next_of(name); p >= 0; p = next_of(p)) {
+		i32 fname = first_of(p), d = next_of(next_of(next_of(fname)));
+		const Field *fd = d >= 0 && is_sym(fname) ? find_field(t, g_nodes[fname].text, g_nodes[fname].len) : 0;
+		if (!fd || fd->def < 0 || g_fns[fd->def].decl_unit != g_unit_id || g_fns[fd->def].decl_node != d) continue;
+		fn_body(fd->def, -1, d, d, fd->name);
+	}
 }
 
 /* compile_def DEF REPL: (def name value) or (def name : type value) - a global */
@@ -4076,7 +4500,8 @@ static i32 compile_unit(i32 top, int repl)
 		}
 		if (head_is(n, "defn")) { compile_fn(n); continue; }
 		if (head_is(n, "def")) { compile_def(n, repl, exported); exported = 0; continue; }
-		if (head_is(n, "struct") || head_is(n, "enum") || head_is(n, "defmacro")) continue;
+		if (head_is(n, "struct")) { compile_defaults(n); continue; }
+		if (head_is(n, "enum") || head_is(n, "defmacro")) continue;
 		if (head_is(n, "gem")) { /* the loader read it */
 			if (!g_unit_main || n != top) err_node(n, "a (gem ...) manifest is the first form of a gem's main file");
 			continue;

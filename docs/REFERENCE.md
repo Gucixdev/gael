@@ -313,10 +313,11 @@ runs it while the condition is true. Both are unit.
 (for (x v) body...)            ; each element of a vec; x is a copy of it
 (for (k m) body...)            ; each key of a map, in insertion order (the keys as they were when the loop began)
 (for (h p) body...)            ; the handle of each element of a pool, in slot order
+(for (x s) body...)            ; a struct or an enum with len and get: (get s 0), (get s 1)... up to (len s)
 ```
 
 Unit. `x`, `k`, `h` and `i` are locals of the body. Compile errors: not one of these shapes, a range end or start that
-is not an int, something else to go over.
+is not an int, something else to go over ([Methods and hooks](#methods-and-hooks)).
 
 ### match
 
@@ -411,6 +412,9 @@ A conversion `(T x)` takes a number of any type: between ints the value wraps in
 the nearest float; a float to an int must fit (else a runtime error, `u8 of a float that does not fit in it (0 to
 255)`) and drops the fraction. `(i64 x)` is `(int x)`, `(f64 x)` is `(float x)`.
 
+When the first value is a struct or an enum, the operator calls a function of its type instead: `add`, `sub`, `mul`,
+`div`, `rem`, and `negate` for `(- a)` ([Methods and hooks](#methods-and-hooks)).
+
 Compile errors: mixing types (`int and float do not mix; convert one`), a non-number, `%` on floats, the wrong number
 of operands.
 
@@ -421,7 +425,8 @@ of operands.
 ```
 
 Exactly two values of one type; a `bool`. `<` and the like compare numbers. `=` and `!=` also compare bools, strings
-(by content), enum values, handles and node paths. Anything else is a compile error.
+(by content), enum values, handles and node paths. For a struct or an enum with an `equal` or a `compare` function
+they call that ([Methods and hooks](#methods-and-hooks)). Anything else is a compile error.
 
 ### Bits
 
@@ -466,21 +471,29 @@ is a compile error (write `none`). The value inside an option comes out with `ma
 ## Structs
 
 ```
-(struct Name (field : T)...)
-(Name value...)              ; the fields in order
-(Name :field value...)       ; by name, in any order
+(struct Name (field : T)... (field : T default)...)
+(Name value...)              ; the fields in order; the last ones may be left out when they have defaults
+(Name :field value...)       ; by name, in any order; a field with a default may be left out
 v.field   v.field.field   (. expr field.field)   (expr).field
 ```
 
 A struct type, declared at the top level, usable anywhere in the program. A field's type can be any type declared
 above it. The struct itself can be in its fields only inside a `vec`, a `pool` or a `handle` (an option of it inside
 those too: `(vec (option T))`), which makes a tree; directly, or in a plain option, its size would have no end, a
-compile error. Making one needs
-every field; named and positional values cannot mix. Field access works on variables (`b.pos.x`) and on any
+compile error. Named and positional values cannot mix. Field access works on variables (`b.pos.x`) and on any
 expression's value (`(get bodies 0).pos.x`); `set` works on a variable's fields.
 
-Compile errors: a field twice, an unknown field type, a struct that holds itself directly, the wrong number of values,
-a missing or unknown field name, a value of another type, a field that does not exist (the message lists the fields).
+A default is any expression of the field's type: `(hp : int 100)`, `(items : (vec Item) (vec))`,
+`(pos : Vec2 (Vec2 0.0 0.0))`, `(hp : int (* 2 base-hp))`. It is worked out each time a struct is made without that
+field, so each one gets its own `(vec)`; one made of constants is copied in like a literal, without a call (in code
+that comes after the struct). Its names mean
+what they mean at the top level, wherever the struct is made. When the struct has an `init` function,
+`(Name value...)` calls it instead, everywhere but in the struct's own functions
+([Methods and hooks](#methods-and-hooks)); `(Name :field value...)` always makes the struct directly.
+
+Compile errors: a field twice, an unknown field type, a struct that holds itself directly, the wrong number of values
+(a field left out with no default), a missing or unknown field name, a value of another type, a default of another
+type, a field that does not exist (the message lists the fields).
 
 ## Enums
 
@@ -491,6 +504,46 @@ Name.value
 
 A type with named values. In a `match`, a value can be written bare (`north`). Enum values compare with `=`, can be map
 keys and print as their name.
+
+## Methods and hooks
+
+```
+(defn Type.name ((x : Type) ...) ...)   ; a function of a struct or an enum
+(Type.name x ...)                       ; called like any function; Type.name is a function value too
+(x.name ...)                            ; a method call: (Type.name x ...)
+(v.push 4)   (s.len)                    ; no function of the type: (push v 4), (len s)
+```
+
+A function whose name is a type, a dot and a name belongs to that struct or enum. It is declared in the gem (or the
+program) that declares the type, and it takes no hidden `self`: the value is its first parameter, written out.
+`(x.name args...)`, where `x` is a variable or a field path like `p.pos` and `name` is none of its fields, calls
+`(Type.name x args...)` when `x`'s type has that function, and else `(name x args...)` with a builtin or a function
+of that name. A field of the same name comes first. Values are copied into a call, so a method cannot change the
+variable it was called on; it gives a new value, which `set` keeps: `(set p (p.hurt 10))`. Calling such a method as a
+statement, where its new value would be dropped, is a compile error.
+
+Hooks are functions with these names; the forms call them for values of the type, chosen when compiling, so they cost
+what a call costs:
+
+| hook | called by | it takes | it gives |
+|---|---|---|---|
+| `add` `sub` `mul` `div` `rem` | `+` `-` `*` `/` `%` with a value of the type first | the value and the next one, of any one type | any value; `(+ a b c)` is `(T.add (T.add a b) c)` |
+| `negate` | `(- x)` | the value | any value |
+| `equal` | `=`, and `!=` as its opposite | two values of the type | `bool` |
+| `compare` | `<` `<=` `>` `>=`, and `=` when there is no `equal` | two values of the type | `int`: below 0 when the first comes first, 0 when equal |
+| `text` | `%v` and `%s` in `print`, `println`, `format`... | the value | `string` |
+| `len` | `(len x)`; `for` | the value | `int` |
+| `get` | `(get x i)`; `for`, with an `int` index from 0 up to `(len x)` | the value and an index of any type | the element |
+| `put` | `(put x i e)` | the value, an index and an element | unit |
+| `init` | `(Type args...)` outside Type's own functions | anything | the struct |
+
+Inside Type's own functions (and its fields' defaults) `(Type values...)` makes the struct itself, so `init` can:
+`(defn Player.init ((name : string)) : Player (Player :name name :hp 50))`. `examples/methods.gael` has all of them.
+
+Compile errors: a dot in a function name that does not come after a struct or an enum declared in the same gem, two
+dots, a name that is one of the enum's variants; a hook missing for a form used on the type (the message shows its
+signature), or with the wrong parameters or result; a method that neither the type nor a builtin or a function has;
+dropping a method's new value; an `init` that does not give the struct.
 
 ## Vecs
 
@@ -564,7 +617,9 @@ With `GAEL_CHECK=1` freed memory is overwritten, and a program that runs to its 
 
 The format must be a string literal; its codes are checked against the values when compiling. `%d` takes any int
 type, `%f` any float type, `%s` a string, `%b` a bool, `%v` any value but unit (printed the way the REPL shows it),
-`%%` is a `%`. `println` and `eprintln` add a newline; `eprint` and `eprintln` write to stderr; `format` gives the
+`%%` is a `%`. A struct or an enum with a `text` function prints as what it gives, with `%v` and with `%s`
+([Methods and hooks](#methods-and-hooks)); inside a vec, a map or another struct values print the way the REPL shows
+them. `println` and `eprintln` add a newline; `eprint` and `eprintln` write to stderr; `format` gives the
 text as a new string. Compile errors: a format that is not a literal, an unknown code, more or fewer values than codes,
 a value of the wrong type for its code. A float prints with at least one decimal (`3.0`), an `f32` with the fewest
 digits that read back as the same value.

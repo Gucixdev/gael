@@ -405,11 +405,20 @@ Potem: makra i moduły (0.2), manifest i resolver gemów (0.3), bufor i okno (0.
   wartości, więc pasuje do każdej gałęzi: `(if zle (return none) x)`. Przy okazji wyszło, że stos typów kompilatora
   nie odbija stosu operandów (np. `+` zdejmuje typ lewego operandu od razu): do map stosu (anulowanie zadań) trzeba
   będzie śledzić typy na stosie dokładnie.
-- **Haki zamiast magicznych metod Pythona (decyzja 2026-10-20, w kolejce):** funkcje `Typ.nazwa` (jak `Dir.north`),
-  wywołanie metody `(v.len)` = `(Vec2.len v)`, haki wybierane w kompilacji: `add`, `sub`, `mul`, `div` dla `+ - * /`,
-  `equal` dla `=`, `compare` dla `<`, `>` i sortowania (słowa, nie znaki - jego wybór), `text` dla `%v`, `len`, `get`,
-  `put`, iteracja w `for`, `init` (po prostu `init`, bez podkreślnika) i domyślne wartości pól. Do tego `(sort v)` i
-  `(sort-by v f)`.
+- **Metody i haki zamiast magicznych metod Pythona (2026-10-25):** funkcja `Typ.nazwa` należy do structa albo enuma
+  z tego samego gemu (jak `Dir.north`). `(v.nazwa ...)` to `(Typ.nazwa v ...)`, a gdy typ takiej nie ma -
+  `(nazwa v ...)` z funkcją wbudowaną albo zwykłą (`(v.push 4)`); pole o tej nazwie ma pierwszeństwo. Bez ukrytego
+  `self`: wartość to pierwszy parametr, napisany wprost. Wartość wchodzi do wywołania jako kopia, więc metoda daje
+  nową wartość, a wywołanie jej jako instrukcji, które wyrzuca nową wartość tego samego typu, to błąd kompilacji:
+  `(set p (p.hurt 10))`. Haki (słowa, nie znaki - jego wybór): `add sub mul div rem negate` dla operatorów, `equal` dla
+  `=`/`!=`, `compare` dla `< <= > >=` (i `=`, gdy nie ma `equal`), `text` dla `%v`/`%s`, `len`, `get`, `put`, `for`
+  przez `len` i `get`, `init` (po prostu `init`). Wybierane w kompilacji po typie pierwszej wartości: koszt to jedno
+  wywołanie, bez słowników metod w czasie działania. Sygnatury haków sprawdzane przy użyciu, nie przy deklaracji, żeby
+  `Inventory.add` mogło być zwykłą metodą, dopóki nikt nie robi `+` na Inventory. `(Typ args...)` woła `Typ.init`
+  wszędzie poza własnymi funkcjami typu, gdzie robi structa wprost; po nazwach zawsze wprost. Domyślne wartości pól
+  `(hp : int 100)` to ukryte funkcje `Typ@pole`, kompilowane tam, gdzie struct (błędy w jego pliku, nazwy z górnego
+  poziomu); stałe wkleja się bez wywołania, reszta (np. `(vec)`) liczona za każdym razem, więc każdy struct ma swój
+  vec. Wewnątrz vecs i map wartości drukują się surowo (bez `text`). `sort`/`sort-by` - po generykach.
 - **X-makra (2026-10-20, „też potrzebne jest mega”):** `(string-of x)` i `(name-of "print-" x)` - `#` i `##` z
   preprocesora C. Lista pisana raz to makro, które oddaje swoje wpisy makru, jakie dostanie
   (`(colors def-enum Color)`), i z jednej listy powstaje enum, tablica nazw i funkcja na wpis. Oba liczone zaraz po
