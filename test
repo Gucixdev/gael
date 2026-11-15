@@ -20,7 +20,7 @@
 #                           what it saved to repldump.gael (its header lines aside, the time of each form as TIME)
 #                           must equal tests/repl.dump; then
 #                           the REPL with a main.gael, and with a gem from gael's folder turned on and off
-#   README.md               every "$ ./gael ARGS" example prints exactly the lines shown under it
+#   README.md, docs/{tour,language,internals}.md             every "$ ./gael ARGS" example prints exactly the lines shown under it
 #   docs/REFERENCE.md       its index has every built-in name gael -n lists
 #   docs/MODELS.md          the cheat sheet for models has every built-in name too, and stays under 16 KB
 # Every run has GAEL_CHECK=1: freed memory is overwritten, so a stale read shows, and a program that ends normally
@@ -87,7 +87,7 @@ readme=$(awk -v dir="$out" '
 	/^```/ { if (n) close(file); n = 0; next }
 	/^\$ \.\/gael ./ { k++; n = 1; file = dir "/readme-" k; print substr($0, 10) > (file ".args"); printf "" > file; next }
 	n { print > file }
-	END { print k + 0 }' README.md)
+	END { print k + 0 }' README.md docs/tour.md docs/language.md docs/internals.md)
 
 for bin in "${builds[@]}"; do
 	b=${bin##*/}
