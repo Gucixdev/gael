@@ -1,1 +1,1 @@
-tests/errors/float-to-u8.gael:2: runtime error: u8 of a float that does not fit in it (0 to 255)
+tests/errors/float-to-u8.gael:2:15: runtime error: u8 of a float that does not fit in it (0 to 255); check or clamp the float first, like (u8 (clamp x lo hi))

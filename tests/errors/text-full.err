@@ -1,1 +1,1 @@
-tests/errors/text-full.gael:3: runtime error: out of memory for strings (the text arena is full)
+tests/errors/text-full.gael:3:26: runtime error: out of memory for strings (the text arena is full); GAEL_HEAP=4G sets a larger one (the default is 1G), or build less text

@@ -88,6 +88,7 @@ static Ty g_vec_str; /* (vec string), the type split and args make */
 
 typedef struct {
 	u8 op;
+	u16 col; /* of the form that made this instruction, 0 when unknown; the runtime error says it */
 	i32 a, b;
 	i32 line;
 } Ins;
@@ -423,10 +424,13 @@ static i32 effect(Op op, i32 a, i32 b)
 	}
 }
 
+static i32 g_emit_node = -1; /* the form run_work is compiling: its column goes on what is emitted for its line */
+
 static i32 emit(Op op, i32 a, i32 b, i32 line)
 {
 	if (g_ncode == MAX_CODE) die("program too large (MAX_CODE instructions)");
 	g_code[g_ncode].op = (u8)op;
+	g_code[g_ncode].col = (u16)(g_emit_node >= 0 && g_nodes[g_emit_node].line == line ? GAEL_MIN(g_nodes[g_emit_node].col, 65535) : 0);
 	g_code[g_ncode].a = a;
 	g_code[g_ncode].b = b;
 	g_code[g_ncode].line = line;
@@ -2837,10 +2841,13 @@ static o lambda_end(Ty t, i32 line)
 /* run_work BASE: compile until the work stack is back at BASE; leaves one type per finished root */
 static o run_work(i32 base)
 {
+	i32 outer = g_emit_node;
 	while (g_nwork > base) {
 		Frame *f = &g_work[g_nwork - 1];
 		i32 line = line_of(f), i;
 		Ty t, t2;
+
+		g_emit_node = f->node;
 
 		if (f->form == F_START) {
 			if (f->node < 0) { finish(T_ERR); continue; } /* a missing operand; its form reported it */
@@ -4394,6 +4401,7 @@ static o run_work(i32 base)
 			break;
 		}
 	}
+	g_emit_node = outer;
 }
 
 static o compile_expr(i32 n, Ty want)

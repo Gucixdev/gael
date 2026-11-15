@@ -1,1 +1,1 @@
-tests/errors/pool-stale.gael:6: runtime error: a stale handle: its element was removed from the pool
+tests/errors/pool-stale.gael:6:17: runtime error: a stale handle: its element was removed from the pool; drop the handle when you remove the element, or keep the pool and its handles in step

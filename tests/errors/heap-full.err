@@ -1,1 +1,1 @@
-tests/errors/heap-full.gael:4: runtime error: out of memory (the heap is full)
+tests/errors/heap-full.gael:4:15: runtime error: out of memory (the heap is full); GAEL_HEAP=4G sets a larger heap (the default is 1G), or free what is no longer needed

@@ -242,7 +242,7 @@ enum { KIND_STR = 1, KIND_VEC, KIND_MAP, KIND_POOL, KIND_CORO, KIND_CLOSURE };
  * values of the locals a (fn ...) used from the code around it: [count][kind and the type of those values][the
  * function's number][the values]. A fn made by (fn ...) takes its closure, or 0, in slot 0, before its arguments. */
 enum { CL_FN = 2, CL_DATA };
-#define UNSET_FN "this function value was never set: a global read before its def ran"
+#define UNSET_FN "this function value was never set: a global was read before its def ran; put the def above the code that uses it"
 
 /* Coroutines. (coroutine (f x)) runs f in a coroutine: stackful, with a value stack and frames of its own, heap blocks
  * that grow when a call needs more. The VM switches between the main program and a coroutine by saving the registers
@@ -536,20 +536,21 @@ static o drain(void)
 	g_draining = 0;
 }
 
-/* vm_error IN MSG: the runtime error at instruction IN, "file:line: runtime error: msg" - the file IN was compiled
- * from, a gem's or a used file's as well as the program's */
+/* vm_error IN MSG: the runtime error at instruction IN, "file:line:col: runtime error: msg" - the file IN was compiled
+ * from, a gem's or a used file's as well as the program's; the column is that of the form, as in a compile error */
 static int vm_error(const Ins *in, const char *msg)
 {
 	fflush(stdout);
-	fprintf(stderr, "%s:%ld: runtime error: %s\n", code_file((i32)(in - g_code)), (long)in->line, msg);
+	fprintf(stderr, "%s:%ld:%ld: runtime error: %s\n", code_file((i32)(in - g_code)), (long)in->line, (long)(in->col ? in->col : 1), msg);
 	return 1;
 }
 
-#define HEAP_FULL "out of memory (the heap is full)"
-#define NOT_MADE "this vec, map or pool was never made: a global read before its def ran"
-#define STALE "a stale handle: its element was removed from the pool"
+#define DIV_ZERO "division by zero; test the divisor first: (if (= b 0) 0 (/ a b))"
+#define HEAP_FULL "out of memory (the heap is full); GAEL_HEAP=4G sets a larger heap (the default is 1G), or free what is no longer needed"
+#define NOT_MADE "this vec, map or pool was never made: a global was read before its def ran; put the def above the code that uses it"
+#define STALE "a stale handle: its element was removed from the pool; drop the handle when you remove the element, or keep the pool and its handles in step"
 #define MADE(h) if ((h) <= 0) return vm_error(in, NOT_MADE)
-#define TEXT_FULL "out of memory for strings (the text arena is full)"
+#define TEXT_FULL "out of memory for strings (the text arena is full); GAEL_HEAP=4G sets a larger one (the default is 1G), or build less text"
 
 /* Strings made at run time are first written to the free end of the text arena, then copied into a string object
  * (text_take); the arena goes back to where it was */
@@ -1318,16 +1319,17 @@ static int arena_error(const Ins *in, const ArenaLevel *ar)
 /* index_error IN I LEN: the runtime error for an index outside a vec */
 static int index_error(const Ins *in, i64 i, i64 len)
 {
-	char msg[96];
-	sprintf(msg, "index %ld is outside a vec of %ld", (long)i, (long)len);
+	char msg[160];
+	if (len == 0) sprintf(msg, "index %ld is outside a vec of 0: the vec is empty; check (len v) before reading it", (long)i);
+	else sprintf(msg, "index %ld is outside a vec of %ld; an index runs from 0 to %ld", (long)i, (long)len, (long)len - 1);
 	return vm_error(in, msg);
 }
 
 /* range_error IN FROM TO LEN: substr's bytes FROM up to TO do not fit a string of LEN, or TO is before FROM */
 static int range_error(const Ins *in, i64 from, i64 to, i64 len)
 {
-	char msg[160];
-	sprintf(msg, "substr %ld %ld does not fit a string of %ld bytes", (long)from, (long)to, (long)len);
+	char msg[200];
+	sprintf(msg, "substr %ld %ld does not fit a string of %ld bytes; it takes 0 <= from <= to <= %ld", (long)from, (long)to, (long)len, (long)len);
 	return vm_error(in, msg);
 }
 
@@ -1529,10 +1531,10 @@ static int coro_grow(i64 cells_needed, i64 frames_needed)
 /* the running coroutine pauses (its state is set): back to whoever ran it; on its first pause it joins g_coros */
 #define SUSPEND(at_pc) do { \
 	i64 t_ = g_cur; \
-	if (g_narenas != g_arena_floor) return vm_error(in, "a coroutine cannot pause inside an arena: the arena would end out of turn"); \
+	if (g_narenas != g_arena_floor) return vm_error(in, "a coroutine cannot pause inside an arena: the arena would end out of turn; leave the arena before sleep or yield"); \
 	SAVE_REGS(at_pc); \
 	if (!g_heap[t_ + CO_LISTED].i) { \
-		if (g_ncoros == MAX_COROS) return vm_error(in, "too many coroutines paused (MAX_COROS)"); \
+		if (g_ncoros == MAX_COROS) return vm_error(in, "too many coroutines paused (MAX_COROS); let some finish before starting more"); \
 		g_coros[g_ncoros++] = t_; \
 		g_heap[t_ + CO_LISTED].i = 1; \
 		obj_retain(t_); \
@@ -1615,7 +1617,7 @@ static int vm_run(i32 pc)
 		switch ((Op)in->op) {
 		CASE(OP_HALT) return 0;
 		CASE(OP_ENTER)
-			if (fp + in->a + in->b > cap) return vm_error(in, "stack overflow");
+			if (fp + in->a + in->b > cap) return vm_error(in, "stack overflow: recursion too deep; give the function a case that ends it, or use a loop");
 			while (sp < fp + in->a) s[sp++].i = 0;
 			NEXT;
 		CASE(OP_PUSH_I) s[sp++].i = g_ints[in->a]; NEXT;
@@ -1669,7 +1671,7 @@ static int vm_run(i32 pc)
 		CASE(OP_DIV_I)
 		CASE(OP_MOD_I)
 			sp--;
-			if (s[sp].i == 0) return vm_error(in, "division by zero");
+			if (s[sp].i == 0) return vm_error(in, DIV_ZERO);
 			if (s[sp].i == -1) { /* INT_MIN / -1 overflows; -x and 0 are what wrapping gives */
 				s[sp - 1].i = in->op == OP_DIV_I ? (i64)(0 - (u64)s[sp - 1].i) : 0;
 				NEXT;
@@ -1680,7 +1682,7 @@ static int vm_run(i32 pc)
 		CASE(OP_DIV_U)
 		CASE(OP_MOD_U)
 			sp--;
-			if (s[sp].i == 0) return vm_error(in, "division by zero");
+			if (s[sp].i == 0) return vm_error(in, DIV_ZERO);
 			s[sp - 1].i = (i64)(in->op == OP_DIV_U ? (u64)s[sp - 1].i / (u64)s[sp].i : (u64)s[sp - 1].i % (u64)s[sp].i);
 			NEXT;
 		CASE(OP_BAND) sp--; s[sp - 1].i = (i64)((u64)s[sp - 1].i & (u64)s[sp].i); NEXT;
@@ -1693,8 +1695,8 @@ static int vm_run(i32 pc)
 			i64 n = s[sp - 1].i, bits = int_bits(t);
 			u64 v = (u64)s[sp - 2].i;
 			if (n < 0 || n >= bits) {
-				char msg[96];
-				sprintf(msg, "a shift by %ld does not fit a %ld-bit int", (long)n, (long)bits);
+				char msg[128];
+				sprintf(msg, "a shift by %ld does not fit a %ld-bit int; a count runs from 0 to %ld", (long)n, (long)bits, (long)bits - 1);
 				return vm_error(in, msg);
 			}
 			sp--;
@@ -1781,8 +1783,8 @@ static int vm_run(i32 pc)
 			if (is_unsigned(t)) lo = -1.0, hi = bits == 64 ? 18446744073709551616.0 : (f64)((u64)1 << bits);
 			else lo = bits == 64 ? -9223372036854777856.0 : -(f64)((u64)1 << (bits - 1)) - 1.0, hi = (f64)((u64)1 << (bits - 1));
 			if (!(v > lo && v < hi)) {
-				char msg[160];
-				sprintf(msg, "%s of a float that does not fit in it (%s)", tn(t), int_range(t));
+				char msg[240];
+				sprintf(msg, "%s of a float that does not fit in it (%s); check or clamp the float first, like (%s (clamp x lo hi))", tn(t), int_range(t), tn(t));
 				return vm_error(in, msg);
 			}
 			s[sp - 1].i = t == T_U64 && v >= 9223372036854775808.0 ? (i64)(u64)v : (i64)v;
@@ -1810,7 +1812,7 @@ static int vm_run(i32 pc)
 			nfp = sp + fn->env - fn->pcells;
 			if (nf == fcap || nfp + fn->nslots + fn->maxdepth > cap) {
 				if (!g_cur || !coro_grow(nfp + fn->nslots + fn->maxdepth, nf + 1))
-					return vm_error(in, "stack overflow (recursion too deep?)");
+					return vm_error(in, "stack overflow: recursion too deep; give the function a case that ends it, or use a loop");
 				LOAD_STACK(); /* the coroutine's stack moved */
 			}
 			if (fn->env) { /* its closure (or 0) goes under the arguments, into slot 0; the call owns it now */
@@ -1837,7 +1839,7 @@ static int vm_run(i32 pc)
 				fn = &g_fns[in->a];
 			}
 			if (fp + fn->nslots + fn->maxdepth > cap) {
-				if (!g_cur || !coro_grow(fp + fn->nslots + fn->maxdepth, nf)) return vm_error(in, "stack overflow");
+				if (!g_cur || !coro_grow(fp + fn->nslots + fn->maxdepth, nf)) return vm_error(in, "stack overflow: recursion too deep; give the function a case that ends it, or use a loop");
 				LOAD_STACK();
 			}
 			if (fn->env) {
@@ -1966,8 +1968,8 @@ static int vm_run(i32 pc)
 		CASE(OP_BYTE) {
 			i64 v = s[sp - 2].i, i = s[sp - 1].i;
 			if (i < 0 || i >= STR_LEN(v)) {
-				char msg[96];
-				sprintf(msg, "byte %ld is outside a string of %ld bytes", (long)i, (long)STR_LEN(v));
+				char msg[160];
+				sprintf(msg, "byte %ld is outside a string of %ld bytes; a byte index runs from 0 to (len s) - 1", (long)i, (long)STR_LEN(v));
 				return vm_error(in, msg);
 			}
 			sp--;
@@ -1986,7 +1988,7 @@ static int vm_run(i32 pc)
 		CASE(OP_SPLIT) {
 			i64 v = s[sp - 2].i, sep = s[sp - 1].i, n = 1, at, start = 0, h, piece;
 			Cell *data;
-			if (!STR_LEN(sep)) return vm_error(in, "split: the separator is empty");
+			if (!STR_LEN(sep)) return vm_error(in, "split: the separator is empty; split cuts at a separator that has at least one byte, like (split s \",\")");
 			for (at = str_find(v, sep, 0); at >= 0; at = str_find(v, sep, at + STR_LEN(sep))) n++;
 			if ((h = vec_new(g_vec_str, n, 0)) < 0) return vm_error(in, HEAP_FULL);
 			data = g_heap + g_heap[h + VH_DATA].i;
@@ -2026,8 +2028,8 @@ static int vm_run(i32 pc)
 		}
 		CASE(OP_CHAR)
 			if (s[sp - 1].i < 0 || s[sp - 1].i > 255) {
-				char msg[64];
-				sprintf(msg, "char takes 0 to 255, this is %ld", (long)s[sp - 1].i);
+				char msg[128];
+				sprintf(msg, "char takes 0 to 255, this is %ld; (char 65) is \"A\"", (long)s[sp - 1].i);
 				return vm_error(in, msg);
 			}
 			s[sp - 1].i = str_cell((size_t)(2 * s[sp - 1].i), 1);
@@ -2283,8 +2285,8 @@ static int vm_run(i32 pc)
 		CASE(OP_POOL_NEW) { /* b: the pool type */
 			i64 cap = s[sp - 1].i, h;
 			if (cap < 1 || cap > 0x7fffffff) {
-				char msg[96];
-				sprintf(msg, "a pool holds 1 to 2147483647 elements, not %ld", (long)cap);
+				char msg[128];
+				sprintf(msg, "a pool holds 1 to 2147483647 elements, not %ld; make it with (pool 1000), say", (long)cap);
 				return vm_error(in, msg);
 			}
 			if ((h = pool_new((Ty)in->b, cap)) < 0) return vm_error(in, HEAP_FULL);
@@ -2300,8 +2302,8 @@ static int vm_run(i32 pc)
 			hd = g_heap + p;
 			cap = hd[PH_CAP].i;
 			if ((i = hd[PH_FREE].i) < 0) {
-				char msg[96];
-				sprintf(msg, "the pool is full (%ld elements)", (long)cap);
+				char msg[160];
+				sprintf(msg, "the pool is full (%ld elements); make it with a larger (pool N), or remove elements before you spawn more", (long)cap);
 				return vm_error(in, msg);
 			}
 			gens = g_heap + hd[PH_GENS].i;
@@ -2391,7 +2393,7 @@ static int vm_run(i32 pc)
 			NEXT;
 		}
 		CASE(OP_ARENA_BEGIN)
-			if (g_narenas == MAX_ARENAS) return vm_error(in, "arenas nested deeper than 64");
+			if (g_narenas == MAX_ARENAS) return vm_error(in, "arenas nested deeper than 64; end an arena before opening another");
 			memset(&g_arenas[g_narenas], 0, sizeof(ArenaLevel));
 			g_arenas[g_narenas].start = g_arena_top;
 			g_arenas[g_narenas].line = in->line;
@@ -2409,7 +2411,7 @@ static int vm_run(i32 pc)
 			NEXT;
 		}
 		CASE(OP_KEEP)
-			if (!keep(s + sp - cells((Ty)in->a), (Ty)in->a)) return vm_error(in, "keep: out of memory (the heap or the text arena is full)");
+			if (!keep(s + sp - cells((Ty)in->a), (Ty)in->a)) return vm_error(in, "keep: out of memory (the heap or the text arena is full); GAEL_HEAP=4G sets a larger one");
 			NEXT;
 		CASE(OP_CLOSURE) { /* a: the fn, b: the type of the values it keeps, which are on the stack and move in */
 			i32 n = cells((Ty)in->b);
@@ -2462,8 +2464,8 @@ static int vm_run(i32 pc)
 			i64 t = s[sp - 1].i;
 			Ty rt = g_tys[(Ty)in->a].elem;
 			i32 n = cells(rt);
-			if (t <= 0) return vm_error(in, "this coroutine was never started: a global read before its def ran");
-			if (coro_state(t) == CS_DEAD) return vm_error(in, "this coroutine was stopped by a runtime error");
+			if (t <= 0) return vm_error(in, "this coroutine was never started: a global was read before its def ran; put the def above the code that uses it");
+			if (coro_state(t) == CS_DEAD) return vm_error(in, "this coroutine was stopped by a runtime error; start a new one with (coroutine (f x))");
 			sp--;
 			if (coro_state(t) >= CS_DONE) {
 				s[sp].i = 1;

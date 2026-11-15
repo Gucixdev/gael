@@ -21,7 +21,7 @@ macros; `docs/REFERENCE.md` has every detail; `examples/` has a working program 
   is unused on purpose; `(for (_ 0 3) ...)` repeats without a name.
 - Nothing waits: there is no `async` or `await`. Coroutines pause themselves; `(poll co)` looks at a result at once.
 - The last form of a body is its value. `return` leaves early: `(when bad (return none))`.
-- Ints wrap around; division by zero, an index out of a vec, a stale handle are runtime errors with the line.
+- Ints wrap around; division by zero, an index out of a vec, a stale handle are runtime errors: `file:line:column`, what happened, what to write instead.
 - Formats are checked: `%d` ints, `%x` ints in hex, `%f` floats, `%s` strings, `%b` bools, `%v` anything, `%%` a %.
 
 ## The shape of a program

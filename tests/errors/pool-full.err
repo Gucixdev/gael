@@ -1,1 +1,1 @@
-tests/errors/pool-full.gael:6: runtime error: the pool is full (2 elements)
+tests/errors/pool-full.gael:6:3: runtime error: the pool is full (2 elements); make it with a larger (pool N), or remove elements before you spawn more

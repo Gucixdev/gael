@@ -1,1 +1,1 @@
-tests/errors/gpu-fault.gael:5: runtime error: division by zero
+tests/errors/gpu-fault.gael:5:26: runtime error: division by zero; test the divisor first: (if (= b 0) 0 (/ a b))

@@ -472,12 +472,12 @@ lives : u8 = 3	examples/export.gael:5
 spawn-point : NodePath = $Level/Start	examples/export.gael:7
 ```
 
-A runtime error stops the program and names the line it happened on:
+A runtime error stops the program and names the line and column it happened on, then what to do about it:
 
 ```
 $ ./gael tests/errors/div-zero.gael
 before
-tests/errors/div-zero.gael:1: runtime error: division by zero
+tests/errors/div-zero.gael:1:39: runtime error: division by zero; test the divisor first: (if (= b 0) 0 (/ a b))
 ```
 
 ## How it is built

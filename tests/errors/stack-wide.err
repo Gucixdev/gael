@@ -1,1 +1,1 @@
-tests/errors/stack-wide.gael:6: runtime error: stack overflow (recursion too deep?)
+tests/errors/stack-wide.gael:6:21: runtime error: stack overflow: recursion too deep; give the function a case that ends it, or use a loop

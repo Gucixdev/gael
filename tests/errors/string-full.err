@@ -1,1 +1,1 @@
-tests/errors/string-full.gael:4: runtime error: out of memory (the heap is full)
+tests/errors/string-full.gael:4:12: runtime error: out of memory (the heap is full); GAEL_HEAP=4G sets a larger heap (the default is 1G), or free what is no longer needed
