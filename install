@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# install - build gael and install it for the current user: no arguments, no root.
+# gael finds the gems that come with it next to its own binary, so both go to $PREFIX/lib/gael/ (gael, gems/) and
+# $PREFIX/bin/gael is a symlink to it. Default PREFIX is ~/.local; PREFIX=/usr/local (and sudo) installs system-wide,
+# DESTDIR is for packagers. Nothing outside the prefix is touched.
+set -eu
+cd "$(dirname "$(readlink -f "$0")")"
+[ $# -eq 0 ] || { echo "install: takes no arguments (PREFIX=... in the environment changes the target)" >&2; exit 2; }
+prefix=${PREFIX:-$HOME/.local}
+dest=${DESTDIR:-}$prefix
+./build > /dev/null
+mkdir -p "$dest/lib/gael" "$dest/bin"
+cp -f gael "$dest/lib/gael/gael"
+rm -rf -- "$dest/lib/gael/gems"
+cp -r gems "$dest/lib/gael/gems"
+ln -sfn "$prefix/lib/gael/gael" "$dest/bin/gael"
+echo "gael installed: $dest/lib/gael (binary + gems), $dest/bin/gael"
+case ":$PATH:" in
+	*":$dest/bin:"*) ;;
+	*) [ -n "${DESTDIR:-}" ] || echo "note: $prefix/bin is not in PATH; add it to your shell profile" ;;
+esac
