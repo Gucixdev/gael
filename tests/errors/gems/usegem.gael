@@ -1,0 +1,2 @@
+(gem usegem :version "0.1.0")
+(use "usegem-part.gael")

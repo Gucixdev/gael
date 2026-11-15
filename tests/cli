@@ -1,0 +1,3 @@
+# gael command-line mistakes: exit status, the arguments, and a text that must be on stderr
+1|nothere.gael|gael: cannot open nothere.gael: no such file, or it cannot be read; the usage is: gael FILE
+2|--bogus|gael: cannot make sense of the arguments starting with --bogus; the usage is:

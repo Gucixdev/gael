@@ -1,0 +1,1 @@
+tests/errors/fix-use.gael:3:6: error: use: tests/errors/gems/usegem-part.gael belongs to gem usegem; a gem's files are its own: write (enable usegem) and use its names, not its files

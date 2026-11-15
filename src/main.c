@@ -114,7 +114,7 @@ static i32 module_of(const char *path)
 	for (i = 0; i < g_nmods; i++) {
 		if (!strcmp(g_mods[i].real, real)) return i;
 	}
-	if (g_nmods == MAX_MODULES) die("too many files (MAX_MODULES)");
+	if (g_nmods == MAX_MODULES) die("too many files (MAX_MODULES, 16384); use fewer, larger files");
 	g_mods[g_nmods].real = arena_strndup(&g_perm, real, strlen(real));
 	g_mods[g_nmods].shown = arena_strndup(&g_perm, path, strlen(path));
 	g_mods[g_nmods].state = 0;
@@ -139,13 +139,13 @@ static int read_source(const Source *so)
 		if (f && !fseek(f, 0, SEEK_END)) size = ftell(f);
 		if (!f || size < 0 || fseek(f, 0, SEEK_SET)) {
 			if (f) fclose(f);
-			fprintf(stderr, "gael: cannot read %s\n", so->name);
+			fprintf(stderr, "gael: cannot read %s: %s; give the path of a file that can be read\n", so->name, strerror(errno));
 			return 0;
 		}
 		buf = (char *)arena_alloc(&g_unit_arena, (size_t)size + 1);
 		if (fread(buf, 1, (size_t)size, f) != (size_t)size) {
 			fclose(f);
-			fprintf(stderr, "gael: cannot read %s\n", so->name);
+			fprintf(stderr, "gael: cannot read all of %s: the file ended early or the disk failed; run it again\n", so->name);
 			return 0;
 		}
 		fclose(f);
@@ -169,18 +169,22 @@ static i32 next_use(i32 top, const char *from, i32 gem, i32 *at)
 		if (!head_is(n, "use") || arg < 0 || g_nodes[arg].kind != N_STR || next_of(arg) >= 0) continue;
 		if (g_nodes[arg].text[0] == '/') dir = 0;
 		if (dir + g_nodes[arg].len + 1 > sizeof(path)) {
-			error_at(g_nodes[arg].line, g_nodes[arg].col, "use: the path is too long");
+			error_at(g_nodes[arg].line, g_nodes[arg].col, "use: the path is too long (at most %d bytes); put the file nearer, or use a shorter name", (int)sizeof(path) - 1);
 			return -2;
 		}
 		memcpy(path, from, dir);
 		memcpy(path + dir, g_nodes[arg].text, g_nodes[arg].len + 1);
 		if ((m = module_of(path)) < 0) {
-			error_at(g_nodes[arg].line, g_nodes[arg].col, "use: there is no file %s", path);
+			error_at(g_nodes[arg].line, g_nodes[arg].col, "use: there is no file %s; the path is relative to the file that has this (use ...), like (use \"lib.gael\")", path);
 			return -2;
 		}
 		if (g_mods[m].gem >= 0 && g_mods[m].gem != gem) {
-			error_at(g_nodes[arg].line, g_nodes[arg].col, "use: %s belongs to %s%s; a gem's files are its own",
-			         g_mods[m].shown, g_mods[m].gem ? "gem " : "", g_gems[g_mods[m].gem].name);
+			if (g_mods[m].gem) error_at(g_nodes[arg].line, g_nodes[arg].col,
+			                            "use: %s belongs to gem %s; a gem's files are its own: write (enable %s) and use its names, not its files",
+			                            g_mods[m].shown, g_gems[g_mods[m].gem].name, g_gems[g_mods[m].gem].name);
+			else error_at(g_nodes[arg].line, g_nodes[arg].col,
+			              "use: %s belongs to the program; a gem's files are its own: a gem cannot use a file of the program, so move the shared code into the gem",
+			              g_mods[m].shown);
 			return -2;
 		}
 		if (g_mods[m].state == 2) continue;
@@ -261,7 +265,7 @@ static i32 gem_register(const char *name, const char *path)
 	Source so;
 	Gem g;
 	i32 top;
-	if (g_ngems == MAX_GEMS) die("too many gems (MAX_GEMS)");
+	if (g_ngems == MAX_GEMS) die("too many gems (MAX_GEMS, 1024); turn on only the gems the program needs");
 	memset(&so, 0, sizeof(so));
 	so.name = arena_strndup(&g_perm, path, strlen(path));
 	so.mod = -1;
@@ -383,7 +387,7 @@ static int load(const char *name, const char *src, size_t len, int repl, int mod
 	}
 	if (!src) {
 		if ((m = module_of(name)) < 0) {
-			fprintf(stderr, "gael: cannot open %s\n", name);
+			fprintf(stderr, "gael: cannot open %s: no such file, or it cannot be read; the usage is: gael FILE (gael -h shows the rest)\n", name);
 			return 1;
 		}
 		g_mods[m].state = 1;
@@ -399,11 +403,11 @@ static int load(const char *name, const char *src, size_t len, int repl, int mod
 		if (m >= 0) { /* a gem to load first, from its main file */
 			i32 g = m;
 			if (depth == MAX_USE_DEPTH) {
-				error_at(g_nodes[top].line, g_nodes[top].col, "gems nested deeper than %d", MAX_USE_DEPTH);
+				error_at(g_nodes[top].line, g_nodes[top].col, "gems nested deeper than %d; let the gems require fewer levels of other gems", MAX_USE_DEPTH);
 				return load_failed();
 			}
 			if ((m = module_of(g_gems[g].file)) < 0) {
-				fprintf(stderr, "gael: cannot open %s\n", g_gems[g].file);
+				fprintf(stderr, "gael: cannot open %s: the gem's main file cannot be read; check that it is there\n", g_gems[g].file);
 				return load_failed();
 			}
 			g_gems[g].state = GEM_LOADING;
@@ -422,11 +426,11 @@ static int load(const char *name, const char *src, size_t len, int repl, int mod
 		if (m == -2) return load_failed();
 		if (m >= 0) {
 			if (g_mods[m].state == 1) {
-				error_at(g_nodes[at].line, g_nodes[at].col, "use: %s uses this file, directly or through others", g_mods[m].shown);
+				error_at(g_nodes[at].line, g_nodes[at].col, "use: %s uses this file, directly or through others; remove one of the uses, so no file waits for itself", g_mods[m].shown);
 				return load_failed();
 			}
 			if (depth == MAX_USE_DEPTH) {
-				error_at(g_nodes[at].line, g_nodes[at].col, "use: files nested deeper than %d", MAX_USE_DEPTH);
+				error_at(g_nodes[at].line, g_nodes[at].col, "use: files nested deeper than %d; use fewer levels of (use ...)", MAX_USE_DEPTH);
 				return load_failed();
 			}
 			g_mods[m].state = 1;
@@ -593,7 +597,7 @@ static int repl(void)
 		if (!used && (!strcmp(g_line_buf, ":q\n") || !strcmp(g_line_buf, ":q"))) return 0;
 		used = strlen(g_line_buf);
 		if (used + 1 >= sizeof(g_line_buf)) {
-			fputs("gael: input too long\n", stderr);
+			fprintf(stderr, "gael: input too long: the REPL takes at most %d bytes of one form; split it into smaller forms, or put it in a file\n", (int)sizeof(g_line_buf) - 2);
 			used = 0;
 			continue;
 		}
@@ -734,7 +738,7 @@ int main(int argc, char **argv)
 				st = 0;
 			}
 		}
-		if (st) fprintf(stderr, "gael: no docs/MODELS.md next to the gael binary\n");
+		if (st) fprintf(stderr, "gael: no docs/MODELS.md next to the gael binary; run gael from its own folder, or copy docs/ next to it\n");
 	} else if (argc == 3 && !strcmp(argv[1], "check")) {
 		st = load(argv[2], 0, 0, 0, CHECK);
 	} else if (argv[1][0] != '-') {
@@ -765,6 +769,7 @@ int main(int argc, char **argv)
 		st = load("<-e>", argv[2], strlen(argv[2]), 0, RUN);
 		if (!st) st = leaks();
 	} else {
+		fprintf(stderr, "gael: cannot make sense of the arguments starting with %s; the usage is:\n", argv[1]);
 		for (k = 0; g_usage[k]; k++) fputs(g_usage[k], stderr);
 		for (k = 0; g_usage_env[k]; k++) fputs(g_usage_env[k], stderr);
 		return 2;

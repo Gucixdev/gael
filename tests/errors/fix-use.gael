@@ -1,0 +1,3 @@
+; a gem's own file is not for the program to use
+(enable usegem)
+(use "gems/usegem-part.gael")

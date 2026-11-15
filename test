@@ -15,6 +15,7 @@
 #   tests/window/NAME.gael  with GAEL_WGPU set and weston installed: windows on a headless weston of the test's own
 #                           (never the desktop's) print NAME.out, or stop with the lines of NAME.err (exit 1)
 #   (for these, NAME.env holds VAR=value words for its environment, like a smaller heap)
+#   tests/cli               lines EXIT|ARGS|TEXT: gael ARGS stops with exit status EXIT and TEXT is on stderr
 #   tests/repl.in           the REPL's stdout must equal tests/repl.out, every line of tests/repl.err on stderr, and
 #                           what it saved to repldump.gael (its header lines aside, the time of each form as TIME)
 #                           must equal tests/repl.dump; then
@@ -201,6 +202,14 @@ for bin in "${builds[@]}"; do
 		grep -q ': error: \|Sanitizer\|runtime error' "$out/stderr" && ok=0
 		check "$b $f" "$ok"
 	done
+	while IFS='|' read -r want_st cli_args want_text; do # tests/cli: EXIT|ARGS|text that must be on stderr
+		case "$want_st" in '#'* | '') continue ;; esac
+		ok=1
+		"$bin" $cli_args > "$out/stdout" 2> "$out/stderr" < /dev/null
+		[ $? = "$want_st" ] || ok=0
+		grep -qF -- "$want_text" "$out/stderr" || { ok=0; echo "  missing: $want_text"; }
+		check "$b gael $cli_args" "$ok"
+	done < tests/cli
 	ok=1
 	GAEL_HOME="$out/home-$b" "$bin" < tests/repl.in > "$out/stdout" 2> "$out/stderr" || ok=0
 	cmp -s "$out/stdout" tests/repl.out || { ok=0; diff tests/repl.out "$out/stdout" | head -5; }
