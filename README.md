@@ -18,7 +18,7 @@ You need bash and a C compiler that accepts C89 (gcc or clang).
 ./run examples/fib.gael     # rebuild when a source changed, then run with these arguments
 ./test                      # the examples, the error cases and a REPL session, on every build
 ./bench                     # time gael against other languages on the same programs
-./install                   # build and install into ~/.local (lib/gael with its gems, bin/gael); PREFIX= changes it
+./install [-rebuild]        # build and install into ~/.local (lib/gael with its gems, bin/gael); PREFIX= changes it
 ```
 
 `./test` builds with gcc and with clang (`-std=c89 -pedantic -Wall -Wextra -Werror`), and once more with
