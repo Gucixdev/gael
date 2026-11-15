@@ -1,4 +1,4 @@
-tests/errors/macros.gael:2:25: error: a is in this pattern twice
+tests/errors/macros.gael:2:25: error: a is in this pattern twice; name each pattern variable once
 tests/errors/macros.gael:3:23: error: a.b cannot be a pattern variable: a pattern variable is a plain name
 tests/errors/macros.gael:4:24: error: ... comes right after the part of the pattern it repeats
 tests/errors/macros.gael:5:31: error: a list in a pattern can have one ...
@@ -7,9 +7,9 @@ tests/errors/macros.gael:7:27: error: the ... after a repeats nothing: it was ma
 tests/errors/macros.gael:8:37: error: the ... after this repeats nothing: it is not a pattern variable
 tests/errors/macros.gael:9:1: error: defmacro needs a rule: (defmacro no-rules ((_ x) template))
 tests/errors/macros.gael:10:20: error: a rule is (pattern template), like ((_ a b) (+ a b))
-tests/errors/macros.gael:11:11: error: println is a built-in name
-tests/errors/macros.gael:17:11: error: swap is already a macro (line 1)
+tests/errors/macros.gael:11:11: error: println is a built-in name; choose another name
+tests/errors/macros.gael:17:11: error: swap is already a macro (line 1); choose another name
 tests/errors/macros.gael:14:1: error: no rule of swap matches this; it takes (swap a b)
 tests/errors/macros.gael:15:1: error: a matched 2 forms and b 1, so one ... cannot repeat them together
-tests/errors/macros.gael:12:7: error: swap is already a macro
-tests/errors/macros.gael:16:15: error: defmacro is only allowed at the top level of a file
+tests/errors/macros.gael:12:7: error: swap is already a macro; choose another name
+tests/errors/macros.gael:16:15: error: defmacro is only allowed at the top level of a file; move it out of the form it is in

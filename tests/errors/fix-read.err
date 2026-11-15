@@ -1,0 +1,3 @@
+tests/errors/fix-read.gael:1:12: error: unknown escape \q in a string; the escapes are \n, \t, \", \\ and \0 (write a backslash as \\)
+tests/errors/fix-read.gael:2:15: error: integer does not fit in 64 bits; the largest is 18446744073709551615 (a u64), and a float is written with a point: 1.0e30
+tests/errors/fix-read.gael:3:17: error: 2 ')' too many at the end of line 3: nothing is open there; remove them

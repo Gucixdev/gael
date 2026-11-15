@@ -683,7 +683,7 @@ static int gpu_each(Frame *f)
 		return 0;
 	}
 	if (strchr(g_nodes[p].text, '.') || is_reserved(g_nodes[p].text) || (ix >= 0 && (strchr(g_nodes[ix].text, '.') || is_reserved(g_nodes[ix].text)))) {
-		err_node(ix >= 0 && (strchr(g_nodes[ix].text, '.') || is_reserved(g_nodes[ix].text)) ? ix : p, NAME_FMT " cannot be a variable name",
+		err_node(ix >= 0 && (strchr(g_nodes[ix].text, '.') || is_reserved(g_nodes[ix].text)) ? ix : p, NAME_FMT " cannot be a variable name; use a plain name, without a dot, that is not a built-in, like p",
 		         g_nodes[ix >= 0 && (strchr(g_nodes[ix].text, '.') || is_reserved(g_nodes[ix].text)) ? ix : p].text);
 		return 0;
 	}
@@ -709,7 +709,7 @@ static int gpu_each(Frame *f)
 	kernel_body(f->node, body);
 	if (g_kw.bad & 1) return 0; /* said what a GPU does not run: the VM's compile of the same body would only repeat it */
 	if (!g_kw.bad) {
-		if (g_nkernels == MAX_KERNELS) die("too many gpu-each (MAX_KERNELS)");
+		if (g_nkernels == MAX_KERNELS) die("too many gpu-each (MAX_KERNELS, 256); fewer kernels: let one gpu-each do more");
 		kn = g_nkernels++;
 		g_kw.k.wgsl = 0; /* (gpu wgsl K), after the VM's compile of the body */
 		g_kw.k.body = body;

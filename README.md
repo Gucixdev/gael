@@ -91,13 +91,13 @@ This file has three mistakes. gael reports all three and runs nothing:
 
 ```
 $ ./gael tests/errors/three-errors.gael
-tests/errors/three-errors.gael:2:8: error: + works on numbers, not bool
+tests/errors/three-errors.gael:2:8: error: + works on numbers, not bool; give it numbers of one type
     (+ a true))
          ^
 tests/errors/three-errors.gael:3:15: error: println: % code 1 wants string, this value is int
   (println "%s" 1)
                 ^
-tests/errors/three-errors.gael:4:6: error: set: unknown name nothing
+tests/errors/three-errors.gael:4:6: error: set: unknown name nothing; set changes a variable that exists: declare it first with (let ((nothing value)) ...) or (def nothing value)
   (set nothing 3)
        ^
 ```

@@ -1,1 +1,1 @@
-tests/errors/lib/cycle-b.gael:1:6: error: use: tests/errors/use-cycle.gael uses this file, directly or through others
+tests/errors/lib/cycle-b.gael:1:6: error: use: tests/errors/use-cycle.gael uses this file, directly or through others; remove one of the uses, so no file waits for itself

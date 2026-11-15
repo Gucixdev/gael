@@ -78,7 +78,7 @@ static o error_at(i32 line, i32 col, const char *fmt, ...)
 	va_list ap;
 	g_unit.nerrors++;
 	if (g_unit.nerrors > MAX_ERRORS) {
-		if (g_unit.nerrors == MAX_ERRORS + 1) fprintf(stderr, "%s: too many errors, stopping here\n", g_unit.file);
+		if (g_unit.nerrors == MAX_ERRORS + 1) fprintf(stderr, "%s:%ld:%ld: error: too many errors (%d), stopping here; fix the ones above and run again\n", g_unit.file, (long)line, (long)col, MAX_ERRORS);
 		return;
 	}
 	va_start(ap, fmt);
@@ -98,7 +98,7 @@ static o warning_at(i32 line, i32 col, const char *fmt, ...)
 	g_unit.nwarnings++;
 	g_nwarnings++;
 	if (g_unit.nwarnings > MAX_ERRORS) {
-		if (g_unit.nwarnings == MAX_ERRORS + 1) fprintf(stderr, "%s: too many warnings, showing no more\n", g_unit.file);
+		if (g_unit.nwarnings == MAX_ERRORS + 1) fprintf(stderr, "%s:%ld:%ld: warning: too many warnings (%d), showing no more; fix the ones above\n", g_unit.file, (long)line, (long)col, MAX_ERRORS);
 		return;
 	}
 	va_start(ap, fmt);
@@ -112,7 +112,11 @@ static o warning_at(i32 line, i32 col, const char *fmt, ...)
 static i32 new_node(NodeKind kind, i32 line, i32 col)
 {
 	Node *n;
-	if (g_nnodes == MAX_NODES) die("too many forms in one unit (MAX_NODES)");
+	if (g_nnodes == MAX_NODES) {
+		fprintf(stderr, "%s:%ld:%ld: error: too many forms in one file (the limit is %d); split it into files joined with (use \"other.gael\")\n",
+		        g_unit.file, (long)line, (long)col, MAX_NODES);
+		exit(70);
+	}
 	n = &g_nodes[g_nnodes];
 	memset(n, 0, sizeof(*n));
 	n->kind = (u8)kind;
@@ -435,7 +439,7 @@ static i32 read_unit(void)
 					case '\\': buf[len++] = '\\'; break;
 					case '"': buf[len++] = '"'; break;
 					case '0': buf[len++] = '\0'; break;
-					default: error_at(line, col - 2, "unknown escape \\%c in a string", e); break;
+					default: error_at(line, col - 2, "unknown escape \\%c in a string; the escapes are \\n, \\t, \\\", \\\\ and \\0 (write a backslash as \\\\)", e); break;
 					}
 					continue;
 				}
@@ -444,7 +448,7 @@ static i32 read_unit(void)
 			}
 			buf[len] = 0;
 			if (!closed) {
-				error_at(l0, c0, "string not closed");
+				error_at(l0, c0, "string not closed; end it with a \" (a string may run over lines, so a missing quote swallows what follows)");
 				open_str = 1;
 			}
 			node = new_node(N_STR, l0, c0);
@@ -482,7 +486,7 @@ static i32 read_unit(void)
 				limit = neg ? (u64)1 << 63 : ~(u64)0;
 				for (; j < len; j++) {
 					u64 dgt = digit_value(s[start + j]);
-					if (v > (limit - dgt) / base) { error_at(l0, c0, "integer does not fit in 64 bits"); v = 0; break; }
+					if (v > (limit - dgt) / base) { error_at(l0, c0, "integer does not fit in 64 bits; the largest is 18446744073709551615 (a u64), and a float is written with a point: 1.0e30"); v = 0; break; }
 					v = v * base + dgt;
 				}
 				g_nodes[node].ival = neg ? (i64)(0 - v) : (i64)v;
@@ -508,14 +512,14 @@ static i32 read_unit(void)
 			last[depth] = node;
 		}
 		if (g_nodes[node].kind == N_LIST) {
-			if (depth == MAX_DEPTH) { error_at(l0, c0, "nested deeper than %d lists", MAX_DEPTH); return top; }
+			if (depth == MAX_DEPTH) { error_at(l0, c0, "nested deeper than %d lists; move the inner part into a function of its own", MAX_DEPTH); return top; }
 			open[depth++] = node;
 			last[depth] = -1;
 		}
 	}
 	if ((nextra || depth) && !open_str && !paren_hints(depth - nextra)) {
-		for (k = 0; k < nextra && k < MAX_ERRORS; k++) error_at(extra[k].line, extra[k].col, "unexpected ')'");
-		for (k = depth; k > 0; k--) error_at(g_nodes[open[k - 1]].line, g_nodes[open[k - 1]].col, "'(' not closed");
+		for (k = 0; k < nextra && k < MAX_ERRORS; k++) error_at(extra[k].line, extra[k].col, "unexpected ')'; nothing is open here, remove it");
+		for (k = depth; k > 0; k--) error_at(g_nodes[open[k - 1]].line, g_nodes[open[k - 1]].col, "'(' not closed; add the matching ')'");
 	}
 	return top;
 }

@@ -1,2 +1,2 @@
-tests/errors/broken-type.gael:2:16: error: unknown type nosuch
+tests/errors/broken-type.gael:2:16: error: unknown type nosuch; a type is int, float, bool, string, a sized number like u8, a struct or enum declared above, or (vec T), (map K V), (option T), (pool T)
 tests/errors/broken-type.gael:5:11: error: a variant is a plain name, like north

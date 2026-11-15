@@ -895,7 +895,7 @@ static Ty parse_type(i32 root)
 			}
 			t = find_named_type(g_nodes[n].text);
 			if (t == T_NONE) {
-				err_node(n, "unknown type " NAME_FMT, g_nodes[n].text);
+				err_node(n, "unknown type " NAME_FMT "; a type is int, float, bool, string, a sized number like u8, a struct or enum declared above, or (vec T), (map K V), (option T), (pool T)", g_nodes[n].text);
 				return T_ERR;
 			}
 			if (t >= T_USER && !gem_use(n, g_tys[t].gem)) return T_ERR; /* the built-in types are everyone's */
@@ -936,7 +936,7 @@ static Ty parse_type(i32 root)
 				return T_ERR;
 			}
 			if (np > MAX_PARAMS) {
-				err_node(a1, "at most %d parameters", MAX_PARAMS);
+				err_node(a1, "a function takes at most %d parameters; pass a struct or a vec that holds the rest", MAX_PARAMS);
 				return T_ERR;
 			}
 			if (st[ns - 1].phase <= np) { /* the parameter types in turn, then the return type */
@@ -952,7 +952,7 @@ static Ty parse_type(i32 root)
 			for (k = 0; k < np; k++) {
 				params[k] = res[nr + k];
 				if (params[k] == T_UNIT) {
-					err_node(a1, "a parameter cannot be unit");
+					err_node(a1, "a parameter cannot be unit; leave it out");
 					return T_ERR;
 				}
 			}
@@ -1107,6 +1107,26 @@ static const char *names_of(Ty t, char *buf, size_t size)
 		memcpy(buf + used, s, len + 1);
 		used += len;
 	}
+	return buf;
+}
+
+/* param_types TYPES N BUF SIZE: " (int, float)" - the types a function takes, for a message; "" when it takes none */
+static const char *param_types(const Ty *types, i32 n, char *buf, size_t size)
+{
+	size_t used = 0;
+	i32 i;
+	buf[0] = 0;
+	for (i = 0; i < n; i++) {
+		const char *t = tn(types[i]);
+		size_t len = strlen(t);
+		if (used + len + 12 > size) {
+			strcpy(buf + used, ", ...");
+			used += 5;
+			break;
+		}
+		used += (size_t)sprintf(buf + used, "%s%s", used ? ", " : " (", t);
+	}
+	if (n) strcpy(buf + used, ")");
 	return buf;
 }
 
@@ -1598,7 +1618,7 @@ static int resolve_place(i32 n, Place *pl)
 		char names[256];
 		if (pl->type == T_ERR) return 0; /* its declaration was wrong and said so */
 		if (!len) {
-			err_node(n, NAME_FMT ": a field name is missing after a dot", s);
+			err_node(n, NAME_FMT ": a field name is missing after a dot; write a name after it, like p.x", s);
 			return 0;
 		}
 		if (!is_struct(pl->type)) {
@@ -1746,7 +1766,7 @@ static o compile_atom(i32 n, Ty want)
 	else if (is_struct(t)) err_node(n, NAME_FMT " is a type; make one with (" NAME_FMT " ...)", s, s);
 	else if (is_enum(t) && g_tys[t].n) err_node(n, NAME_FMT " is a type; a value of it is written " NAME_FMT ".%s", s, s, g_variants[g_tys[t].first]);
 	else if (t != T_NONE) err_node(n, NAME_FMT " is a type, not a value", s);
-	else err_node(n, "unknown name " NAME_FMT, s);
+	else err_node(n, "unknown name " NAME_FMT "; declare it with (let ((" NAME_FMT " value)) ...) or (def " NAME_FMT " value), or check the spelling", s, s, s);
 	push_type(T_ERR);
 }
 
@@ -2282,7 +2302,7 @@ static o start_list(Frame *f)
 	else if (!strcmp(s, "match")) f->form = F_MATCH;
 	else if (!strcmp(s, "defn") || !strcmp(s, "def") || !strcmp(s, "struct") || !strcmp(s, "enum") || !strcmp(s, "use") ||
 	         !strcmp(s, "defmacro")) {
-		err_node(head, NAME_FMT " is only allowed at the top level of a file", s);
+		err_node(head, NAME_FMT " is only allowed at the top level of a file; move it out of the form it is in", s);
 		finish(T_ERR);
 		return;
 	} else if (!strcmp(s, "none")) {
@@ -2323,7 +2343,7 @@ static o start_list(Frame *f)
 				else if (!strncmp(s, VALUE_NAME ".", sizeof(VALUE_NAME))) /* ((get v 0).x) */
 					err_node(head, "%.64s is a field (%s), not a function: (expr).%.64s without the parens around it reads it",
 					         s + sizeof(VALUE_NAME), tn(pl.type), s + sizeof(VALUE_NAME));
-				else err_node(head, NAME_FMT " is %s, not a function", s, tn(pl.type));
+				else err_node(head, NAME_FMT " is %s, not a function; a call is (f args), where f is a function or a fn value", s, tn(pl.type));
 				finish(T_ERR);
 				return;
 			}
@@ -2385,10 +2405,10 @@ static o start_list(Frame *f)
 		}
 		if (fi < 0) {
 			if (t != T_NONE) err_node(head, NAME_FMT " is a type, not a function", s);
-			else if (find_local(s, g_nodes[head].stamp) >= 0 || find_global(s) >= 0) err_node(head, NAME_FMT " is a variable, not a function", s);
+			else if (find_local(s, g_nodes[head].stamp) >= 0 || find_global(s) >= 0) err_node(head, NAME_FMT " is a variable, not a function; a call is (name args), and name must be a function or a fn value", s);
 			else if (!strcmp(s, "await")) err_node(head, "gael never waits: (poll co) gives (option T) at once, none while the coroutine runs");
 			else if (!strcmp(s, "async")) err_node(head, "gael has no async: (coroutine (f x)) starts f as a coroutine, and nothing waits for it");
-			else err_node(head, "unknown function " NAME_FMT, s);
+			else err_node(head, "unknown function " NAME_FMT "; define it with (defn " NAME_FMT " ((x : int)) : int ...), or check the spelling (gael -n lists the built-in names)", s, s);
 			finish(T_ERR);
 			return;
 		}
@@ -2453,12 +2473,12 @@ static int check_named(i32 node, i32 first, Ty st)
 			return 0;
 		}
 		if (next_of(p) < 0) {
-			err_node(p, "%s: field %s has no value", ty->name, g_nodes[p].text + 1);
+			err_node(p, "%s: field %s has no value; write :%s and then its value", ty->name, g_nodes[p].text + 1, g_nodes[p].text + 1);
 			return 0;
 		}
 		for (q = first; q != p && strcmp(g_nodes[q].text, g_nodes[p].text); q = next_of(next_of(q))) {}
 		if (q != p) {
-			err_node(p, "%s: field %s is given twice", ty->name, g_nodes[p].text + 1);
+			err_node(p, "%s: field %s is given twice; give it once", ty->name, g_nodes[p].text + 1);
 			ok = 0;
 		} else if (!find_field(st, g_nodes[p].text + 1, g_nodes[p].len - 1)) {
 			err_node(p, "%s has no field %s; its fields are %s", ty->name, g_nodes[p].text + 1, names_of(st, names, sizeof(names)));
@@ -2524,8 +2544,8 @@ static int check_arms(i32 node, i32 first, Ty t)
 			continue;
 		}
 		if (wild || full) {
-			err_node(arm, wild ? "this arm never runs: the _ arm above matches everything"
-			                   : "this arm never runs: the arms above already cover every value");
+			err_node(arm, wild ? "this arm never runs: the _ arm above matches everything; put _ last or remove this arm"
+			                   : "this arm never runs: the arms above already cover every value; remove it");
 			break;
 		}
 		if (sym_is(p, "_")) { wild = 1; continue; }
@@ -2566,7 +2586,7 @@ static int check_arms(i32 node, i32 first, Ty t)
 				bit = 2;
 			} else if (head_is(p, "some") && is_sym(name) && next_of(name) < 0) {
 				const char *s = g_nodes[name].text;
-				if (strcmp(s, "_") && (is_reserved(s) || strchr(s, '.'))) err_node(name, NAME_FMT " cannot be a variable name", s);
+				if (strcmp(s, "_") && (is_reserved(s) || strchr(s, '.'))) err_node(name, NAME_FMT " cannot be a variable name; use a plain name, without a dot, that is not a built-in, like hp", s);
 				bit = 1;
 			} else {
 				err_node(p, "match on %s: a pattern is (some name), none or _", ti->name);
@@ -2579,7 +2599,7 @@ static int check_arms(i32 node, i32 first, Ty t)
 			mask |= bit;
 			full = mask == 3;
 		}
-		if (dup) err_node(arm, "this arm never runs: an arm above already matches the same value");
+		if (dup) err_node(arm, "this arm never runs: an arm above already matches the same value; remove it");
 	}
 	if (full || wild || bad) return full;
 	if (t == T_BOOL) {
@@ -2716,16 +2736,16 @@ static int lambda_begin(Frame *f)
 			return 0;
 		}
 		if (is_reserved(g_nodes[pn].text) || strchr(g_nodes[pn].text, '.'))
-			err_node(pn, NAME_FMT " cannot be a parameter name", g_nodes[pn].text);
+			err_node(pn, NAME_FMT " cannot be a parameter name; use a plain name that is not a built-in, like n or hp", g_nodes[pn].text);
 		for (q = first_of(params); q != p; q = next_of(q)) {
-			if (!strcmp(g_nodes[first_of(q)].text, g_nodes[pn].text)) err_node(pn, "parameter " NAME_FMT " twice", g_nodes[pn].text);
+			if (!strcmp(g_nodes[first_of(q)].text, g_nodes[pn].text)) err_node(pn, "parameter " NAME_FMT " twice; give each parameter its own name", g_nodes[pn].text);
 		}
 		if (fn.nparams == MAX_PARAMS) {
-			err_node(p, "at most %d parameters", MAX_PARAMS);
+			err_node(p, "a function takes at most %d parameters; pass a struct or a vec that holds the rest", MAX_PARAMS);
 			return 0;
 		}
 		fn.params[fn.nparams] = parse_type(pt);
-		if (fn.params[fn.nparams] == T_UNIT) err_node(pt, "a parameter cannot be unit");
+		if (fn.params[fn.nparams] == T_UNIT) err_node(pt, "a parameter cannot be unit; leave it out");
 		fn.pcells += cells(fn.params[fn.nparams]);
 		fn.nparams++;
 	}
@@ -2740,7 +2760,7 @@ static int lambda_begin(Frame *f)
 	fn.decl_node = f->node;
 	if (g_nfns == MAX_FNS) die("too many functions");
 	if (g_nlambdas == MAX_LAMBDAS) {
-		err_node(f->node, "fns nested deeper than %d", MAX_LAMBDAS);
+		err_node(f->node, "fns nested deeper than %d; move the inner fn out into a defn", MAX_LAMBDAS);
 		return 0;
 	}
 	fi = g_nfns++;
@@ -3012,7 +3032,7 @@ static o run_work(i32 base)
 			t = pop_type(); /* a value: one jump */
 			if (t != T_BOOL && t != T_ERR) {
 				static const char *const forms[] = { "if", "when", "while", "and", "or", "not", "nand", "nor", "assert" };
-				if (f->c <= CC_WHILE || f->c == CC_ASSERT) err_node(f->node, "%s: the condition is %s, it must be bool", forms[f->c], tn(t));
+				if (f->c <= CC_WHILE || f->c == CC_ASSERT) err_node(f->node, "%s: the condition is %s, it must be bool; compare it, like (> x 0)", forms[f->c], tn(t));
 				else if (f->c == CC_NOT) err_node(f->node, "not takes a bool, this is %s", tn(t));
 				else err_node(f->node, "%s takes bool values, this one is %s%s", forms[f->c], tn(t),
 				              t == T_STR ? "; (run \"cmd\") is true when a command succeeds" : "");
@@ -3053,7 +3073,7 @@ static o run_work(i32 base)
 					break;
 				}
 				if (strcmp(g_nodes[name].text, "_") && (is_reserved(g_nodes[name].text) || strchr(g_nodes[name].text, '.')))
-					err_node(name, NAME_FMT " cannot be a variable name", g_nodes[name].text); /* _: no name */
+					err_node(name, NAME_FMT " cannot be a variable name; use a plain name, without a dot, that is not a built-in, like hp", g_nodes[name].text); /* _: no name */
 				x = next_of(name);
 				f->rt = T_NONE;
 				if (sym_is(x, ":")) {
@@ -3063,11 +3083,11 @@ static o run_work(i32 base)
 					init = x;
 				}
 				if (init < 0) {
-					err_node(name, NAME_FMT " has no value", g_nodes[name].text);
+					err_node(name, NAME_FMT " has no value: write (name value), like (%.64s 0)", g_nodes[name].text, g_nodes[name].text);
 					f->cur = next_of(f->cur);
 					break;
 				}
-				if (next_of(init) >= 0) err_node(next_of(init), "a binding has one value");
+				if (next_of(init) >= 0) err_node(next_of(init), "a binding has one value: (name value); remove the extra one");
 				f->a = name;
 				f->phase = 2;
 				push_child(init, f->rt);
@@ -3112,7 +3132,7 @@ static o run_work(i32 base)
 				g_place_set = 1;
 				f->c = resolve_place(f->cur, &pl);
 				g_place_set = 0;
-				if (f->c < 0) err_node(f->cur, "set: unknown name " NAME_FMT, g_nodes[f->cur].text);
+				if (f->c < 0) err_node(f->cur, "set: unknown name " NAME_FMT "; set changes a variable that exists: declare it first with (let ((" NAME_FMT " value)) ...) or (def " NAME_FMT " value)", g_nodes[f->cur].text, g_nodes[f->cur].text, g_nodes[f->cur].text);
 				f->rt = f->c > 0 ? pl.type : (Ty)T_ERR;
 				f->op = (u8)pl.where;
 				f->a = pl.at;
@@ -3135,7 +3155,7 @@ static o run_work(i32 base)
 		case F_OR:
 			if (f->phase == 0) {
 				if (f->k < 1) {
-					err_node(f->node, "%s takes one or more values", g_nodes[first_of(f->node)].text);
+					err_node(f->node, "%s takes one or more values: (%s a b)", g_nodes[first_of(f->node)].text, g_nodes[first_of(f->node)].text);
 					finish(T_ERR);
 					break;
 				}
@@ -3171,7 +3191,7 @@ static o run_work(i32 base)
 		case F_XOR: /* (xor a b...): true when an odd number of them are true; xnor: the opposite. Every one runs */
 			if (f->phase == 0) {
 				if (f->k < 2) {
-					err_node(f->node, "%s takes two or more values", f->op ? "xnor" : "xor");
+					err_node(f->node, "%s takes two or more values: (%s a b)", f->op ? "xnor" : "xor", f->op ? "xnor" : "xor");
 					finish(T_ERR);
 					break;
 				}
@@ -3249,7 +3269,7 @@ static o run_work(i32 base)
 
 		case F_NOT:
 			if (f->phase == 0) {
-				if (f->k != 1) { err_node(f->node, "not takes one bool"); finish(T_ERR); break; }
+				if (f->k != 1) { err_node(f->node, "not takes one bool: (not ok)"); finish(T_ERR); break; }
 				f->phase = 1;
 				push_child(f->cur, T_NONE);
 				break;
@@ -3263,7 +3283,7 @@ static o run_work(i32 base)
 		case F_ARITH:
 			if (f->phase == 0) {
 				if (f->k == 0 || (f->k == 1 && f->op != '-')) {
-					err_node(f->node, "%c takes two or more numbers", f->op);
+					err_node(f->node, "%c takes two or more numbers: (%c a b)", f->op, f->op);
 					finish(T_ERR);
 					break;
 				}
@@ -3297,11 +3317,11 @@ static o run_work(i32 base)
 					op[0] = (char)f->op;
 					op[1] = 0;
 					if (f->phase == 1)
-						err_node(f->cur, "%s works on numbers, not %s", op_name(f, op), tn(t));
+						err_node(f->cur, "%s works on numbers, not %s; %s", op_name(f, op), tn(t), t == T_STR ? "to join strings write (format \"%s%s\" a b)" : "give it numbers of one type");
 					else if (f->rt != T_ERR && (is_struct(t) || is_enum(t)))
 						err_node(f->cur, "%c: %s and %s do not mix; with %s first, %c would call its function", f->op, tn(f->rt), tn(t), tn(t), f->op);
 					else if (f->rt != T_ERR)
-						err_node(f->cur, "%s works on numbers, not %s", op_name(f, op), tn(t));
+						err_node(f->cur, "%s works on numbers, not %s; %s", op_name(f, op), tn(t), t == T_STR ? "to join strings write (format \"%s%s\" a b)" : "give it numbers of one type");
 					t = T_ERR;
 				} else if (is_float(t) && f->op == '%') {
 					if (f->phase == 1 || f->rt != T_ERR) err_node(f->cur, "%% works on ints only; this is %s", a_type(t));
@@ -3338,7 +3358,7 @@ static o run_work(i32 base)
 
 		case F_CMP:
 			if (f->phase == 0) {
-				if (f->k != 2) { err_node(f->node, "%s compares two values", g_cmp_names[f->op]); finish(T_ERR); break; }
+				if (f->k != 2) { err_node(f->node, "%s compares two values: (%s a b)", g_cmp_names[f->op], g_cmp_names[f->op]); finish(T_ERR); break; }
 				f->phase = 1;
 				push_child(f->cur, quiet_type(next_of(f->cur))); /* (< 0 x) with x a u8: the 0 is a u8 */
 				break;
@@ -3364,9 +3384,9 @@ static o run_work(i32 base)
 				else if ((is_struct(t) || is_enum(t)) && cmp_hook(f, t, line))
 					; /* its type's equal or compare */
 				else if (f->op < 4 && !numeric(t))
-					err_node(f->cur, "%s orders numbers, not %s", op_name(f, g_cmp_names[f->op]), tn(t));
+					err_node(f->cur, "%s orders numbers, not %s; compare other values with = or !=", op_name(f, g_cmp_names[f->op]), tn(t));
 				else if (t == T_UNIT)
-					err_node(f->cur, "%s: unit has no value to compare", g_cmp_names[f->op]);
+					err_node(f->cur, "%s: unit has no value to compare; compare values, not calls that give nothing", g_cmp_names[f->op]);
 				else if (!comparable(t))
 					err_node(f->cur, "%s compares int, float, bool, string and enum values, not %s", g_cmp_names[f->op], tn(t));
 				else
@@ -3530,10 +3550,11 @@ static o run_work(i32 base)
 
 		case F_CALL: {
 			Fn *fn = &g_fns[f->a];
+			char ptypes[160];
 			if (f->phase == 0) {
 				if (f->k != fn->nparams) {
-					err_node(f->node, NAME_FMT " takes %ld argument%s, got %ld", fn->name, (long)fn->nparams,
-					         fn->nparams == 1 ? "" : "s", (long)f->k);
+					err_node(f->node, NAME_FMT " takes %ld argument%s%s, got %ld", fn->name, (long)fn->nparams,
+					         fn->nparams == 1 ? "" : "s", param_types(fn->params, fn->nparams, ptypes, sizeof(ptypes)), (long)f->k);
 					finish(T_ERR);
 					break;
 				}
@@ -3826,7 +3847,7 @@ static o run_work(i32 base)
 			}
 			t = pop_type();
 			if (t == T_UNIT) {
-				err_node(f->cur, "a vec cannot hold unit");
+				err_node(f->cur, "a vec cannot hold unit; make it a vec of a type that holds a value");
 				t = T_ERR;
 			}
 			if (f->rt == T_NONE) f->rt = t; /* the first element decides */
@@ -3944,7 +3965,7 @@ static o run_work(i32 base)
 					break;
 				}
 				if (strcmp(g_nodes[name].text, "_") && (is_reserved(g_nodes[name].text) || strchr(g_nodes[name].text, '.')))
-					err_node(name, NAME_FMT " cannot be a variable name", g_nodes[name].text); /* _: no name, it only repeats */
+					err_node(name, NAME_FMT " cannot be a variable name; use a plain name, without a dot, that is not a built-in, like hp", g_nodes[name].text); /* _: no name, it only repeats */
 				f->op = (u8)(next_of(from) >= 0); /* 1: a range */
 				f->mark = g_nlocals;
 				f->mark2 = g_slots;
@@ -4144,7 +4165,7 @@ static o run_work(i32 base)
 				break;
 			}
 			if (t == T_UNIT) { /* a value */
-				err_node(next_of(first_of(f->cur)), "a map cannot hold unit");
+				err_node(next_of(first_of(f->cur)), "a map cannot hold unit; use bool for a set: (map T bool)");
 				t = T_ERR;
 			}
 			if (f->res == T_NONE) f->res = t;
@@ -4421,11 +4442,11 @@ static int new_name_ok(i32 name, i32 form, const char *what)
 		return 0;
 	}
 	s = g_nodes[name].text;
-	if (strchr(s, '.')) { err_node(name, "a type name cannot contain a dot"); return 0; }
-	if (is_reserved(s)) { err_node(name, NAME_FMT " is a built-in name", s); return 0; }
-	if (find_fn(s) >= 0) { err_node(name, NAME_FMT " is already a function", s); return 0; }
-	if (find_global(s) >= 0) { err_node(name, NAME_FMT " is already a global", s); return 0; }
-	if (find_macro(s) >= 0) { err_node(name, NAME_FMT " is already a macro", s); return 0; }
+	if (strchr(s, '.')) { err_node(name, "a type name cannot contain a dot; use a plain name like Vec2"); return 0; }
+	if (is_reserved(s)) { err_node(name, NAME_FMT " is a built-in name; choose another name", s); return 0; }
+	if (find_fn(s) >= 0) { err_node(name, NAME_FMT " is already a function; choose another name", s); return 0; }
+	if (find_global(s) >= 0) { err_node(name, NAME_FMT " is already a global; choose another name", s); return 0; }
+	if (find_macro(s) >= 0) { err_node(name, NAME_FMT " is already a macro; choose another name", s); return 0; }
 	return 1;
 }
 
@@ -4458,7 +4479,7 @@ static o same_type(i32 name, Ty old, u8 kind, i32 first, i32 n, int repl)
 		else
 			same = !strcmp(g_variants[ot->first + i], g_variants[first + i]);
 	}
-	if (!same) err_node(name, NAME_FMT " is already a type (%s)", g_nodes[name].text, where(ot->file, ot->line));
+	if (!same) err_node(name, NAME_FMT " is already a type (%s); choose another name", g_nodes[name].text, where(ot->file, ot->line));
 	if (kind == K_STRUCT) g_nfields = first; else g_nvariants = first;
 }
 
@@ -4512,13 +4533,13 @@ static o declare_struct(i32 n, int repl)
 			continue;
 		}
 		if (is_reserved(g_nodes[fname].text) || strchr(g_nodes[fname].text, '.')) {
-			err_node(fname, NAME_FMT " cannot be a field name", g_nodes[fname].text);
+			err_node(fname, NAME_FMT " cannot be a field name; use a plain name that is not a built-in, like x", g_nodes[fname].text);
 			bad++;
 			continue;
 		}
 		for (q = next_of(name); q != p && !(g_nodes[q].kind == N_LIST && sym_is(first_of(q), g_nodes[fname].text)); q = next_of(q)) {}
 		if (q != p) {
-			err_node(fname, "field " NAME_FMT " twice", g_nodes[fname].text);
+			err_node(fname, "field " NAME_FMT " twice; give each field its own name", g_nodes[fname].text);
 			bad++;
 			continue;
 		}
@@ -4538,7 +4559,7 @@ static o declare_struct(i32 n, int repl)
 			continue;
 		}
 		t = parse_type(ft);
-		if (t == T_UNIT) err_node(ft, "a field cannot be unit");
+		if (t == T_UNIT) err_node(ft, "a field cannot be unit; leave it out");
 		if (t == T_UNIT || t == T_ERR) { bad++; continue; }
 		if (g_nfields == MAX_FIELDS) die("too many struct fields");
 		g_fields[g_nfields].name = arena_strndup(&g_perm, g_nodes[fname].text, g_nodes[fname].len);
@@ -4586,7 +4607,7 @@ static o declare_enum(i32 n, int repl)
 		}
 		for (i = first; i < g_nvariants && strcmp(g_variants[i], g_nodes[p].text); i++) {}
 		if (i < g_nvariants) {
-			err_node(p, "variant " NAME_FMT " twice", g_nodes[p].text);
+			err_node(p, "variant " NAME_FMT " twice; give each variant its own name", g_nodes[p].text);
 			bad++;
 			continue;
 		}
@@ -4652,7 +4673,7 @@ static int owner_ok(i32 name)
 		return 0;
 	}
 	if (is_enum(t) && find_variant(t, dot + 1, strlen(dot + 1)) >= 0) {
-		err_node(name, NAME_FMT " is a variant of %.64s", s, base);
+		err_node(name, NAME_FMT " is a variant of %.64s; choose another name for the function", s, base);
 		return 0;
 	}
 	return 1;
@@ -4666,16 +4687,16 @@ static o declare_fn(i32 n, int repl)
 	if (!fn_shape(n, &name, &params, &ret, &body)) return;
 	memset(&fn, 0, sizeof(fn));
 	if (is_reserved(g_nodes[name].text)) {
-		err_node(name, NAME_FMT " is a built-in name", g_nodes[name].text);
+		err_node(name, NAME_FMT " is a built-in name; choose another name", g_nodes[name].text);
 		return;
 	}
 	if (strchr(g_nodes[name].text, '.') && !owner_ok(name)) return;
 	if (find_named_type(g_nodes[name].text) != T_NONE) {
-		err_node(name, NAME_FMT " is already a type", g_nodes[name].text);
+		err_node(name, NAME_FMT " is already a type; choose another name", g_nodes[name].text);
 		return;
 	}
 	if (find_macro(g_nodes[name].text) >= 0) {
-		err_node(name, NAME_FMT " is already a macro", g_nodes[name].text);
+		err_node(name, NAME_FMT " is already a macro; choose another name", g_nodes[name].text);
 		return;
 	}
 	for (p = first_of(params); p >= 0; p = next_of(p)) {
@@ -4685,13 +4706,13 @@ static o declare_fn(i32 n, int repl)
 			return;
 		}
 		if (is_reserved(g_nodes[pn].text) || strchr(g_nodes[pn].text, '.'))
-			err_node(pn, NAME_FMT " cannot be a parameter name", g_nodes[pn].text);
+			err_node(pn, NAME_FMT " cannot be a parameter name; use a plain name that is not a built-in, like n or hp", g_nodes[pn].text);
 		for (q = first_of(params); q != p; q = next_of(q)) {
-			if (!strcmp(g_nodes[first_of(q)].text, g_nodes[pn].text)) err_node(pn, "parameter " NAME_FMT " twice", g_nodes[pn].text);
+			if (!strcmp(g_nodes[first_of(q)].text, g_nodes[pn].text)) err_node(pn, "parameter " NAME_FMT " twice; give each parameter its own name", g_nodes[pn].text);
 		}
-		if (fn.nparams == MAX_PARAMS) { err_node(p, "at most %d parameters", MAX_PARAMS); return; }
+		if (fn.nparams == MAX_PARAMS) { err_node(p, "a function takes at most %d parameters; pass a struct or a vec that holds the rest", MAX_PARAMS); return; }
 		fn.params[fn.nparams] = parse_type(pt);
-		if (fn.params[fn.nparams] == T_UNIT) err_node(pt, "a parameter cannot be unit");
+		if (fn.params[fn.nparams] == T_UNIT) err_node(pt, "a parameter cannot be unit; leave it out");
 		fn.pcells += cells(fn.params[fn.nparams]);
 		fn.nparams++;
 	}
@@ -4705,7 +4726,7 @@ static o declare_fn(i32 n, int repl)
 	if ((fi = find_fn(g_nodes[name].text)) >= 0) {
 		Fn *old = &g_fns[fi];
 		if (!repl || old->nparams != fn.nparams || old->ret != fn.ret || memcmp(old->params, fn.params, fn.nparams * sizeof(Ty))) {
-			err_node(name, NAME_FMT " is already defined (%s)", g_nodes[name].text, where(old->file, old->line));
+			err_node(name, NAME_FMT " is already defined (%s); define it once, or rename one", g_nodes[name].text, where(old->file, old->line));
 			return;
 		}
 		old->decl_unit = g_unit_id; /* REPL: same signature, the new body replaces the old one */
@@ -4719,7 +4740,7 @@ static o declare_fn(i32 n, int repl)
 		return;
 	}
 	if (find_global(g_nodes[name].text) >= 0) {
-		err_node(name, NAME_FMT " is already a global", g_nodes[name].text);
+		err_node(name, NAME_FMT " is already a global; choose another name", g_nodes[name].text);
 		return;
 	}
 	if (g_nfns == MAX_FNS) die("too many functions");
@@ -4816,13 +4837,13 @@ static o compile_def(i32 n, int repl, int exported)
 		declared = parse_type(next_of(x));
 		value = next_of(next_of(x));
 	}
-	if (value < 0) { err_node(name, NAME_FMT " has no value", s); return; }
-	if (next_of(value) >= 0) err_node(next_of(value), "def has one value");
-	if (strchr(s, '.')) { err_node(name, NAME_FMT ": a global name cannot contain a dot", s); return; }
-	if (is_reserved(s)) { err_node(name, NAME_FMT " is a built-in name", s); return; }
-	if (find_fn(s) >= 0) { err_node(name, NAME_FMT " is already a function", s); return; }
-	if (find_named_type(s) != T_NONE) { err_node(name, NAME_FMT " is already a type", s); return; }
-	if (find_macro(s) >= 0) { err_node(name, NAME_FMT " is already a macro", s); return; }
+	if (value < 0) { err_node(name, NAME_FMT " has no value: (def " NAME_FMT " : type value)", s, s); return; }
+	if (next_of(value) >= 0) err_node(next_of(value), "def has one value: (def name value); remove the extra one");
+	if (strchr(s, '.')) { err_node(name, NAME_FMT ": a global name cannot contain a dot; use a plain name, like a-b", s); return; }
+	if (is_reserved(s)) { err_node(name, NAME_FMT " is a built-in name; choose another name", s); return; }
+	if (find_fn(s) >= 0) { err_node(name, NAME_FMT " is already a function; choose another name", s); return; }
+	if (find_named_type(s) != T_NONE) { err_node(name, NAME_FMT " is already a type; choose another name", s); return; }
+	if (find_macro(s) >= 0) { err_node(name, NAME_FMT " is already a macro; choose another name", s); return; }
 	compile_expr(value, declared);
 	t = pop_type();
 	type = declared != T_NONE ? declared : t;
@@ -4831,7 +4852,7 @@ static o compile_def(i32 n, int repl, int exported)
 	if (type == T_UNIT) err_node(name, NAME_FMT " would hold no value (unit)", s);
 	if ((gi = find_global(s)) >= 0) {
 		if (!repl || g_globals[gi].type != type) {
-			err_node(name, NAME_FMT " is already defined (%s)", s, where(g_globals[gi].file, g_globals[gi].line));
+			err_node(name, NAME_FMT " is already defined (%s); define it once, or rename one", s, where(g_globals[gi].file, g_globals[gi].line));
 			return;
 		}
 	} else {
@@ -5012,7 +5033,7 @@ static o gem_switch(i32 n, int on)
 	for (x = next_of(first_of(n)); x >= 0; x = next_of(x)) {
 		if (!is_sym(x) || (g = gem_find(g_nodes[x].text)) < 0 || g_gems[g].state < GEM_ON) {
 			if (!is_sym(x)) err_node(x, "a gem is named by a symbol: (%s ecs)", on ? "enable" : "disable");
-			else if (!on) err_node(x, "there is no gem " NAME_FMT " on", g_nodes[x].text);
+			else if (!on) err_node(x, "there is no gem " NAME_FMT " on; (disable name) turns off a gem that is on", g_nodes[x].text);
 			continue; /* enable: the loader said why */
 		}
 		if (on && g_gems[g].state == GEM_OFF) {
@@ -5034,14 +5055,14 @@ static o define_macro(i32 n, int repl)
 	if (!is_sym(name)) { err_node(name < 0 ? n : name, "defmacro needs a name: (defmacro swap ((_ a b) template))"); return; }
 	s = g_nodes[name].text;
 	if (is_reserved(s) || strchr(s, '.')) {
-		err_node(name, strchr(s, '.') ? NAME_FMT ": a macro name cannot contain a dot" : NAME_FMT " is a built-in name", s);
+		err_node(name, strchr(s, '.') ? NAME_FMT ": a macro name cannot contain a dot" : NAME_FMT " is a built-in name; choose another name", s);
 		return;
 	}
-	if (find_fn(s) >= 0) { err_node(name, NAME_FMT " is already a function", s); return; }
-	if (find_global(s) >= 0) { err_node(name, NAME_FMT " is already a global", s); return; }
-	if (find_named_type(s) != T_NONE) { err_node(name, NAME_FMT " is already a type", s); return; }
+	if (find_fn(s) >= 0) { err_node(name, NAME_FMT " is already a function; choose another name", s); return; }
+	if (find_global(s) >= 0) { err_node(name, NAME_FMT " is already a global; choose another name", s); return; }
+	if (find_named_type(s) != T_NONE) { err_node(name, NAME_FMT " is already a type; choose another name", s); return; }
 	if ((mi = find_macro(s)) >= 0 && !repl) {
-		err_node(name, NAME_FMT " is already a macro (%s)", s, where(g_macros[mi].file, g_macros[mi].line));
+		err_node(name, NAME_FMT " is already a macro (%s); choose another name", s, where(g_macros[mi].file, g_macros[mi].line));
 		return;
 	}
 	macro_define(n);

@@ -1,0 +1,1 @@
+tests/errors/fix-macro-vars.gael:1:261: error: a pattern has at most 63 variables; split the macro into smaller ones

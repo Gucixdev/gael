@@ -1,0 +1,3 @@
+(struct P (x : f32))
+(def ps : (vec P) (vec))
+(gpu-each (if ps) (set if.x 1.0))

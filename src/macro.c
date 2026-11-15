@@ -104,7 +104,7 @@ static i32 find_macro(const char *name)
 static i32 mnode(i32 n)
 {
 	Node *d;
-	if (g_nmnodes == MAX_MNODES) die("macros too large (MAX_MNODES)");
+	if (g_nmnodes == MAX_MNODES) die("macros too large (MAX_MNODES, 1048576 forms): use smaller macros");
 	d = &g_mnodes[g_nmnodes];
 	*d = g_nodes[n];
 	d->first = d->next = -1;
@@ -130,7 +130,7 @@ static i32 mcopy(i32 n)
 		if (f->last < 0) g_mnodes[f->list].first = d; else g_mnodes[f->last].next = d;
 		f->last = d;
 		if (g_nodes[c].kind == N_LIST) {
-			if (sp == MAX_MSTACK) die("a macro nested too deep (MAX_MSTACK)");
+			if (sp == MAX_MSTACK) die("a macro nested too deep (MAX_MSTACK, 1024 lists); nest the macro less, or split it");
 			g_mf[sp].cur = g_nodes[c].first;
 			g_mf[sp].list = d;
 			g_mf[sp].last = -1;
@@ -168,7 +168,7 @@ static i32 ucopy(i32 n)
 		if (f->last < 0) g_nodes[f->list].first = d; else g_nodes[f->last].next = d;
 		f->last = d;
 		if (g_nodes[c].kind == N_LIST) {
-			if (sp == MAX_MSTACK) die("a macro's expansion nested too deep (MAX_MSTACK)");
+			if (sp == MAX_MSTACK) die("a macro's expansion nested too deep (MAX_MSTACK, 1024 lists); nest the macro less, or split it");
 			st[sp].cur = g_nodes[c].first;
 			st[sp].list = d;
 			st[sp].last = -1;
@@ -221,7 +221,7 @@ static int check_pattern(i32 p)
 		}
 		d = f->depth + rep;
 		if (g_nodes[c].kind == N_LIST) {
-			if (sp == MAX_MSTACK) { error_at(g_nodes[c].line, g_nodes[c].col, "pattern nested too deep"); return 0; }
+			if (sp == MAX_MSTACK) { error_at(g_nodes[c].line, g_nodes[c].col, "pattern nested too deep; split the macro into smaller ones"); return 0; }
 			g_mf[sp].cur = g_nodes[c].first;
 			g_mf[sp].list = c;
 			g_mf[sp].depth = d;
@@ -246,13 +246,13 @@ static int check_pattern(i32 p)
 			i32 v;
 			for (v = 0; v < g_npv; v++) {
 				if (!strcmp(g_pvname[v], s)) {
-					error_at(g_nodes[c].line, g_nodes[c].col, "%.64s is in this pattern twice", s);
+					error_at(g_nodes[c].line, g_nodes[c].col, "%.64s is in this pattern twice; name each pattern variable once", s);
 					return 0;
 				}
 			}
 		}
 		if (g_npv == MAX_PVARS) {
-			error_at(g_nodes[c].line, g_nodes[c].col, "a pattern has at most %d variables", MAX_PVARS);
+			error_at(g_nodes[c].line, g_nodes[c].col, "a pattern has at most %d variables; split the macro into smaller ones", MAX_PVARS);
 			return 0;
 		}
 		g_pvname[g_npv] = s;
@@ -329,7 +329,7 @@ static int check_template(i32 t)
 		if (rep) f->cur = g_nodes[g_nodes[c].next].next;
 		d = f->depth + rep;
 		if (g_nodes[c].kind == N_LIST) {
-			if (sp == MAX_MSTACK) { error_at(g_nodes[c].line, g_nodes[c].col, "template nested too deep"); return 0; }
+			if (sp == MAX_MSTACK) { error_at(g_nodes[c].line, g_nodes[c].col, "template nested too deep; split the macro into smaller ones"); return 0; }
 			g_mf[sp].cur = g_nodes[c].first;
 			g_mf[sp].list = c;
 			g_mf[sp].depth = d;
@@ -374,7 +374,7 @@ static int macro_define(i32 n)
 			return 0;
 		}
 		if (!check_pattern(p) || !check_template(t)) return 0;
-		if (g_nrules == MAX_RULES) die("too many macro rules (MAX_RULES)");
+		if (g_nrules == MAX_RULES) die("too many macro rules (MAX_RULES, 65536); fewer, more general rules");
 		g_rules[g_nrules].pattern = mcopy(p);
 		g_rules[g_nrules].tmpl = mcopy(t);
 		g_rules[g_nrules].nvars = g_npv;
@@ -386,7 +386,7 @@ static int macro_define(i32 n)
 		error_at(g_nodes[n].line, g_nodes[n].col, "defmacro needs a rule: (defmacro %.64s ((_ x) template))", g_nodes[name].text);
 		return 0;
 	}
-	if (g_nmacros == MAX_MACROS) die("too many macros (MAX_MACROS)");
+	if (g_nmacros == MAX_MACROS) die("too many macros (MAX_MACROS, 16384); define fewer, or use functions");
 	g_macros[g_nmacros].name = arena_strndup(&g_mtext, g_nodes[name].text, g_nodes[name].len);
 	g_macros[g_nmacros].rule0 = rule0;
 	g_macros[g_nmacros].nrules = k;
@@ -401,7 +401,7 @@ static int macro_define(i32 n)
 static i32 new_bind(void)
 {
 	Bind *b;
-	if (g_nbinds == MAX_BINDS) die("a macro use matched too much (MAX_BINDS)");
+	if (g_nbinds == MAX_BINDS) die("a macro use matched too much (MAX_BINDS, 32768 forms); give it fewer arguments");
 	b = &g_binds[g_nbinds];
 	b->node = b->first = b->last = b->next = -1;
 	b->n = 0;
@@ -550,7 +550,7 @@ static i32 telem(i32 *sp, MFrame *f, i32 t, u32 stamp, i32 line, i32 col)
 		f->last = d;
 	}
 	if (s->kind == N_LIST && s->first >= 0) {
-		if (*sp == MAX_MSTACK) die("a macro's expansion nested too deep (MAX_MSTACK)");
+		if (*sp == MAX_MSTACK) die("a macro's expansion nested too deep (MAX_MSTACK, 1024 lists); nest the macro less, or split it");
 		g_mf[*sp].cur = s->first;
 		g_mf[*sp].list = d;
 		g_mf[*sp].last = -1;
@@ -617,7 +617,7 @@ static i32 expand_rule(const Rule *r, i32 call)
 			}
 			for (v = 0; v < r->nvars; v++) {
 				if (!(f->vars & bit(v))) continue;
-				if (g_nsaved == (i32)GAEL_COUNT(g_saved)) die("a macro's expansion nested too deep (g_saved)");
+				if (g_nsaved == (i32)GAEL_COUNT(g_saved)) die("a macro's expansion nested too deep (g_saved); nest the macro less, or split it");
 				g_saved[g_nsaved][0] = v;
 				g_saved[g_nsaved][1] = g_ctx[v];
 				g_saved[g_nsaved++][2] = g_rem[v];
@@ -785,7 +785,7 @@ static int text_forms(i32 root)
 			if (!strcmp(s, "string-of") || !strcmp(s, "name-of")) {
 				if (!text_form(c)) return 0;
 			} else if (strcmp(s, "defmacro")) { /* a defmacro's template is its own, for its own uses */
-				if (sp == MAX_MSTACK) die("a form nested too deep (MAX_MSTACK)");
+				if (sp == MAX_MSTACK) die("a form nested too deep (MAX_MSTACK, 1024 lists); nest the macro less, or split it");
 				st[sp++] = next;
 				c = h;
 				continue;

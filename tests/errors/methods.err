@@ -1,7 +1,7 @@
 tests/errors/methods.gael:29:26: error: a field is (name : type), or (name : type default)
 tests/errors/methods.gael:7:7: error: Foo.bar: Foo is not a type; a dot in a function's name comes after the struct or enum it belongs to, like Vec2.len
 tests/errors/methods.gael:8:7: error: int.bar: int is a built-in type; only structs and enums have functions of their own
-tests/errors/methods.gael:9:7: error: Dir.north is a variant of Dir
+tests/errors/methods.gael:9:7: error: Dir.north is a variant of Dir; choose another name for the function
 tests/errors/methods.gael:10:7: error: Vec2.a.b: a function's name has a dot only between a type and a name, like Vec2.len
 tests/errors/methods.gael:13:8: error: +: Vec2.add takes Vec2 as its second value, this is float
 tests/errors/methods.gael:14:4: error: - on Vec2 calls Vec2.sub, which is not there: (defn Vec2.sub ((a : Vec2) (b : ...)) : Vec2 ...)

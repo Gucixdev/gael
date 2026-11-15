@@ -1,8 +1,8 @@
-<repl>:1:6: error: + works on numbers, not bool
+<repl>:1:6: error: + works on numbers, not bool; give it numbers of one type
   (+ 1 true)
        ^
-<repl>:1:9: error: P is already a type (line 1)
+<repl>:1:9: error: P is already a type (line 1); choose another name
   (struct P (x : int))
           ^
-<repl>:1:21: error: a is in this pattern twice
-<repl>:1:2: error: unknown function bad
+<repl>:1:21: error: a is in this pattern twice; name each pattern variable once
+<repl>:1:2: error: unknown function bad; define it with (defn bad ((x : int)) : int ...), or check the spelling (gael -n lists the built-in names)

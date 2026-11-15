@@ -1,0 +1,4 @@
+(println "a\q")
+(println "%d" 99999999999999999999999)
+(println "%d" 1))
+)

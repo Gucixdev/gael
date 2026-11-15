@@ -1,0 +1,1 @@
+tests/errors/fix-gpu-name.gael:3:12: error: if cannot be a variable name; use a plain name, without a dot, that is not a built-in, like p

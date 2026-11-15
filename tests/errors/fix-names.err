@@ -1,0 +1,25 @@
+tests/errors/fix-names.gael:9:23: error: field x twice; give each field its own name
+tests/errors/fix-names.gael:10:9: error: a type name cannot contain a dot; use a plain name like Vec2
+tests/errors/fix-names.gael:11:14: error: if cannot be a field name; use a plain name that is not a built-in, like x
+tests/errors/fix-names.gael:1:93: error: a function takes at most 8 parameters; pass a struct or a vec that holds the rest
+tests/errors/fix-names.gael:2:21: error: a parameter cannot be unit; leave it out
+tests/errors/fix-names.gael:3:25: error: parameter a twice; give each parameter its own name
+tests/errors/fix-names.gael:4:19: error: if cannot be a parameter name; use a plain name that is not a built-in, like n or hp
+tests/errors/fix-names.gael:5:6: error: n has no value: (def n : type value)
+tests/errors/fix-names.gael:6:11: error: def has one value: (def name value); remove the extra one
+tests/errors/fix-names.gael:7:6: error: a.b: a global name cannot contain a dot; use a plain name, like a-b
+tests/errors/fix-names.gael:8:6: error: len is a built-in name; choose another name
+tests/errors/fix-names.gael:12:8: error: if cannot be a variable name; use a plain name, without a dot, that is not a built-in, like hp
+tests/errors/fix-names.gael:13:8: error: q has no value: write (name value), like (q 0)
+tests/errors/fix-names.gael:13:12: error: unknown name q; declare it with (let ((q value)) ...) or (def q value), or check the spelling
+tests/errors/fix-names.gael:14:12: error: a binding has one value: (name value); remove the extra one
+tests/errors/fix-names.gael:15:15: error: xor takes two or more values: (xor a b)
+tests/errors/fix-names.gael:16:15: error: + takes two or more numbers: (+ a b)
+tests/errors/fix-names.gael:17:15: error: not takes one bool: (not ok)
+tests/errors/fix-names.gael:18:15: error: = compares two values: (= a b)
+tests/errors/fix-names.gael:19:16: error: unknown function nosuchfn; define it with (defn nosuchfn ((x : int)) : int ...), or check the spelling (gael -n lists the built-in names)
+tests/errors/fix-names.gael:21:16: error: v is int, not a function; a call is (f args), where f is a function or a fn value
+tests/errors/fix-names.gael:22:16: error: (vec unit) holds nothing; count with an int
+tests/errors/fix-names.gael:23:20: error: a map of unit holds nothing; use (map int bool)
+tests/errors/fix-names.gael:24:15: error: or takes one or more values: (or a b)
+tests/errors/fix-names.gael:25:10: error: there is no gem nothere on; (disable name) turns off a gem that is on

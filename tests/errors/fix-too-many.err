@@ -1,0 +1,1 @@
+tests/errors/fix-too-many.gael:33:15: error: too many errors (32), stopping here; fix the ones above and run again
