@@ -1,0 +1,18 @@
+.crew[].name
+  "ann"
+  "bo"
+.crew[1:] | length
+  1
+.crew | keys
+  [0,1]
+"Kite"
+{"kind":"report","values":[3,0.5,true]}
+{
+  "kind": "report",
+  "values": [
+    3,
+    0.5,
+    true
+  ]
+}
+at byte 11: expected , or ] here

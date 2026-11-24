@@ -1,0 +1,33 @@
+; Read JSON, ask it questions in the way of jq, build a new document and write both. The json gem keeps a document
+; as one flat vec of nodes, so nothing here allocates a box per value.
+(enable json)
+
+(def text "{\"crew\": [{\"name\": \"ann\", \"role\": \"pilot\", \"age\": 31}, {\"name\": \"bo\", \"role\": \"cook\", \"age\": 9}], \"ship\": \"Kite\"}")
+
+(defn show ((j : Json) (ids : (vec int))) : unit
+  (for (n ids) (println "  %s" (j.write n))))
+
+(let ((j (json-parse text)))
+  (if (j.ok?)
+    (do
+      (println ".crew[].name")
+      (show j (j.query 0 ".crew[].name"))
+      (println ".crew[1:] | length")
+      (show j (j.query 0 ".crew[1:] | length"))
+      (println ".crew | keys")
+      (show j (j.query 0 ".crew | keys"))
+      (println "%s" (j.pretty (j.get 0 "ship"))))
+    (println "bad json: %s" (j.error))))
+
+(let ((b (Json.new)))
+  (let ((root (b.object)) (xs (b.list)))
+    (b.add root "kind" (b.str "report"))
+    (b.add root "values" xs)
+    (b.add xs "" (b.int 3))
+    (b.add xs "" (b.float 0.5))
+    (b.add xs "" (b.bool true))
+    (println "%s" (b.write root))
+    (println "%s" (b.pretty root))))
+
+(let ((bad (json-parse "{\"a\": [1, 2")))
+  (println "%s" (bad.error)))

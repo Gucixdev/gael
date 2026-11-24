@@ -1,0 +1,669 @@
+(gem json :version "0.1.0")
+; JSON in and out, and a small query language in the way of jq (jaq). A document is a flat vec of nodes, not a tree of
+; boxes: a node names its first child and its next sibling by index, so a document is one allocation, a copy of it is
+; the same document (as with a vec) and going over it is a walk along one array. Node 0 is the root.
+;
+;   (def j (json-parse "{\"a\": [1, 2.5, \"x\"], \"ok\": true}"))
+;   (j.ok?)  (j.error)                  ; false and why, with the byte, when the text is not JSON
+;   (j.write 0)  (j.pretty 0)           ; the text again, compact or indented by 2
+;   (j.get 0 "a")  (j.at 1 2)           ; a member of an object, an element of a list: a node, or -1 when absent
+;   (j.kind n) (j.int-of n) (j.float-of n) (j.text n) (j.bool-of n) (j.len n)
+;   (j.query 0 ".a[1:]")                ; every node the filter picks, as a (vec int)
+;
+; A float read from text is written back as it was read; one made with (b.float x) is written with 15 digits.
+;
+; Building: (def b (Json.new)) then (b.object) (b.list) (b.int 3) (b.float 1.5) (b.str "x") (b.bool true) (b.null) each
+; make a node and give its index; (b.add parent "key" child) puts it in a parent (the key is ignored in a list). The
+; first node made is the root.
+;
+; Filters: `.` the node, `.name` and `.["name"]` a member, `.[3]` an element (-1 counts from the end), `.[]` every
+; element or member, `.[2:5]` `.[2:]` `.[:5]` a slice of a list, `..` the node and everything below it, `a | b` the
+; second filter on each result of the first, `length`, `keys`, `type`. Nothing is evaluated that is not in this list: an unknown word is an error in `(j.error)`.
+
+(enum JKind jnull jtrue jfalse jint jfloat jstring jlist jobject)
+
+(struct JNode
+  (kind : JKind JKind.jnull)
+  (i : int 0)
+  (f : float 0.0)
+  (s : string "")
+  (key : string "")
+  (first : int -1)
+  (last : int -1)
+  (next : int -1))
+
+(struct Json
+  (nodes : (vec JNode) (vec))
+  (err : (vec string) (vec))
+  (qerr : (vec string) (vec)))
+
+(defn Json.new () : Json (Json))
+
+(defn Json.ok? ((j : Json)) : bool (= (len j.err) 0))
+
+(defn Json.error ((j : Json)) : string
+  (if (= (len j.err) 0) "" (get j.err 0)))
+
+; why the last (j.query ...) found nothing because its filter was wrong; "" when the filter was fine
+(defn Json.query-error ((j : Json)) : string
+  (if (= (len j.qerr) 0) "" (get j.qerr 0)))
+
+(defn json--fail ((j : Json) (what : string)) : int
+  (when (= (len j.err) 0) (push j.err what))
+  -1)
+
+(defn json--add-node ((j : Json) (n : JNode)) : int
+  (push j.nodes n)
+  (- (len j.nodes) 1))
+
+;; ---- building ----
+
+(defn Json.null ((j : Json)) : int (json--add-node j (JNode)))
+(defn Json.bool ((j : Json) (b : bool)) : int
+  (json--add-node j (JNode :kind (if b JKind.jtrue JKind.jfalse))))
+(defn Json.int ((j : Json) (n : int)) : int (json--add-node j (JNode :kind JKind.jint :i n :f (float n))))
+(defn Json.float ((j : Json) (x : float)) : int (json--add-node j (JNode :kind JKind.jfloat :f x :i (int x))))
+(defn Json.str ((j : Json) (s : string)) : int (json--add-node j (JNode :kind JKind.jstring :s s)))
+(defn Json.list ((j : Json)) : int (json--add-node j (JNode :kind JKind.jlist)))
+(defn Json.object ((j : Json)) : int (json--add-node j (JNode :kind JKind.jobject)))
+
+(defn Json.add ((j : Json) (parent : int) (key : string) (child : int)) : unit
+  (let ((c (get j.nodes child)))
+    (set c.key key)
+    (set c.next -1)
+    (put j.nodes child c))
+  (let ((pn (get j.nodes parent)))
+    (if (= pn.first -1)
+      (set pn.first child)
+      (let ((prev (get j.nodes pn.last)))
+        (set prev.next child)
+        (put j.nodes pn.last prev)))
+    (set pn.last child)
+    (put j.nodes parent pn)))
+
+;; ---- reading ----
+
+(defn Json.kind ((j : Json) (n : int)) : JKind (. (get j.nodes n) kind))
+(defn Json.int-of ((j : Json) (n : int)) : int (. (get j.nodes n) i))
+(defn Json.float-of ((j : Json) (n : int)) : float (. (get j.nodes n) f))
+(defn Json.bool-of ((j : Json) (n : int)) : bool (= (. (get j.nodes n) kind) JKind.jtrue))
+(defn Json.key-of ((j : Json) (n : int)) : string (. (get j.nodes n) key))
+
+; the string of a string node; the number or word of any other, as JSON writes it
+(defn Json.text ((j : Json) (n : int)) : string
+  (let ((x (get j.nodes n)))
+    (match x.kind
+      (JKind.jstring x.s)
+      (JKind.jint (format "%d" x.i))
+      (JKind.jfloat (if (= x.s "") (json--float x.f) x.s))
+      (JKind.jtrue "true")
+      (JKind.jfalse "false")
+      (JKind.jnull "null")
+      (_ ""))))
+
+(defn Json.len ((j : Json) (n : int)) : int
+  (let ((x (get j.nodes n)) (c 0))
+    (when (or (= x.kind JKind.jlist) (= x.kind JKind.jobject))
+      (let ((at x.first))
+        (while (>= at 0)
+          (set c (+ c 1))
+          (set at (. (get j.nodes at) next)))))
+    c))
+
+(defn Json.at ((j : Json) (n : int) (i : int)) : int
+  (let ((x (get j.nodes n)) (at -1))
+    (when (= x.kind JKind.jlist)
+      (let ((want (if (< i 0) (+ (Json.len j n) i) i)) (k 0))
+        (set at x.first)
+        (while (and (>= at 0) (< k want))
+          (set at (. (get j.nodes at) next))
+          (set k (+ k 1)))
+        (when (< want 0) (set at -1))))
+    at))
+
+(defn Json.get ((j : Json) (n : int) (key : string)) : int
+  (let ((x (get j.nodes n)) (at -1))
+    (when (= x.kind JKind.jobject)
+      (set at x.first)
+      (while (and (>= at 0) (!= (. (get j.nodes at) key) key))
+        (set at (. (get j.nodes at) next))))
+    at))
+
+;; ---- reading text ----
+
+(struct JP (src : string "") (pos : (vec int) (vec 0)) (j : Json (Json)))
+
+(defn json--peek ((p : JP)) : int
+  (let ((i (get p.pos 0)))
+    (if (< i (len p.src)) (byte p.src i) -1)))
+
+(defn json--adv ((p : JP)) : unit (put p.pos 0 (+ (get p.pos 0) 1)))
+
+(defn json--bad ((p : JP) (what : string)) : int
+  (json--fail p.j (format "at byte %d: %s" (get p.pos 0) what)))
+
+(defn json--ws ((p : JP)) : unit
+  (let ((going true))
+    (while going
+      (let ((c (json--peek p)))
+        (if (or (= c 32) (= c 9) (= c 10) (= c 13)) (json--adv p) (set going false))))))
+
+(defn json--hex ((c : int)) : int
+  (if (and (>= c 48) (<= c 57)) (- c 48)
+    (if (and (>= c 97) (<= c 102)) (- c 87)
+      (if (and (>= c 65) (<= c 70)) (- c 55) -1))))
+
+(defn json--utf8 ((cp : int)) : string
+  (if (< cp 128) (char cp)
+    (if (< cp 2048)
+      (join (vec (char (+ 192 (shr cp 6))) (char (+ 128 (bit-and cp 63)))) "")
+      (if (< cp 65536)
+        (join (vec (char (+ 224 (shr cp 12))) (char (+ 128 (bit-and (shr cp 6) 63))) (char (+ 128 (bit-and cp 63)))) "")
+        (join (vec (char (+ 240 (shr cp 18))) (char (+ 128 (bit-and (shr cp 12) 63)))
+                   (char (+ 128 (bit-and (shr cp 6) 63))) (char (+ 128 (bit-and cp 63)))) "")))))
+
+; four hex digits after \u, or -1
+(defn json--hex4 ((p : JP)) : int
+  (let ((v 0) (k 0))
+    (while (and (>= v 0) (< k 4))
+      (let ((h (json--hex (json--peek p))))
+        (if (< h 0) (set v -1) (do (set v (+ (* v 16) h)) (json--adv p) (set k (+ k 1))))))
+    v))
+
+; after a backslash: the text the escape stands for, none when it is not one (the error is set)
+(defn json--escape ((p : JP)) : (option string)
+  (let ((e (json--peek p)))
+    (json--adv p)
+    (match e
+      (34 (some "\""))
+      (92 (some "\\"))
+      (47 (some "/"))
+      (98 (some (char 8)))
+      (102 (some (char 12)))
+      (110 (some "\n"))
+      (114 (some (char 13)))
+      (116 (some "\t"))
+      (117
+        (let ((cp (json--hex4 p)))
+          (if (< cp 0)
+            (do (json--bad p "\\u needs four hex digits") none)
+            (if (and (>= cp 55296) (< cp 56320) (= (json--peek p) 92))
+              (do
+                (json--adv p)
+                (if (= (json--peek p) 117)
+                  (do
+                    (json--adv p)
+                    (let ((lo (json--hex4 p)))
+                      (if (and (>= lo 56320) (< lo 57344))
+                        (some (json--utf8 (+ 65536 (* (- cp 55296) 1024) (- lo 56320))))
+                        (do (json--bad p "a high surrogate needs a low one after it") none))))
+                  (do (json--bad p "a high surrogate needs a low one after it") none)))
+              (some (json--utf8 cp))))))
+      (_ (json--bad p "a backslash needs one of \" \\ / b f n r t u after it") none))))
+
+; at the opening quote: the string, none when it is cut off or has a bad escape
+(defn json--string ((p : JP)) : (option string)
+  (json--adv p)
+  (let ((parts : (vec string) (vec)) (seg (get p.pos 0)) (done false) (bad false))
+    (while (not (or done bad))
+      (let ((c (json--peek p)))
+        (if (< c 0)
+          (do (json--bad p "the string is not closed") (set bad true))
+          (if (= c 34)
+            (do (push parts (substr p.src seg (get p.pos 0))) (json--adv p) (set done true))
+            (if (= c 92)
+              (do
+                (push parts (substr p.src seg (get p.pos 0)))
+                (json--adv p)
+                (match (json--escape p)
+                  ((some t) (push parts t) (set seg (get p.pos 0)))
+                  (none (set bad true))))
+              (if (< c 32)
+                (do (json--bad p "a control character in a string must be written with a backslash") (set bad true))
+                (json--adv p)))))))
+    (if bad none (some (join parts "")))))
+
+(defn json--number ((p : JP)) : int
+  (let ((start (get p.pos 0)) (float? false) (going true))
+    (while going
+      (let ((c (json--peek p)))
+        (if (or (and (>= c 48) (<= c 57)) (= c 45) (= c 43))
+          (json--adv p)
+          (if (or (= c 46) (= c 101) (= c 69))
+            (do (set float? true) (json--adv p))
+            (set going false)))))
+    (let ((text (substr p.src start (get p.pos 0))))
+      (if float?
+        (match (parse-float text)
+          ((some x) (json--add-node p.j (JNode :kind JKind.jfloat :f x :i (int x) :s text)))
+          (none (json--bad p "not a number")))
+        (match (parse-int text)
+          ((some n) (json--add-node p.j (JNode :kind JKind.jint :i n :f (float n))))
+          (none
+            (match (parse-float text)
+              ((some x) (json--add-node p.j (JNode :kind JKind.jfloat :f x :i 0 :s text)))
+              (none (json--bad p "not a number")))))))))
+
+(defn json--word ((p : JP) (w : string) (kind : JKind)) : int
+  (let ((at (get p.pos 0)) (n (len w)))
+    (if (and (<= (+ at n) (len p.src)) (= (substr p.src at (+ at n)) w))
+      (do (put p.pos 0 (+ at n)) (json--add-node p.j (JNode :kind kind)))
+      (json--bad p (format "expected a value, found %s" (substr p.src at (min (len p.src) (+ at 8))))))))
+
+; a container is made before what is in it, so the root is node 0
+(defn json--container ((p : JP) (kind : JKind) (close : int)) : int
+  (json--adv p)
+  (let ((me (json--add-node p.j (JNode :kind kind))) (going true))
+    (json--ws p)
+    (if (= (json--peek p) close)
+      (json--adv p)
+      (while going
+        (json--ws p)
+        (let ((key ""))
+          (when (= kind JKind.jobject)
+            (if (= (json--peek p) 34)
+              (match (json--string p)
+                ((some k) (set key k))
+                (none (set going false)))
+              (do (json--bad p "an object member starts with a \"name\"") (set going false)))
+            (when going
+              (json--ws p)
+              (if (= (json--peek p) 58) (json--adv p)
+                (do (json--bad p "expected : after the name") (set going false)))))
+          (when going
+            (let ((child (json--value p)))
+              (if (< child 0)
+                (set going false)
+                (do
+                  (Json.add p.j me key child)
+                  (json--ws p)
+                  (let ((c (json--peek p)))
+                    (if (= c 44) (json--adv p)
+                      (if (= c close) (do (json--adv p) (set going false))
+                        (do (json--bad p (if (= close 125) "expected , or } here" "expected , or ] here"))
+                            (set going false))))))))))))
+    me))
+
+(defn json--value ((p : JP)) : int
+  (json--ws p)
+  (let ((c (json--peek p)))
+    (match c
+      (123 (json--container p JKind.jobject 125))
+      (91 (json--container p JKind.jlist 93))
+      (34 (match (json--string p)
+            ((some s) (json--add-node p.j (JNode :kind JKind.jstring :s s)))
+            (none -1)))
+      (116 (json--word p "true" JKind.jtrue))
+      (102 (json--word p "false" JKind.jfalse))
+      (110 (json--word p "null" JKind.jnull))
+      (-1 (json--bad p "the text ends where a value should be"))
+      (_ (if (or (= c 45) (and (>= c 48) (<= c 57)))
+           (json--number p)
+           (json--bad p (format "expected a value, found %s" (char c))))))))
+
+; the document in TEXT; check (j.ok?) before using it
+(defn json-parse ((text : string)) : Json
+  (let ((p (JP :src text)))
+    (let ((root (json--value p)))
+      (when (>= root 0)
+        (json--ws p)
+        (when (< (get p.pos 0) (len text))
+          (json--bad p "something follows the value")))
+      p.j)))
+
+;; ---- writing text ----
+
+(defn json--float ((x : float)) : string
+  (if (or (!= x x) (> x 1.0e308) (< x -1.0e308)) "null" (format "%v" x)))
+
+(defn json--hexdigit ((d : int)) : string (char (if (< d 10) (+ 48 d) (+ 87 d))))
+
+(defn json--quote ((s : string)) : string
+  (let ((parts : (vec string) (vec "\"")) (seg 0) (n (len s)))
+    (for (i 0 n)
+      (let ((c (byte s i)))
+        (when (or (< c 32) (= c 34) (= c 92))
+          (push parts (substr s seg i))
+          (set seg (+ i 1))
+          (push parts
+            (match c
+              (34 "\\\"")
+              (92 "\\\\")
+              (10 "\\n")
+              (13 "\\r")
+              (9 "\\t")
+              (8 "\\b")
+              (12 "\\f")
+              (_ (format "\\u00%s%s" (json--hexdigit (shr c 4)) (json--hexdigit (bit-and c 15)))))))))
+    (push parts (substr s seg n))
+    (push parts "\"")
+    (join parts "")))
+
+(defn json--emit ((j : Json) (n : int) (parts : (vec string)) (level : int) (step : int)) : unit
+  (let ((x (get j.nodes n)))
+    (match x.kind
+      (JKind.jlist
+        (if (= x.first -1)
+          (push parts "[]")
+          (do
+            (push parts "[")
+            (let ((at x.first))
+              (while (>= at 0)
+                (json--pad parts (+ level 1) step)
+                (json--emit j at parts (+ level 1) step)
+                (set at (. (get j.nodes at) next))
+                (push parts (if (>= at 0) "," ""))))
+            (json--pad parts level step)
+            (push parts "]"))))
+      (JKind.jobject
+        (if (= x.first -1)
+          (push parts "{}")
+          (do
+            (push parts "{")
+            (let ((at x.first))
+              (while (>= at 0)
+                (json--pad parts (+ level 1) step)
+                (push parts (json--quote (. (get j.nodes at) key)))
+                (push parts (if (> step 0) ": " ":"))
+                (json--emit j at parts (+ level 1) step)
+                (set at (. (get j.nodes at) next))
+                (push parts (if (>= at 0) "," ""))))
+            (json--pad parts level step)
+            (push parts "}"))))
+      (JKind.jstring (push parts (json--quote x.s)))
+      (_ (push parts (Json.text j n))))))
+
+(defn json--pad ((parts : (vec string)) (level : int) (step : int)) : unit
+  (when (> step 0)
+    (push parts "\n")
+    (for (_ 0 (* level step)) (push parts " "))))
+
+(defn Json.write ((j : Json) (n : int)) : string
+  (let ((parts : (vec string) (vec))) (json--emit j n parts 0 0) (join parts "")))
+
+(defn Json.pretty ((j : Json) (n : int)) : string
+  (let ((parts : (vec string) (vec))) (json--emit j n parts 0 2) (join parts "")))
+
+;; ---- filters ----
+
+(defn json--idc ((c : int)) : bool
+  (or (and (>= c 97) (<= c 122)) (and (>= c 65) (<= c 90)) (and (>= c 48) (<= c 57)) (= c 95)))
+
+(defn json--ident ((p : JP)) : string
+  (let ((start (get p.pos 0)))
+    (while (json--idc (json--peek p)) (json--adv p))
+    (substr p.src start (get p.pos 0))))
+
+; an optional whole number in a filter, with its sign
+(defn json--qint ((p : JP)) : (option int)
+  (let ((start (get p.pos 0)))
+    (when (= (json--peek p) 45) (json--adv p))
+    (while (and (>= (json--peek p) 48) (<= (json--peek p) 57)) (json--adv p))
+    (parse-int (substr p.src start (get p.pos 0)))))
+
+(defn json--descend ((j : Json) (n : int) (out : (vec int))) : unit
+  (push out n)
+  (let ((x (get j.nodes n)))
+    (when (or (= x.kind JKind.jlist) (= x.kind JKind.jobject))
+      (let ((at x.first))
+        (while (>= at 0)
+          (json--descend j at out)
+          (set at (. (get j.nodes at) next)))))))
+
+(defn json--s-member ((j : Json) (cur : (vec int)) (name : string)) : (vec int)
+  (let ((out : (vec int) (vec)))
+    (for (n cur)
+      (let ((g (Json.get j n name))) (when (>= g 0) (push out g))))
+    out))
+
+(defn json--s-index ((j : Json) (cur : (vec int)) (i : int)) : (vec int)
+  (let ((out : (vec int) (vec)))
+    (for (n cur)
+      (let ((g (Json.at j n i))) (when (>= g 0) (push out g))))
+    out))
+
+(defn json--s-each ((j : Json) (cur : (vec int))) : (vec int)
+  (let ((out : (vec int) (vec)))
+    (for (n cur)
+      (let ((x (get j.nodes n)))
+        (when (or (= x.kind JKind.jlist) (= x.kind JKind.jobject))
+          (let ((at x.first))
+            (while (>= at 0)
+              (push out at)
+              (set at (. (get j.nodes at) next)))))))
+    out))
+
+(defn json--s-descend ((j : Json) (cur : (vec int))) : (vec int)
+  (let ((out : (vec int) (vec)))
+    (for (n cur) (json--descend j n out))
+    out))
+
+(defn json--bound ((x : int) (given : bool) (dflt : int) (size : int)) : int
+  (if (not given) dflt
+    (let ((v (if (< x 0) (+ size x) x)))
+      (clamp v 0 size))))
+
+; a slice is a new list holding copies of the picked elements; what is below them is shared
+(defn json--s-slice ((j : Json) (cur : (vec int)) (from : int) (has-from : bool) (to : int) (has-to : bool)) : (vec int)
+  (let ((out : (vec int) (vec)))
+    (for (n cur)
+      (let ((x (get j.nodes n)))
+        (when (= x.kind JKind.jlist)
+          (let ((size (Json.len j n)))
+            (let ((a (json--bound from has-from 0 size)) (b (json--bound to has-to size size))
+                  (fresh (Json.list j)) (at x.first) (k 0))
+              (while (>= at 0)
+                (when (and (>= k a) (< k b))
+                  (let ((c (get j.nodes at)))
+                    (push j.nodes c)
+                    (Json.add j fresh c.key (- (len j.nodes) 1))))
+                (set at (. (get j.nodes at) next))
+                (set k (+ k 1)))
+              (push out fresh))))))
+    out))
+
+(defn json--type-name ((k : JKind)) : string
+  (match k
+    (JKind.jnull "null")
+    (JKind.jtrue "boolean")
+    (JKind.jfalse "boolean")
+    (JKind.jint "number")
+    (JKind.jfloat "number")
+    (JKind.jstring "string")
+    (JKind.jlist "array")
+    (JKind.jobject "object")))
+
+(defn json--length ((j : Json) (n : int)) : int
+  (let ((x (get j.nodes n)))
+    (match x.kind
+      (JKind.jlist (Json.len j n))
+      (JKind.jobject (Json.len j n))
+      (JKind.jstring (len x.s))
+      (JKind.jint (abs x.i))
+      (_ 0))))
+
+(defn json--keys ((j : Json) (n : int)) : int
+  (let ((x (get j.nodes n)) (l (Json.list j)) (at x.first) (k 0))
+    (when (or (= x.kind JKind.jlist) (= x.kind JKind.jobject))
+      (while (>= at 0)
+        (let ((item (if (= x.kind JKind.jobject) (Json.str j (. (get j.nodes at) key)) (Json.int j k))))
+          (Json.add j l "" item))
+        (set at (. (get j.nodes at) next))
+        (set k (+ k 1))))
+    l))
+
+(defn json--s-word ((j : Json) (cur : (vec int)) (w : string)) : (option (vec int))
+  (let ((out : (vec int) (vec)))
+    (if (not (or (= w "length") (= w "type") (= w "keys")))
+      none
+      (do
+        (for (n cur)
+          (let ((kind (. (get j.nodes n) kind)))
+            (push out
+              (if (= w "length") (Json.int j (json--length j n))
+                (if (= w "type") (Json.str j (json--type-name kind))
+                  (json--keys j n))))))
+        (some out)))))
+
+(defn json--expect ((p : JP) (c : int) (what : string)) : bool
+  (json--ws p)
+  (if (= (json--peek p) c)
+    (do (json--adv p) true)
+    (do (json--bad p what) false)))
+
+(defn json--or ((o : (option int)) (dflt : int)) : int
+  (match o ((some x) x) (none dflt)))
+
+(defn json--has ((o : (option int))) : bool
+  (match o ((some _) true) (none false)))
+
+; after [ : a number, a slice, a "name" or nothing; the next filter state, none when the filter is wrong
+(defn json--bracket-num ((j : Json) (p : JP) (cur : (vec int))) : (option (vec int))
+  (let ((a (json--qint p)))
+    (json--ws p)
+    (if (= (json--peek p) 58)
+      (do
+        (json--adv p)
+        (json--ws p)
+        (let ((b (json--qint p)))
+          (if (json--expect p 93 "expected ] after the slice")
+            (some (json--s-slice j cur (json--or a 0) (json--has a) (json--or b 0) (json--has b)))
+            none)))
+      (match a
+        ((some i) (if (json--expect p 93 "expected ] after the index") (some (json--s-index j cur i)) none))
+        (none (do (json--bad p "expected a number, a \"name\", : or ] after [") none))))))
+
+(defn json--bracket ((j : Json) (p : JP) (cur : (vec int))) : (option (vec int))
+  (json--adv p)
+  (json--ws p)
+  (let ((d (json--peek p)))
+    (if (= d 93)
+      (do (json--adv p) (some (json--s-each j cur)))
+      (if (= d 34)
+        (match (json--string p)
+          ((some k) (if (json--expect p 93 "expected ] after the name") (some (json--s-member j cur k)) none))
+          (none none))
+        (json--bracket-num j p cur)))))
+
+; one step of a filter at P: the nodes it leaves, none when the filter is wrong (the error is in P)
+(defn json--step ((j : Json) (p : JP) (cur : (vec int)) (c : int)) : (option (vec int))
+  (if (= c 124)
+    (do (json--adv p) (some cur))
+    (if (= c 46)
+      (do
+        (json--adv p)
+        (let ((d (json--peek p)))
+          (if (= d 46)
+            (do (json--adv p) (some (json--s-descend j cur)))
+            (if (json--idc d) (some (json--s-member j cur (json--ident p))) (some cur)))))
+      (if (= c 91)
+        (json--bracket j p cur)
+        (if (json--idc c)
+          (let ((w (json--ident p)))
+            (match (json--s-word j cur w)
+              ((some r) (some r))
+              (none (do (json--bad p (format "%s is not a filter word (length, keys, type)" w)) none))))
+          (do (json--bad p (format "a filter does not take %s here" (char c))) none))))))
+
+; every node FILTER picks from node N
+(defn Json.query ((j : Json) (n : int) (filter : string)) : (vec int)
+  (let ((p (JP :src filter)) (cur : (vec int) (vec n)) (going true))
+    (while (> (len j.qerr) 0) (pop j.qerr))
+    (while going
+      (json--ws p)
+      (let ((c (json--peek p)))
+        (if (< c 0)
+          (set going false)
+          (match (json--step j p cur c)
+            ((some r) (set cur r))
+            (none (set going false))))))
+    (when (> (len p.j.err) 0)
+      (push j.qerr (get p.j.err 0))
+      (set cur (vec)))
+    cur))
+
+(@test "parse and write back"
+  (let ((j (json-parse "{\"a\": [1, 2.5, \"x\\n\"], \"ok\": true, \"n\": null}")))
+    (assert (j.ok?))
+    (assert (= (j.write 0) "{\"a\":[1,2.5,\"x\\n\"],\"ok\":true,\"n\":null}"))
+    (assert (= (j.int-of (j.at (j.get 0 "a") 0)) 1))
+    (assert (= (j.len (j.get 0 "a")) 3))
+    (assert (= (j.at (j.get 0 "a") 3) -1))
+    (assert (= (j.get 0 "missing") -1))))
+
+(defn json--show ((j : Json) (ids : (vec int))) : string
+  (let ((parts : (vec string) (vec)))
+    (for (n ids) (push parts (j.write n)))
+    (join parts " ")))
+
+(@test "escapes, unicode and surrogate pairs go in and come out"
+  (let ((j (json-parse "[\"\\u00e9\\u20ac\\ud83d\\ude00 \\\"q\\\" \\\\ \\/\"]"))
+        (u (join (vec (char 195) (char 169) (char 226) (char 130) (char 172) (char 240) (char 159) (char 152) (char 128)) "")))
+    (assert (j.ok?))
+    (assert (= (j.text (j.at 0 0)) (format "%s \"q\" \\ /" u)))
+    (assert (= (j.write (j.at 0 0)) (format "\"%s \\\"q\\\" \\\\ /\"" u)))))
+
+(defn json--err ((text : string)) : string (let ((j (json-parse text))) (j.error)))
+
+(@test "text that is not JSON says where"
+  (assert (= (json--err "") "at byte 0: the text ends where a value should be"))
+  (assert (= (json--err "[1, 2") "at byte 5: expected , or ] here"))
+  (assert (= (json--err "{\"a\" 1}") "at byte 5: expected : after the name"))
+  (assert (= (json--err "[1] x") "at byte 4: something follows the value"))
+  (assert (= (json--err "tru") "at byte 0: expected a value, found tru"))
+  (assert (= (json--err "\"abc") "at byte 4: the string is not closed")))
+
+(@test "numbers keep their kind"
+  (let ((j (json-parse "[1, -2, 3.5, 1e3, 12345678901234567890]")))
+    (assert (j.ok?))
+    (assert (= (j.write 0) "[1,-2,3.5,1e3,12345678901234567890]"))
+    (assert (= (j.float-of (j.at 0 3)) 1000.0))
+    (assert (= (j.kind (j.at 0 3)) JKind.jfloat))
+    (assert (= (j.kind (j.at 0 1)) JKind.jint))))
+
+(@test "pretty indents by two"
+  (let ((j (json-parse "{\"a\":[1,{}],\"b\":[]}")))
+    (assert (= (j.pretty 0) "{\n  \"a\": [\n    1,\n    {}\n  ],\n  \"b\": []\n}"))))
+
+(@test "a document is built, then written"
+  (let ((b (Json.new)))
+    (let ((root (b.object)) (xs (b.list)))
+      (b.add root "name" (b.str "tab\there"))
+      (b.add root "xs" xs)
+      (b.add xs "" (b.int 1))
+      (b.add xs "" (b.float 2.5))
+      (b.add xs "" (b.bool false))
+      (b.add xs "" (b.null))
+      (assert (= (b.write root) "{\"name\":\"tab\\there\",\"xs\":[1,2.5,false,null]}")))))
+
+(@test "filters"
+  (let ((j (json-parse "{\"users\":[{\"name\":\"ann\",\"age\":31},{\"name\":\"bo\",\"age\":9},{\"name\":\"cy\"}],\"n\":3}")))
+    (assert (= (json--show j (j.query 0 ".")) (j.write 0)))
+    (assert (= (json--show j (j.query 0 ".n")) "3"))
+    (assert (= (json--show j (j.query 0 ".users[].name")) "\"ann\" \"bo\" \"cy\""))
+    (assert (= (json--show j (j.query 0 ".users[].age")) "31 9"))
+    (assert (= (json--show j (j.query 0 ".users[1].name")) "\"bo\""))
+    (assert (= (json--show j (j.query 0 ".users[-1].name")) "\"cy\""))
+    (assert (= (json--show j (j.query 0 ".[\"n\"]")) "3"))
+    (assert (= (json--show j (j.query 0 ".users | length")) "3"))
+    (assert (= (json--show j (j.query 0 "keys")) "[\"users\",\"n\"]"))
+    (assert (= (json--show j (j.query 0 ".users[0] | keys")) "[\"name\",\"age\"]"))
+    (assert (= (json--show j (j.query 0 ".users[].name | length")) "3 2 2"))
+    (assert (= (json--show j (j.query 0 ".users | type")) "\"array\""))
+    (assert (= (json--show j (j.query 0 ".users[1:]")) "[{\"name\":\"bo\",\"age\":9},{\"name\":\"cy\"}]"))
+    (assert (= (json--show j (j.query 0 ".users[:1]")) "[{\"name\":\"ann\",\"age\":31}]"))
+    (assert (= (json--show j (j.query 0 ".users[-2:-1]")) "[{\"name\":\"bo\",\"age\":9}]"))
+    (assert (= (len (j.query 0 "..")) 11))
+    (assert (= (json--show j (j.query 0 ".nothing.at.all")) ""))
+    (assert (= (j.query-error) ""))))
+
+(@test "a wrong filter says what is wrong and finds nothing"
+  (let ((j (json-parse "[1,2]")))
+    (assert (= (len (j.query 0 ".[")) 0))
+    (assert (= (j.query-error) "at byte 2: expected a number, a \"name\", : or ] after ["))
+    (assert (= (len (j.query 0 "sum")) 0))
+    (assert (= (j.query-error) "at byte 3: sum is not a filter word (length, keys, type)"))
+    (assert (= (len (j.query 0 ".[1")) 0))
+    (assert (= (j.query-error) "at byte 3: expected ] after the index"))
+    (assert (= (len (j.query 0 ".[0]")) 1))
+    (assert (= (j.query-error) ""))))
