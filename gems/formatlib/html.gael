@@ -1,4 +1,4 @@
-(gem html :version "0.1.0")
+(gem formatlib/html :version "0.1.0")
 ; HTML written as a stream, with htmx's attributes as one call. The builder keeps the open tags on a stack, so a page
 ; cannot come out with a tag left open, and every text goes through `html-escape` unless it says `raw`.
 ;

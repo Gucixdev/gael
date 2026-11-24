@@ -221,8 +221,8 @@ queries that name what they need; `pqueue` (a priority queue) and `events` (a lo
 are ported from holyc, used in `examples/queues.gael`; `hfsm` is a hierarchical state machine whose state is an enum
 value, so `examples/guards.gael` keeps one in an ECS column; `rng` (PCG32), `noise`, `easing` and `curve` make the
 map of `examples/procgen.gael`; `wfc` is wave function collapse, which grows the island of `examples/wfc.gael`;
-`geometry` has `Vec2`, `Vec3` and `Rect` with `+ - * =` on them; `json` reads and writes JSON and answers jq-style filters
-(`examples/json.gael`), `html` writes HTML with htmx's `hx-*` attributes as one call and `markdown` turns Markdown into it,
+`geometry` has `Vec2`, `Vec3` and `Rect` with `+ - * =` on them; `formatlib/json` reads and writes JSON and answers jq-style filters
+(`examples/json.gael`), `formatlib/html` writes HTML with htmx's `hx-*` attributes as one call and `formatlib/markdown` turns Markdown into it,
 escaping raw HTML (`examples/page.gael`).
 `examples/ecs.gael` runs a few ticks of an ECS:
 

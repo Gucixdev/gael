@@ -1,6 +1,6 @@
 ; A page from markdown, with an htmx button that swaps in more of it, written with the html and markdown gems.
 ; What this prints is what a server would answer; the markdown is escaped, so text cannot bring a script along.
-(enable html markdown)
+(enable formatlib/html formatlib/markdown)
 
 (def intro "# Kite\n\nA *small* ship. See [the log](/log).\n\n- cook: **bo**\n- pilot: ann\n\n<script>no()</script>")
 

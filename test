@@ -128,7 +128,7 @@ for bin in "${builds[@]}"; do
 		grep -q 'Sanitizer' "$out/stderr" && ok=0
 		check "$b $f" "$ok"
 	done
-	for f in gems/*.gael gems/*/main.gael; do
+	for f in gems/*.gael gems/*/*.gael; do
 		[ -f "$f" ] || continue
 		ok=1
 		"$bin" test "$f" > "$out/stdout" 2> "$out/stderr" || ok=0

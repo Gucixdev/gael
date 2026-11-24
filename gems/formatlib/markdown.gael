@@ -1,4 +1,4 @@
-(gem markdown :version "0.1.0" :requires (html))
+(gem formatlib/markdown :version "0.1.0" :requires (formatlib/html))
 ; Markdown to HTML, the part that is written every day: headings (# to ######), paragraphs, fenced code (``` and a
 ; language), block quotes, bullet lists (- * +), numbered lists, horizontal rules (---), and in a line `code`,
 ; **strong**, *emphasis*, [text](url) and a backslash before a character that would otherwise mean something. Raw HTML

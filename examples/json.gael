@@ -1,6 +1,6 @@
 ; Read JSON, ask it questions in the way of jq, build a new document and write both. The json gem keeps a document
 ; as one flat vec of nodes, so nothing here allocates a box per value.
-(enable json)
+(enable formatlib/json)
 
 (def text "{\"crew\": [{\"name\": \"ann\", \"role\": \"pilot\", \"age\": 31}, {\"name\": \"bo\", \"role\": \"cook\", \"age\": 9}], \"ship\": \"Kite\"}")
 

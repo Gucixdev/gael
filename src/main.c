@@ -22,7 +22,7 @@
  * A file can use others: (use "lib.gael") at its top level, the path relative to the file. Every file is compiled
  * once, the used ones first, and the program runs only when none of them has an error.
  *
- * Gems are files by name: (enable name...) loads gems/NAME.gael or gems/NAME/main.gael, from the program's folder,
+ * Gems are files by name: (enable name...) loads gems/NAME.gael or gems/NAME/main.gael (NAME may have folders: formatlib/json), from the program's folder,
  * else from gael's own, else from the gems that come with gael (gems/ next to the binary), each after the gems its
  * manifest requires; a gem's main file starts with the manifest,
  * (gem name :requires (...) :provides (...) :excludes (...)). Only the gems named are read.
@@ -236,7 +236,8 @@ static int gem_path(const char *name, char *out)
 	const char *dirs[3];
 	i32 nd = 0, i;
 	const char *c;
-	for (c = name; *c; c++) { /* a gem's name is its file's: letters, digits, - and _ */
+	for (c = name; *c; c++) { /* a gem's name is its file's: letters, digits, - and _, and / between folders: formatlib/json */
+		if (*c == '/' && c != name && c[1] && c[1] != '/') continue;
 		if (!((*c >= 'a' && *c <= 'z') || (*c >= 'A' && *c <= 'Z') || (*c >= '0' && *c <= '9') || *c == '-' || *c == '_')) return 0;
 	}
 	if (g_gem_dir[0] && strlen(g_gem_dir) + 2 * strlen(name) + 24 <= PATH_MAX) { /* the tested gem's neighbours */
@@ -632,6 +633,12 @@ static int gem_file(const char *path, char *name)
 		for (from = base - 1; from > path && from[-1] != '/'; from--) {}
 		len = (size_t)(base - 1 - from);
 	} else if (len > 5 && !strcmp(base + len - 5, ".gael")) len -= 5;
+	{ /* a gem in a folder of gems/: its name is the path from there, formatlib/json */
+		const char *q, *g = 0;
+		for (q = path; q + 5 <= from; q++)
+			if (!strncmp(q, "gems/", 5) && (q == path || q[-1] == '/')) g = q;
+		if (g && g + 5 < from) { len += (size_t)(from - (g + 5)); from = g + 5; }
+	}
 	if (len == 0 || len >= 64) return 0;
 	memcpy(name, from, len);
 	name[len] = 0;

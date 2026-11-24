@@ -181,8 +181,8 @@ on, `(disable name)` off. These come with gael:
 - `hfsm`: `(hfsm Mood (e : Ctx) (alive -) (calm alive) (dead -) :enter ((calm code)) :exit ((calm code)))` makes the
   enum and `(Mood.start s e)`, `(s.go to e)`, `(s.in? t)`, `(s.parent)`.
 - `pqueue`: `(PQ)`, `(q.push id priority)` (1 first, 0 last), `(q.pop)` and `(q.peek)` options, `(len q)`.
-- `json`: `(json-parse text)` gives a `Json` (`(j.ok?)`, `(j.error)`), node 0 is the root; `(j.write n)` `(j.pretty n)`, `(j.get n "key")` `(j.at n i)` give a node or -1, `(j.text n)` `(j.int-of n)`, `(j.query n ".a[].b | length")` a `(vec int)` of nodes; build with `(Json.new)`, `(b.object)` `(b.list)` `(b.int 3)` `(b.str "x")`, `(b.add parent "key" child)`.
-- `html`: `(Html.new)`, `(h.open "div")` then `(h.attr k v)` `(h.hx "get" url)` (hx-get) `(h.flag k)` right after, `(h.text s)` escaped, `(h.raw s)`, `(h.el tag text)`, `(h.close)`, `(h.finish)` the string; `(html-escape s)`. `markdown`: `(markdown-html text)`, raw HTML escaped.
+- `formatlib/json`: `(json-parse text)` gives a `Json` (`(j.ok?)`, `(j.error)`), node 0 is the root; `(j.write n)` `(j.pretty n)`, `(j.get n "key")` `(j.at n i)` give a node or -1, `(j.text n)` `(j.int-of n)`, `(j.query n ".a[].b | length")` a `(vec int)` of nodes; build with `(Json.new)`, `(b.object)` `(b.list)` `(b.int 3)` `(b.str "x")`, `(b.add parent "key" child)`.
+- `formatlib/html`: `(Html.new)`, `(h.open "div")` then `(h.attr k v)` `(h.hx "get" url)` (hx-get) `(h.flag k)` right after, `(h.text s)` escaped, `(h.raw s)`, `(h.el tag text)`, `(h.close)`, `(h.finish)` the string; `(html-escape s)`. `formatlib/markdown`: `(markdown-html text)`, raw HTML escaped.
 - `events`: `(EventLog)` with `(log.add kind tick a b)`, `(log.at tick)`, `(log.since tick)`; `(Schedule)` with
   `(s.add (Event kind tick a b))` and `(s.due tick)`.
 - `rng`: `(Rng.seed seed stream)`, `(r.next)`, `(r.float)`, `(r.range lo hi)`, `(r.chance p)`.

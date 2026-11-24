@@ -1,0 +1,1 @@
+tests/errors/gem-path.gael:1:9: error: there is no gem ../secret: no gems/../secret.gael or gems/../secret/main.gael here, in gael's folder or with gael itself

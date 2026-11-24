@@ -1,4 +1,4 @@
-(gem json :version "0.1.0")
+(gem formatlib/json :version "0.1.0")
 ; JSON in and out, and a small query language in the way of jq (jaq). A document is a flat vec of nodes, not a tree of
 ; boxes: a node names its first child and its next sibling by index, so a document is one allocation, a copy of it is
 ; the same document (as with a vec) and going over it is a walk along one array. Node 0 is the root.
