@@ -1,4 +1,4 @@
-(gem noise :version "0.1.0")
+(gem noiselib/noise :version "0.1.0")
 ; Gradient noise, ported from holyc's gradient.h: Ken Perlin's improved noise on a square grid in 2D - a hash of each
 ; corner picks one of 8 directions, the dot products blend with the quintic 6t^5 - 15t^4 + 10t^3 - so it is 0 at
 ; every whole point and smooth between. A seed gives another field; the same seed, the same field on every machine.

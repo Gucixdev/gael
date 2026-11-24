@@ -187,12 +187,12 @@ on, `(disable name)` off. These come with gael:
 - `artlib/procedural`: a node is `(fn (float float) int)` from u v in 0..1 to a color: `(node-solid c)` `(node-gradient a b)` `(node-checker n a b)` `(node-noise seed scale octaves)` `(node-voronoi seed cells)` `(node-mix a b t)` `(node-mask a b m)` `(node-tile n a)` `(node-warp a by)`; `(img.shade node)` runs one. `formatlib/png`: `(png-save path img)`, `(png-encode img)`, `(png-bytes img)`.
 - `events`: `(EventLog)` with `(log.add kind tick a b)`, `(log.at tick)`, `(log.since tick)`; `(Schedule)` with
   `(s.add (Event kind tick a b))` and `(s.due tick)`.
-- `rng`: `(Rng.seed seed stream)`, `(r.next)`, `(r.float)`, `(r.range lo hi)`, `(r.chance p)`.
-- `noise`: `(noise2 seed x y)`, `(fbm2 seed x y octaves)`. `easing`: `lerp`, `smoothstep`, `ease-in-out-cubic`...
-  `curve`: `bezier3`, `hermite`, `catmull-rom`, `morton2`.
-- `geometry`: `(Vec2 x y)` `(Vec3 x y z)` with `+ - * =`, `(a.dot b)` `(v.length)` `(v.normal)` `(a.distance b)`
+- `mathlib/rng`: `(Rng.seed seed stream)`, `(r.next)`, `(r.float)`, `(r.range lo hi)`, `(r.chance p)`.
+- `noiselib/noise`: `(noise2 seed x y)`, `(fbm2 seed x y octaves)`. `mathlib/easing`: `lerp`, `smoothstep`, `ease-in-out-cubic`...
+  `mathlib/curve`: `bezier3`, `hermite`, `catmull-rom`, `morton2`.
+- `mathlib/geometry`: `(Vec2 x y)` `(Vec3 x y z)` with `+ - * =`, `(a.dot b)` `(v.length)` `(v.normal)` `(a.distance b)`
   `(a.lerp b t)` `(Vec3.cross a b)`; `(Rect min max)` with `(r.width)` `(r.height)` `(r.center)` `(r.contains? p)`.
-- `wfc` (wave function collapse): `(Wfc.new w h tiles)`, `(w.allow-all a b)`, `(w.allow a wfc-right b)`,
+- `noiselib/wfc` (wave function collapse): `(Wfc.new w h tiles)`, `(w.allow-all a b)`, `(w.allow a wfc-right b)`,
   `(w.weight t 3.0)`, `(w.fix x y t)`, `(w.solve (Rng.seed 1 0) 20)` true when solved, `(w.tile x y)`.
 
 ## Commands

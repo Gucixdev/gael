@@ -1,4 +1,4 @@
-(gem curve :version "0.1.0")
+(gem mathlib/curve :version "0.1.0")
 ; Curves through points, ported from holyc's curve.h, on one number at a time: for a point, use them on x and on y.
 ; t runs from 0 to 1 along the piece.
 ;

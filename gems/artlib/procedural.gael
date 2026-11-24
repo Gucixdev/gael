@@ -1,4 +1,4 @@
-(gem artlib/procedural :version "0.1.0" :requires (artlib/image noise))
+(gem artlib/procedural :version "0.1.0" :requires (artlib/image noiselib/noise))
 ; Procedural images from nodes. A node is a function from a place in the image to a color: (fn (float float) int),
 ; the place u and v from 0 to 1, the color 0xRRGGBBAA. A node that takes nodes makes a bigger one, so a picture is a
 ; small graph written as nested calls, and `(img.shade node)` runs it once per pixel. Nothing is stored between

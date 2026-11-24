@@ -1,7 +1,7 @@
 ; Wave function collapse from the wfc gem: five tiles and which may touch which - sea by sand, sand by grass, grass
 ; by forest, forest by mountains - and the grid fills itself so that every tile only ever touches the ones allowed.
 ; The border is pinned to sea first, so the land comes out an island. The same seed gives the same island.
-(enable rng wfc)
+(enable mathlib/rng noiselib/wfc)
 
 (def SEA 0)
 (def SAND 1)

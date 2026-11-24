@@ -1,6 +1,6 @@
 ; Procedural generation with four gems that come with gael, ported from holyc: noise shapes the land, rng places the
 ; trees, curve lays a road, easing fades the light in. The same seeds give the same map on every machine.
-(enable noise rng curve easing)
+(enable noiselib/noise mathlib/rng mathlib/curve mathlib/easing)
 
 (def width 48)
 (def height 12)

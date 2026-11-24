@@ -213,16 +213,16 @@ those of the gems it requires, checked at each use when compiling: `gem sneaky u
 it does not require; add ecs-flat to its :requires`. The program uses every gem that is on. In the REPL
 `(enable name)` compiles a gem into the running program, and `(disable name)` turns one off: its names cannot be used
 until it is on again (code compiled before goes on working). `examples/gems.gael` turns on two of the gems that come
-with gael, and `wfc` brings `rng` with it.
+with gael, and `noiselib/wfc` brings `mathlib/rng` with it.
 
-The gems that come with gael are in `gems/`. `ecs` is an entity component system the way flecs and the C ones go:
+The gems that come with gael are in `gems/`, the groups in folders: `mathlib/`, `noiselib/`, `artlib/` and `formatlib/`. `ecs` is an entity component system the way flecs and the C ones go:
 64-bit entity ids with a generation, a column per component, components and tags as bits of one mask per entity, and
 queries that name what they need; `pqueue` (a priority queue) and `events` (a log and a schedule of events by tick)
 are ported from holyc, used in `examples/queues.gael`; `hfsm` is a hierarchical state machine whose state is an enum
-value, so `examples/guards.gael` keeps one in an ECS column; `rng` (PCG32), `noise`, `easing` and `curve` make the
-map of `examples/procgen.gael`; `wfc` is wave function collapse, which grows the island of `examples/wfc.gael`;
-`geometry` has `Vec2`, `Vec3` and `Rect` with `+ - * =` on them; `formatlib/json` reads and writes JSON and answers jq-style filters
-(`examples/json.gael`), `formatlib/html` writes HTML with htmx's `hx-*` attributes as one call and `formatlib/markdown` turns Markdown into it,
+value, so `examples/guards.gael` keeps one in an ECS column; `mathlib/rng` (PCG32), `noiselib/noise`, `mathlib/easing` and `mathlib/curve` make the
+map of `examples/procgen.gael`; `noiselib/wfc` is wave function collapse, which grows the island of `examples/wfc.gael`;
+`mathlib/geometry` has `Vec2`, `Vec3` and `Rect` with `+ - * =` on them; `formatlib/json` reads and writes JSON and answers jq-style filters
+(`examples/json.gael`), `artlib/image` and `artlib/procedural` make pictures from nodes with `formatlib/png` to save them (`examples/art.gael`), `formatlib/html` writes HTML with htmx's `hx-*` attributes as one call and `formatlib/markdown` turns Markdown into it,
 escaping raw HTML (`examples/page.gael`).
 `examples/ecs.gael` runs a few ticks of an ECS:
 

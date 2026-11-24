@@ -2,7 +2,7 @@
 ; uses the rest, found next to the program, in gael's own folder (~/.gael) or next to the gael binary, where the gems
 ; that come with gael are. A gem comes after the gems its manifest requires: wfc requires rng, so rng is on as well.
 ; Only the gems named are read, so many installed gems cost nothing at start.
-(enable geometry wfc)
+(enable mathlib/geometry noiselib/wfc)
 
 (def a (Vec2 1.0 2.0))                          ; geometry: vectors and boxes, and + - * = on them
 (def b (Vec2 4.0 6.0))

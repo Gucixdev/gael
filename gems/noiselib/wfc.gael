@@ -1,4 +1,4 @@
-(gem wfc :version "0.1.0" :requires (rng))
+(gem noiselib/wfc :version "0.1.0" :requires (mathlib/rng))
 ; Wave function collapse, the simple tiled model: a grid where each cell starts as every tile at once, and rules
 ; that say which tile may stand next to which. The cell with the fewest choices left is decided first - one tile,
 ; picked by weight - and what that rules out spreads to its neighbours, cell by cell, until every cell has one tile.

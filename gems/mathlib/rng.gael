@@ -1,4 +1,4 @@
-(gem rng :version "0.1.0")
+(gem mathlib/rng :version "0.1.0")
 ; PCG32 (O'Neill 2014, the XSH-RR output), ported from holyc's rng.h: a 64-bit state and an odd increment, which
 ; picks one of 2^63 streams; good statistics (it passes BigCrush) from 16 bytes. The same seed and stream give the
 ; same numbers on every machine.
