@@ -272,5 +272,31 @@ if [ "${#builds[@]}" -gt 0 ]; then # docs/REFERENCE.md: every built-in name (gae
 	check "docs/MODELS.md has every built-in name and fits a small model" "$ok"
 fi
 
+# A build with no system call for memory (-DGAEL_NO_MMAP): every table and the heap come from one static pool of 64 MiB,
+# the tables 32 times smaller (-DGAEL_SHRINK=5). It is what a WASM or Android build starts from. It must not import
+# mmap or munmap, and every example but bigvec (its vec is bigger than the pool) must print what the full build does.
+if command -v gcc > /dev/null && command -v nm > /dev/null; then
+	if gcc "${flags[@]}" -O2 -DGAEL_NO_MMAP -DGAEL_SHRINK=5 -DGAEL_POOL_BYTES='((size_t)64 << 20)' -c -o "$out/nommap.o" src/main.c 2> "$out/nommap.log" \
+		&& gcc -o "$out/gael-nommap" "$out/nommap.o" -lm -ldl; then
+		ok=1
+		nm -u "$out/nommap.o" | grep -qE ' (mmap|munmap)(@|$)' && { ok=0; echo "  the no-mmap build imports mmap or munmap"; }
+		check "the no-mmap build asks the system for no memory" "$ok"
+		for f in examples/*.gael; do
+			n=${f%.gael}
+			[ -f "$n.out" ] && [ ! -f "$n.env" ] && [ "${n##*/}" != bigvec ] || continue
+			ok=1
+			input=/dev/null
+			[ -f "$n.in" ] && input=$n.in
+			args=()
+			[ -f "$n.args" ] && read -r -a args < "$n.args"
+			"$out/gael-nommap" "$f" "${args[@]}" < "$input" > "$out/stdout" 2> "$out/stderr" || ok=0
+			cmp -s "$out/stdout" "$n.out" || ok=0
+			check "no-mmap build: $f" "$ok"
+		done
+	else
+		echo "FAIL build with -DGAEL_NO_MMAP:"; sed 's/^/  /' "$out/nommap.log"; fail=$((fail + 1))
+	fi
+fi
+
 echo "$pass passed, $fail failed (${#builds[@]} builds)"
 [ "$fail" = 0 ]

@@ -42,9 +42,9 @@ typedef struct {
 
 /* The tables that grow with the program are reserved address space (table in base.h): the limits are generous, and
  * pages come only where something is written */
-#define MAX_TYS (1 << 16)
-#define MAX_FIELDS (1 << 18)
-#define MAX_VARIANTS (1 << 18)
+#define MAX_TYS ((1 << 16) >> GAEL_SHRINK)
+#define MAX_FIELDS ((1 << 18) >> GAEL_SHRINK)
+#define MAX_VARIANTS ((1 << 18) >> GAEL_SHRINK)
 static const TyInfo g_prim_tys[T_USER] = {
 	{ "<error>", K_PRIM, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
 	{ "unit", K_PRIM, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
@@ -79,7 +79,7 @@ typedef struct {
 	i32 off, guard_first, nguards;
 } Leaf;
 
-#define MAX_LEAVES (1 << 20)
+#define MAX_LEAVES ((1 << 20) >> GAEL_SHRINK)
 static Leaf *g_leaves; /* leaf 0: the value's only cell (a string, a vec, a map); shared by those types */
 static i32 g_nleaves = 1;
 static i32 *g_guards;
@@ -214,13 +214,13 @@ typedef struct {
 } Fmt;
 
 /* what lives as long as the process: code, constants, strings, functions, globals */
-#define MAX_CODE (1 << 24)
-#define MAX_CONSTS (1 << 20)
-#define MAX_FNS (1 << 16)
-#define MAX_GLOBALS (1 << 16)
-#define MAX_GLOBAL_CELLS (1 << 22)
-#define MAX_FMTS (1 << 18)
-#define PERM_BYTES ((size_t)256 << 20)
+#define MAX_CODE ((1 << 24) >> GAEL_SHRINK)
+#define MAX_CONSTS ((1 << 20) >> GAEL_SHRINK)
+#define MAX_FNS ((1 << 16) >> GAEL_SHRINK)
+#define MAX_GLOBALS ((1 << 16) >> GAEL_SHRINK)
+#define MAX_GLOBAL_CELLS ((1 << 22) >> GAEL_SHRINK)
+#define MAX_FMTS ((1 << 18) >> GAEL_SHRINK)
+#define PERM_BYTES (((size_t)256 << 20) >> GAEL_SHRINK)
 static Ins *g_code;
 static i32 g_ncode;
 static i64 *g_ints;
@@ -718,6 +718,9 @@ static i32 g_coro_end; /* the instruction a coroutine's function returns to: COR
 
 static o tables_init(void)
 {
+	static i32 done; /* vm_init calls it first with GAEL_NO_MMAP: the heap takes what the pool has left */
+	if (done) return;
+	done = 1;
 	g_nodes = (Node *)table(MAX_NODES, sizeof(Node));
 	g_unit_arena.base = (u8 *)table(UNIT_BYTES, 1);
 	g_unit_arena.cap = UNIT_BYTES;

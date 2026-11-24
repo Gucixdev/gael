@@ -52,3 +52,11 @@
   run of memory; the program sees ordinary values, `get` gathers an element and `put` spreads it out again.
 - The compiler counts how deep each function's operand stack can get, and the VM checks that the whole frame fits
   before it enters it, so no instruction can write past the stack.
+- Memory without the system: `-DGAEL_NO_MMAP` makes every reservation (the compiler's tables, the heap, the text
+  arena) a slice of one static array, `-DGAEL_POOL_BYTES=N` its size (64 MiB by default), so the build never imports
+  `mmap` or `munmap`. The tables are cut first and the heap takes the largest size that is left (`GAEL_HEAP` still
+  asks for one). `-DGAEL_SHRINK=N` makes the compiler's tables 2^N times smaller: `GAEL_SHRINK=5` runs in a pool of
+  64 MiB, 6 in 32 MiB. A pool too small stops with a message that says which flag to raise. `./test` builds this way
+  and runs the examples. It is what a WASM or Android build starts from; built with emscripten as wasm64
+  (`-sMEMORY64=1`, which keeps `long` at 64 bits) the examples print the same under node, except what needs a
+  process (`sh`) or more heap than the pool has.

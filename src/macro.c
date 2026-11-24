@@ -22,10 +22,10 @@
  * is read; an expansion copies its template back into the unit's nodes. Checking, matching and copying keep their own
  * stacks: no recursion in C. */
 
-#define MAX_MACROS (1 << 14)
-#define MAX_RULES (1 << 16)
-#define MAX_MNODES (1 << 20)
-#define MTEXT_BYTES ((size_t)64 << 20)
+#define MAX_MACROS ((1 << 14) >> GAEL_SHRINK)
+#define MAX_RULES ((1 << 16) >> GAEL_SHRINK)
+#define MAX_MNODES ((1 << 20) >> GAEL_SHRINK)
+#define MTEXT_BYTES (((size_t)64 << 20) >> GAEL_SHRINK)
 #define MAX_PVARS 63            /* pattern variables in one rule: one bit each of a mask in an i64 */
 #define MAX_BINDS (1 << 15)     /* what one use matched */
 #define MAX_MSTACK 1024         /* lists nested in one pattern, template or copy */

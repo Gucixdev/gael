@@ -16,8 +16,16 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifndef GAEL_NO_MMAP
 #include <sys/mman.h>
+#endif
 #include <unistd.h> /* getpid, unlink */
+
+/* GAEL_SHRINK=N: every table of the compiler is 2^N times smaller (a build for a small memory: with GAEL_NO_MMAP, a
+ * pool of 64 MiB takes -DGAEL_SHRINK=4). A file that needs more says which limit it hit. 0 is the full size. */
+#ifndef GAEL_SHRINK
+#define GAEL_SHRINK 0
+#endif
 
 typedef void o;
 typedef __INT8_TYPE__ i8;
@@ -77,6 +85,31 @@ static char *arena_strndup(Arena *a, const char *s, size_t n)
 	return p;
 }
 
+#ifdef GAEL_NO_MMAP
+/* -DGAEL_NO_MMAP: no system call for memory at all. Every reservation is cut from one static array (zeroed bss, so
+ * the loader gives pages as they are written, and WASM puts it in its linear memory); -DGAEL_POOL_BYTES=N sizes it.
+ * The compiler's tables and the VM's heap and text arenas must fit together in it, so a build like this sets the
+ * limits it needs (a small default here: 64 MiB). Never freed: reservations live as long as the program. */
+#ifndef GAEL_POOL_BYTES
+#define GAEL_POOL_BYTES ((size_t)64 << 20)
+#endif
+static u8 g_pool[GAEL_POOL_BYTES] __attribute__((aligned(4096)));
+static size_t g_pool_used;
+
+static o *reserve(size_t bytes)
+{
+	size_t at = (g_pool_used + 4095) & ~(size_t)4095;
+	if (at > GAEL_POOL_BYTES || bytes > GAEL_POOL_BYTES - at) return 0;
+	g_pool_used = at + bytes;
+	return g_pool + at;
+}
+
+/* release P BYTES: give back the last reservation (the pool is a stack); anything else stays where it is */
+static o release(o *p, size_t bytes)
+{
+	if ((u8 *)p + bytes == g_pool + g_pool_used) g_pool_used = (size_t)((u8 *)p - g_pool);
+}
+#else
 /* reserve BYTES: that much address space, given pages only where something is written; 0 when the system refuses */
 static o *reserve(size_t bytes)
 {
@@ -84,12 +117,23 @@ static o *reserve(size_t bytes)
 	return p == MAP_FAILED ? 0 : p;
 }
 
+/* release P BYTES: give the reservation back */
+static o release(o *p, size_t bytes)
+{
+	munmap(p, bytes);
+}
+#endif
+
 /* table N SIZE: room for N things of SIZE bytes, from reserved address space: pages come only where a thing is
  * written, so a table can have a generous limit and cost nothing until it fills */
 static o *table(size_t n, size_t size)
 {
 	o *p = reserve(n * size);
+#ifdef GAEL_NO_MMAP
+	if (!p) die("the static pool (GAEL_POOL_BYTES) is too small for the compiler's tables; build with a bigger -DGAEL_POOL_BYTES or a larger -DGAEL_SHRINK");
+#else
 	if (!p) die("the system gave no address space for the compiler's tables");
+#endif
 	return p;
 }
 

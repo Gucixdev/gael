@@ -20,8 +20,8 @@ typedef struct {
 	u32 stamp; /* the macro expansion that wrote it, 0 for the program's own text (macro.c) */
 } Node;
 
-#define MAX_NODES (1 << 21)
-#define UNIT_BYTES ((size_t)64 << 20) /* the source of one unit and its names */
+#define MAX_NODES ((1 << 21) >> GAEL_SHRINK)
+#define UNIT_BYTES (((size_t)64 << 20) >> GAEL_SHRINK) /* the source of one unit and its names */
 #define MAX_DEPTH 256
 #define MAX_ERRORS 32
 

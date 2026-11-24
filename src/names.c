@@ -8,7 +8,7 @@
  * doubles (refilled from the tables) when it is half full: a hash puts every name on a page of its own, so a big
  * index would cost a page fault for each name. */
 
-#define NAME_SLOTS (1 << 18) /* the most slots: a power of two, at least twice the names there can be */
+#define NAME_SLOTS ((1 << 18) >> GAEL_SHRINK) /* the most slots: a power of two, at least twice the names there can be */
 
 typedef struct {
 	const char *name; /* lives as long as the table entry it names */

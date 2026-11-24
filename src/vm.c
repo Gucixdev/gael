@@ -209,20 +209,28 @@ static o vm_init(int check)
 	i32 k = size ? heap_order_of(size) : DEFAULT_HEAP_ORDER;
 	o *text;
 	if (!k) die("GAEL_HEAP: give a size of 32K or more, like 64M or 2G");
+#ifdef GAEL_NO_MMAP
+	tables_init(); /* the pool is one block: the tables first, then the heap gets the largest size that is left */
+	g_global_cells = (Cell *)table(MAX_GLOBAL_CELLS, sizeof(Cell));
+#endif
 	for (;; k--) {
 		size_t bytes = (size_t)8 << k;
 		g_heap = (Cell *)reserve(2 * bytes); /* the heap, then the arena area */
 		g_free_order = (u8 *)reserve(bytes >> 5); /* a byte for every 4 cells of the heap */
 		text = reserve(bytes);
 		if (g_heap && g_free_order && text) break;
-		if (g_heap) munmap((o *)g_heap, 2 * bytes);
-		if (g_free_order) munmap(g_free_order, bytes >> 5);
-		if (text) munmap(text, bytes);
+		if (text) release(text, bytes); /* the reverse of the order they were reserved in: the pool is a stack */
+		if (g_free_order) release(g_free_order, bytes >> 5);
+		if (g_heap) release((o *)g_heap, 2 * bytes);
+#ifdef GAEL_NO_MMAP
+		if (k == 12) die("the static pool (GAEL_POOL_BYTES) has no room left for the heap; build with a bigger -DGAEL_POOL_BYTES");
+#else
 		if (k == 12) die("the system gave no address space for the heap");
+#endif
 	}
 	g_text.base = (u8 *)text;
 	g_text.cap = (size_t)8 << k;
-	g_global_cells = (Cell *)table(MAX_GLOBAL_CELLS, sizeof(Cell));
+	if (!g_global_cells) g_global_cells = (Cell *)table(MAX_GLOBAL_CELLS, sizeof(Cell));
 	g_heap_order = k;
 	g_arena_lo = g_arena_top = (i64)1 << k;
 	g_check = check;
