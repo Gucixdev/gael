@@ -7,7 +7,7 @@ test on them.
 
 ## Status
 
-Nothing is proved yet: the folder builds, and the audit and the source scan pass on an empty library.
+Proved (core Lean, axioms propext and Quot.sound only): `Gael.Secded`, the Hamming SECDED (72,64) code of `gems/memlib/bitspace.gael`: a clean cell decodes to itself, any one flipped bit of the 72 is healed, any two are reported lost; `Gael.Layout`: AoS split then join gives the stream back, and the other way. Design: [docs/DESIGN-memlib.md](../docs/DESIGN-memlib.md).
 
 ## Run
 

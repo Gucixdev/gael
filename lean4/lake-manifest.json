@@ -6,7 +6,7 @@
    "name": "holyc",
    "manifestFile": "lake-manifest.json",
    "inherited": false,
-   "dir": "../../lean4",
+   "dir": "../../holyc/lean4",
    "configFile": "lakefile.lean"}],
  "name": "gael_lean",
  "lakeDir": ".lake"}

@@ -3,7 +3,7 @@ open Lake DSL
 
 /- Core Lean only, so a build takes seconds. When a proof needs Mathlib, add it the way vecindex/lean4 does:
    require mathlib from git "https://github.com/leanprover-community/mathlib4.git" @ "v4.26.0" -/
-require holyc from "../../lean4"
+require holyc from "../../holyc/lean4"
 
 package «gael_lean» where
   leanOptions := #[⟨`autoImplicit, false⟩]

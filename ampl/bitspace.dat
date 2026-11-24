@@ -1,0 +1,20 @@
+# ASSUMED, not measured on his hardware: lambda = 25,000 FIT per Mbit on the ground (Schroeder et al., DRAM in the
+# field), 1000 times that in low orbit; ns_op is the gael VM's cost of one operation, rough. ops are counted from
+# gems/memlib/bitspace.gael (7 masked parities: about 14 ops each, plus the case split).
+set CODES := none parity secded64 secded32 tmr;
+set SCRUBS := m1 m10 h1 h6 h24;
+param: w c fixes ops :=
+  none      64  0 0   0
+  parity    64  1 0  20
+  secded64  64  8 1 110
+  secded32  32  7 1  90
+  tmr        1  2 1   8 ;
+param: t :=
+  m1  0.016667
+  m10 0.166667
+  h1  1
+  h6  6
+  h24 24 ;
+param N := 8589934592;       # 2^33 bits = 1 GiB of flags
+param ns_op := 10;
+param max_cpu := 0.02;

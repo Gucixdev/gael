@@ -1,0 +1,10 @@
+; The same lines as Gael/SecdedOracle.lean, from the gem: a word and its check byte, in decimal.
+(enable memlib/bitspace)
+(defn show ((w : u64)) : unit (println "%v %d" w (bitspace-check w)))
+(show (u64 0))
+(show (u64 1))
+(show (u64 0xffffffffffffffff))
+(let ((x : u64 1))
+  (for (_ 0 200)
+    (set x (+ (* x (u64 6364136223846793005)) (u64 1442695040888963407)))
+    (show x)))

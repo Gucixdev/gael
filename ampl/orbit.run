@@ -1,0 +1,4 @@
+model bitspace.mod; data bitspace.dat;
+let lambda := 2.4e-8; let max_loss := 1e-3;
+option solver highs; solve;
+printf "orbit: "; for {k in CODES, s in SCRUBS: x[k,s] > 0.5} printf "%s every %s, loss %g/h, cpu %g, extra %g bits\n", k, s, loss[k,s], cpu[k,s], extra[k];

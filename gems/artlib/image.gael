@@ -1,4 +1,4 @@
-(gem artlib/image :version "0.1.0")
+(gem artlib/image :version "0.1.0" :requires (memlib/layout))
 ; An RGBA image kept as four planes, one vec of bytes each (SoA): the filters, the blends and the noise read one plane
 ; at a time, and a plane of 8-bit values is a quarter of the memory of a vec of packed ints. A copy of an Image is the
 ; same image, as with a vec. The edge is safe: reading outside gives 0 (transparent black), writing outside does nothing.
@@ -15,7 +15,7 @@
 ;   (img.invert) (img.gray) (img.threshold 128) (img.brighten 30) (img.blur 2) (img.flip-x)
 ;   (img.shade f)                         ; every pixel from f(u v), u and v in 0..1: a node, see artlib/procedural
 ;   (to-aos img)                          ; the bytes as R G B A R G B A ... in a vec, for a file or the GPU
-;   (Image.from-aos w h bytes)            ; and back
+;   (Image.from-aos w h bytes)            ; and back (transparent black when the bytes are not 4 a pixel); memlib/layout does the moving
 
 (struct Image
   (w : int 0)
@@ -154,16 +154,17 @@
 ;; ---- the layout of a file: AoS ----
 
 (defn to-aos ((img : Image)) : (vec u8)
-  (let ((out : (vec u8) (vec)))
-    (for (i 0 (* img.w img.h))
-      (push out (get img.r i)) (push out (get img.g i)) (push out (get img.b i)) (push out (get img.a i)))
-    out))
+  (match (aos-join (vec img.r img.g img.b img.a))
+    ((some bytes) bytes)
+    (none (vec))))
 
+; transparent black when BYTES is not 4 bytes a pixel of W x H
 (defn Image.from-aos ((w : int) (h : int) (bytes : (vec u8))) : Image
   (let ((img (Image :w w :h h)))
-    (for (i 0 (* w h))
-      (push img.r (get bytes (* 4 i))) (push img.g (get bytes (+ (* 4 i) 1)))
-      (push img.b (get bytes (+ (* 4 i) 2))) (push img.a (get bytes (+ (* 4 i) 3))))
+    (match (if (= (len bytes) (* 4 w h)) (aos-split bytes 4) none)
+      ((some planes)
+        (set img.r (get planes 0)) (set img.g (get planes 1)) (set img.b (get planes 2)) (set img.a (get planes 3)))
+      (none (for (_ 0 (* w h)) (push img.r (u8 0)) (push img.g (u8 0)) (push img.b (u8 0)) (push img.a (u8 0)))))
     img))
 
 (@test "a pixel, the edge and a rectangle"
@@ -222,6 +223,11 @@
     (assert (= (color-r (img.get 1 0)) 85))
     (img.brighten 200)
     (assert (= (color-r (img.get 1 0)) 255))))
+
+(@test "from-aos with the wrong number of bytes is transparent black, not a broken image"
+  (let ((back (Image.from-aos 2 2 (vec (u8 1) (u8 2) (u8 3)))))
+    (assert (= (len back.r) 4))
+    (assert (= (back.get 1 1) 0))))
 
 (@test "shade, and the layout both ways"
   (let ((img (Image.new 2 2)))

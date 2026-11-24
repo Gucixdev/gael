@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# ampl/run - solve ampl/bitspace.mod for the ground and the orbit numbers of bitspace.dat and hold the gem to the
+# answer: the ground optimum must be the code the gem builds (SECDED (72,64): 64 data and 8 check bits per cell).
+# Exit 1 when the optimum changed or the gem no longer matches. Needs ampl-run (docs/DESIGN-memlib.md, Numbers).
+cd "$(dirname "$0")" || exit 2
+ground=$(ampl-run ground.run 2>&1 | grep '^ground:') || { echo "FAIL ampl-run"; exit 1; }
+orbit=$(ampl-run orbit.run 2>&1 | grep '^orbit:')
+echo "$ground"; echo "$orbit"
+case $ground in *"secded64 every h24"*) ;; *) echo "FAIL ground optimum is no longer secded64 every h24"; exit 1 ;; esac
+grep -q "Hamming SECDED (72,64)" ../gems/memlib/bitspace.gael || { echo "FAIL the gem is not SECDED (72,64)"; exit 1; }
+echo "ok   the ground optimum is the code the gem builds"

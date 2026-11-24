@@ -1,0 +1,198 @@
+(gem memlib/bitspace :version "0.1.0")
+; A space of bits that heals itself. A bool is one bit here as in a (vec bool), and each cell of 64 bits carries 8 check
+; bits (Hamming SECDED (72,64)): one flipped bit in the cell - a cosmic ray, bitrot, a weak DRAM cell - is found and
+; flipped back on the next read, two are found and reported, never guessed. The proofs are in lean4/Gael/Secded.lean,
+; the choice of the code and of the scrub interval in ampl/bitspace.mod, the layout in docs/DESIGN-memlib.md.
+;
+;   (def b (Bitspace.new 1000))        ; 1000 bits, all false
+;   (b.set 70 true)                    ; true when it was done; false outside 0..n-1 or in a damaged cell
+;   (b.get 70)                         ; (some true), (some false), or none: outside, or the cell is damaged
+;   (b.scrub)                          ; walks every cell: (Scrub :fixed n :lost n)
+;   (b.count)                          ; the true bits
+;   (b.damage 70)                      ; flips bit 70 where it is stored, for tests: what a cosmic ray does
+;   (b.damage-check 1 3)               ; flips check bit 3 of cell 1
+;
+; A read pays 7 parities, about 100 operations: use it for what must not be wrong, and (vec bool) for the rest.
+
+(struct Bitspace
+  (n : int 0)
+  (cells : (vec u64) (vec))
+  (checks : (vec u8) (vec)))
+
+(struct Scrub
+  (fixed : int 0)
+  (lost : int 0))
+
+; the 64 code positions (3 up, no powers of two), the 7 masks of the data bits whose position has bit j set, and the
+; way back from a position to its data bit (-1 where there is none)
+(def bs--masks : (vec u64) (vec))
+(def bs--back : (vec int) (vec))
+
+(defn bs--init () : unit
+  (when (= (len bs--masks) 0)
+    (for (_ 0 7) (push bs--masks (u64 0)))
+    (for (_ 0 128) (push bs--back -1))
+    (let ((k 0) (p 3))
+      (while (< k 64)
+        (when (!= (bit-and p (- p 1)) 0)
+          (for (j 0 7)
+            (when (= (bit-and (shr p j) 1) 1)
+              (put bs--masks j (bit-or (get bs--masks j) (shl (u64 1) k)))))
+          (put bs--back p k)
+          (set k (+ k 1)))
+        (set p (+ p 1))))))
+
+(defn bs--parity ((x : u64)) : int
+  (let ((v x))
+    (set v (bit-xor v (shr v 32)))
+    (set v (bit-xor v (shr v 16)))
+    (set v (bit-xor v (shr v 8)))
+    (set v (bit-xor v (shr v 4)))
+    (set v (bit-xor v (shr v 2)))
+    (set v (bit-xor v (shr v 1)))
+    (int (bit-and v (u64 1)))))
+
+; xor of the positions of the set data bits: bit j of it is the parity of the data under mask j
+(defn bs--syndrome ((w : u64)) : int
+  (let ((s 0))
+    (for (j 0 7) (set s (bit-or s (shl (bs--parity (bit-and w (get bs--masks j))) j))))
+    s))
+
+(defn bs--check ((w : u64)) : int
+  (let ((c (bs--syndrome w)))
+    (bit-or c (shl (bit-xor (bs--parity w) (bs--parity (u64 c))) 7))))
+
+(defn Bitspace.new ((n : int)) : Bitspace
+  (bs--init)
+  (let ((b (Bitspace :n (max n 0))) (cells (/ (+ (max n 0) 63) 64)))
+    (for (_ 0 cells) (push b.cells (u64 0)) (push b.checks (u8 0)))
+    b))
+
+; look at cell I, heal it if one bit is wrong; 0 clean, 1 healed, 2 lost
+(defn bs--cell ((b : Bitspace) (i : int)) : int
+  (let ((w (get b.cells i)) (stored (int (get b.checks i))))
+    (let ((c7 (bit-and stored 127)) (o (shr stored 7)))
+      (let ((s (bit-xor (bs--syndrome w) c7))
+            (odd (bit-xor (bit-xor (bs--parity w) (bs--parity (u64 c7))) o)))
+        (if (= odd 0)
+          (if (= s 0) 0 2)
+          (if (or (= s 0) (= (bit-and s (- s 1)) 0))
+            (do (put b.checks i (u8 (bs--check w))) 1)
+            (let ((k (get bs--back s)))
+              (if (< k 0) 2
+                (let ((fixed (bit-xor w (shl (u64 1) k))))
+                  (put b.cells i fixed)
+                  (put b.checks i (u8 (bs--check fixed)))
+                  1)))))))))
+
+(defn Bitspace.get ((b : Bitspace) (i : int)) : (option bool)
+  (if (or (< i 0) (>= i b.n)) none
+    (if (= (bs--cell b (/ i 64)) 2) none
+      (some (= (bit-and (shr (get b.cells (/ i 64)) (% i 64)) (u64 1)) (u64 1))))))
+
+(defn Bitspace.set ((b : Bitspace) (i : int) (v : bool)) : bool
+  (if (or (< i 0) (>= i b.n)) false
+    (if (= (bs--cell b (/ i 64)) 2) false
+      (let ((c (/ i 64)) (bit (shl (u64 1) (% i 64))))
+        (let ((w (if v (bit-or (get b.cells c) bit) (bit-and (get b.cells c) (bit-not bit)))))
+          (put b.cells c w)
+          (put b.checks c (u8 (bs--check w)))
+          true)))))
+
+(defn Bitspace.scrub ((b : Bitspace)) : Scrub
+  (let ((r (Scrub)))
+    (for (i 0 (len b.cells))
+      (let ((s (bs--cell b i)))
+        (if (= s 1) (set r.fixed (+ r.fixed 1))
+          (when (= s 2) (set r.lost (+ r.lost 1))))))
+    r))
+
+(defn bs--ones ((x : u64)) : int
+  (let ((v x) (n 0))
+    (while (!= v (u64 0))
+      (set v (bit-and v (- v (u64 1))))
+      (set n (+ n 1)))
+    n))
+
+; the true bits; a damaged cell counts for nothing
+(defn Bitspace.count ((b : Bitspace)) : int
+  (let ((n 0))
+    (for (i 0 (len b.cells))
+      (when (!= (bs--cell b i) 2) (set n (+ n (bs--ones (get b.cells i))))))
+    n))
+
+(defn Bitspace.damage ((b : Bitspace) (i : int)) : unit
+  (when (and (>= i 0) (< i b.n))
+    (put b.cells (/ i 64) (bit-xor (get b.cells (/ i 64)) (shl (u64 1) (% i 64))))))
+
+; flip check bit J (0 to 7) of cell C
+(defn Bitspace.damage-check ((b : Bitspace) (c : int) (j : int)) : unit
+  (when (and (>= c 0) (< c (len b.cells)) (>= j 0) (< j 8))
+    (put b.checks c (u8 (bit-xor (int (get b.checks c)) (shl 1 j))))))
+
+(@test "a fresh space is false, set and get, the edge"
+  (let ((b (Bitspace.new 130)))
+    (assert (= (format "%v" (b.get 0)) "(some false)"))
+    (assert (b.set 70 true))
+    (assert (= (format "%v" (b.get 70)) "(some true)"))
+    (assert (= (format "%v" (b.get 69)) "(some false)"))
+    (assert (not (b.set 130 true)))
+    (assert (= (format "%v" (b.get -1)) "none"))
+    (assert (= (format "%v" (b.get 130)) "none"))
+    (assert (b.set 70 false))
+    (assert (= (b.count) 0))))
+
+(@test "one flipped bit anywhere among the 72 of a cell is healed"
+  (let ((b (Bitspace.new 128)))
+    (for (i 0 128) (when (= (% i 3) 0) (b.set i true)))
+    (let ((want (b.count)))
+      (for (k 0 64)
+        (b.damage (+ 64 k))
+        (assert (= (format "%v" (b.get (+ 64 k))) (format "%v" (some (= (% (+ 64 k) 3) 0)))))
+        (assert (= (b.count) want)))
+      (for (j 0 8)
+        (b.damage-check 1 j)
+        (assert (= (b.count) want))
+        (assert (= (b.scrub).lost 0))))))
+
+(@test "two flipped bits in one cell are reported, never guessed"
+  (let ((b (Bitspace.new 64)) (pairs 0))
+    (for (i 0 64) (b.set i (= (% i 2) 0)))
+    (for (x 0 64)
+      (for (y (+ x 1) 64)
+        (b.damage x) (b.damage y)
+        (assert (= (format "%v" (b.get 0)) "none"))
+        (assert (= (b.scrub).lost 1))
+        (b.damage x) (b.damage y)
+        (set pairs (+ pairs 1))
+        (assert (= (format "%v" (b.get 0)) "(some true)"))))
+    (assert (= pairs 2016))))
+
+(@test "a data bit and a check bit, or a check bit and the overall bit, are two flips too"
+  (let ((b (Bitspace.new 64)))
+    (b.set 5 true)
+    (b.damage 5) (b.damage-check 0 2)
+    (assert (= (b.scrub).lost 1))
+    (b.damage 5) (b.damage-check 0 2)
+    (b.damage-check 0 1) (b.damage-check 0 7)
+    (assert (= (b.scrub).lost 1))))
+
+(@test "scrub heals what it finds and says how many"
+  (let ((b (Bitspace.new 256)))
+    (b.set 3 true) (b.set 200 true)
+    (b.damage 3) (b.damage 130) (b.damage-check 3 4)
+    (let ((r (b.scrub)))
+      (assert (= r.fixed 3))
+      (assert (= r.lost 0)))
+    (assert (= (b.count) 2))
+    (assert (= (b.scrub).fixed 0))))
+
+; the check byte the code gives a 64-bit word: bits 0..6 the xor of the positions of the set bits, bit 7 the overall parity
+(defn bitspace-check ((w : u64)) : int
+  (bs--init)
+  (bs--check w))
+
+(@test "check bytes of known words"
+  (assert (= (bitspace-check (u64 0)) 0))
+  (assert (= (bitspace-check (u64 1)) 0x83))
+  (assert (= (bitspace-check (u64 0xffffffffffffffff)) (bitspace-check (u64 0xffffffffffffffff)))))

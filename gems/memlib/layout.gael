@@ -1,0 +1,55 @@
+(gem memlib/layout :version "0.1.0")
+; AoS and SoA over a flat stream of bytes. A file, a GPU buffer and a network packet want the fields of a record side
+; by side (AoS: R G B A R G B A ...); a loop over one field, a filter, a SIMD lane want one field's values side by side
+; (SoA: R R R ..., G G G ...). The stride is the number of fields in a record.
+;
+;   (aos-split bytes 4)    ; (some planes): plane j holds bytes j, j + 4, j + 8, ...; none when 4 does not divide the length
+;   (aos-join planes)      ; (some bytes): the planes interleaved again; none when the planes differ in length
+;
+; Split then join gives the stream back, and join then split the planes (proved: lean4/Gael/Layout.lean).
+
+(defn aos-split ((bytes : (vec u8)) (stride : int)) : (option (vec (vec u8)))
+  (if (or (<= stride 0) (!= (% (len bytes) stride) 0)) none
+    (let ((planes : (vec (vec u8)) (vec)))
+      (for (_ 0 stride) (push planes (vec)))
+      (for (i 0 (len bytes))
+        (push (get planes (% i stride)) (get bytes i)))
+      (some planes))))
+
+(defn aos-join ((planes : (vec (vec u8)))) : (option (vec u8))
+  (if (= (len planes) 0) (some (vec))
+    (let ((rows (len (get planes 0))) (same true) (out : (vec u8) (vec)))
+      (for (p planes) (when (!= (len p) rows) (set same false)))
+      (if (not same) none
+        (do
+          (for (r 0 rows)
+            (for (j 0 (len planes))
+              (push out (get (get planes j) r))))
+          (some out))))))
+
+(@test "split puts every stride-th byte in a plane"
+  (let ((b : (vec u8) (vec (u8 1) (u8 2) (u8 3) (u8 4) (u8 5) (u8 6))))
+    (match (aos-split b 3)
+      ((some p)
+        (assert (= (format "%v" (get p 0)) "(vec 1 4)"))
+        (assert (= (format "%v" (get p 2)) "(vec 3 6)")))
+      (none (assert false)))
+    (match (aos-split b 2) ((some p) (assert (= (len p) 2))) (none (assert false)))))
+
+(@test "a stride that does not divide the length, or is not positive, is none"
+  (let ((b : (vec u8) (vec (u8 1) (u8 2) (u8 3))))
+    (assert (= (format "%v" (aos-split b 2)) "none"))
+    (assert (= (format "%v" (aos-split b 0)) "none"))
+    (assert (= (format "%v" (aos-split b -1)) "none"))))
+
+(@test "join undoes split, and planes of different lengths are none"
+  (let ((b : (vec u8) (vec)))
+    (for (i 0 60) (push b (u8 (* i 7))))
+    (for (s 1 7)
+      (when (= (% 60 s) 0)
+        (match (aos-split b s)
+          ((some p) (match (aos-join p) ((some back) (assert (= (format "%v" back) (format "%v" b)))) (none (assert false))))
+          (none (assert false)))))
+    (let ((p : (vec (vec u8)) (vec (vec (u8 1) (u8 2)) (vec (u8 3)))))
+      (assert (= (format "%v" (aos-join p)) "none")))
+    (assert (= (format "%v" (aos-join (vec))) "(some (vec))"))))

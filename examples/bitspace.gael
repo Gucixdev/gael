@@ -1,0 +1,35 @@
+; A space of bits that heals itself: 64 data bits and 8 check bits per cell (Hamming SECDED, proved in lean4/). One
+; flipped bit - a cosmic ray, bitrot - is found and flipped back on the next read; two in one cell are reported, never
+; guessed. (b.damage i) does what a cosmic ray does, so the program can test its own recovery. Then AoS and SoA.
+(enable memlib/bitspace memlib/layout)
+
+(defn show ((o : (option bool))) : string
+  (match o ((some v) (if v "true" "false")) (none "damaged")))
+
+(def b (Bitspace.new 1000))
+(b.set 70 true)
+(b.set 71 true)
+(println "set 70 and 71, count %d" (b.count))
+
+(b.damage 70)
+(println "one ray in bit 70: get 70 = %s, get 71 = %s" (show (b.get 70)) (show (b.get 71)))
+
+(b.damage 71)
+(b.damage 100)
+(println "two rays in one cell: get 71 = %s, scrub lost %d" (show (b.get 71)) (b.scrub).lost)
+(println "another cell is fine: get 900 = %s" (show (b.get 900)))
+
+(b.damage 71)
+(b.damage 100)
+(def r (b.scrub))
+(println "the two flipped back: fixed %d, lost %d, count %d" r.fixed r.lost (b.count))
+(b.damage-check 0 5)
+(println "a check bit: scrub fixed %d" (b.scrub).fixed)
+
+(def bytes : (vec u8) (vec (u8 10) (u8 20) (u8 30) (u8 11) (u8 21) (u8 31)))
+(match (aos-split bytes 3)
+  ((some planes)
+    (println "SoA %v" planes)
+    (println "AoS %v" (aos-join planes)))
+  (none (println "not a whole number of records")))
+(println "stride 4: %v" (aos-split bytes 4))

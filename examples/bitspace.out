@@ -1,0 +1,9 @@
+set 70 and 71, count 2
+one ray in bit 70: get 70 = true, get 71 = true
+two rays in one cell: get 71 = damaged, scrub lost 1
+another cell is fine: get 900 = false
+the two flipped back: fixed 0, lost 0, count 2
+a check bit: scrub fixed 1
+SoA (vec (vec 10 11) (vec 20 21) (vec 30 31))
+AoS (some (vec 10 20 30 11 21 31))
+stride 4: none
