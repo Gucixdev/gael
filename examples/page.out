@@ -1,0 +1,7 @@
+<!doctype html><html><head><title>Kite &amp; crew</title><script src="/htmx.min.js"></script></head><body><main id="log"><h1>Kite</h1>
+<p>A <em>small</em> ship. See <a href="/log">the log</a>.</p>
+<ul>
+<li>cook: <strong>bo</strong></li>
+<li>pilot: ann</li>
+</ul>
+<p>&lt;script&gt;no()&lt;/script&gt;</p></main><button hx-get="/log?page=2" hx-target="#log" hx-swap="beforeend">more</button></body></html>

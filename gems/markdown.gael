@@ -1,0 +1,192 @@
+(gem markdown :version "0.1.0" :requires (html))
+; Markdown to HTML, the part that is written every day: headings (# to ######), paragraphs, fenced code (``` and a
+; language), block quotes, bullet lists (- * +), numbered lists, horizontal rules (---), and in a line `code`,
+; **strong**, *emphasis*, [text](url) and a backslash before a character that would otherwise mean something. Raw HTML
+; in the text is escaped, never passed through, so a page made from someone's text cannot carry a script. Nested lists
+; and reference links are not read: they come out as the text they are.
+;
+;   (markdown-html "# Title\n\nsome *text*")   ; <h1>Title</h1>\n<p>some <em>text</em></p>
+
+(defn md--starts ((s : string) (p : string)) : bool
+  (and (>= (len s) (len p)) (= (substr s 0 (len p)) p)))
+
+; where the byte C first is in S from FROM, or -1
+(defn md--find ((s : string) (c : int) (from : int)) : int
+  (let ((i from) (at -1) (n (len s)))
+    (while (and (< i n) (< at 0))
+      (if (= (byte s i) c) (set at i) (set i (+ i 1))))
+    at))
+
+; where ** first is in S from FROM, or -1
+(defn md--find2 ((s : string) (from : int)) : int
+  (let ((i from) (at -1) (n (len s)))
+    (while (and (< (+ i 1) n) (< at 0))
+      (if (and (= (byte s i) 42) (= (byte s (+ i 1)) 42)) (set at i) (set i (+ i 1))))
+    at))
+
+; S from I as one inline element, writing it to PARTS: the index after it, or -1 when I starts none
+(defn md--element ((s : string) (i : int) (parts : (vec string))) : int
+  (let ((c (byte s i)) (n (len s)))
+    (if (= c 96)
+      (let ((j (md--find s 96 (+ i 1))))
+        (if (> j (+ i 1))
+          (do (push parts (format "<code>%s</code>" (html-escape (substr s (+ i 1) j)))) (+ j 1))
+          -1))
+      (if (and (= c 42) (< (+ i 1) n) (= (byte s (+ i 1)) 42))
+        (let ((j (md--find2 s (+ i 2))))
+          (if (> j (+ i 2))
+            (do (push parts (format "<strong>%s</strong>" (md--inline (substr s (+ i 2) j)))) (+ j 2))
+            -1))
+        (if (= c 42)
+          (let ((j (md--find s 42 (+ i 1))))
+            (if (> j (+ i 1))
+              (do (push parts (format "<em>%s</em>" (md--inline (substr s (+ i 1) j)))) (+ j 1))
+              -1))
+          (if (= c 91)
+            (md--link s i parts)
+            -1))))))
+
+; [text](url) at I
+(defn md--link ((s : string) (i : int) (parts : (vec string))) : int
+  (let ((close (md--find s 93 (+ i 1))) (n (len s)))
+    (if (and (> close 0) (< (+ close 1) n) (= (byte s (+ close 1)) 40))
+      (let ((end (md--find s 41 (+ close 2))))
+        (if (> end 0)
+          (do
+            (push parts (format "<a href=\"%s\">%s</a>" (html-escape (substr s (+ close 2) end))
+                                (md--inline (substr s (+ i 1) close))))
+            (+ end 1))
+          -1))
+      -1)))
+
+(defn md--inline ((s : string)) : string
+  (let ((parts : (vec string) (vec)) (seg 0) (i 0) (n (len s)))
+    (while (< i n)
+      (let ((c (byte s i)) (piece : (vec string) (vec)) (next -1))
+        (when (or (= c 96) (= c 42) (= c 91))
+          (set next (md--element s i piece)))
+        (if (>= next 0)
+          (do
+            (push parts (html-escape (substr s seg i)))
+            (push parts (join piece ""))
+            (set i next)
+            (set seg next))
+          (if (= c 92)
+            (do
+              (push parts (html-escape (substr s seg i)))
+              (set seg (min n (+ i 1)))
+              (set i (min n (+ i 2))))
+            (set i (+ i 1))))))
+    (push parts (html-escape (substr s seg n)))
+    (join parts "")))
+
+;; ---- blocks ----
+
+(defn md--heading ((line : string)) : int
+  (let ((k 0) (n (len line)))
+    (while (and (< k n) (< k 7) (= (byte line k) 35)) (set k (+ k 1)))
+    (if (and (>= k 1) (<= k 6) (< k n) (= (byte line k) 32)) k 0)))
+
+(defn md--rule? ((line : string)) : bool
+  (let ((t (trim line)))
+    (and (>= (len t) 3)
+         (or (= (len (join (split t "-") "")) 0) (= (len (join (split t "*") "")) 0) (= (len (join (split t "_") "")) 0)))))
+
+(defn md--ul ((line : string)) : (option string)
+  (if (or (md--starts line "- ") (md--starts line "* ") (md--starts line "+ "))
+    (some (substr line 2 (len line)))
+    none))
+
+(defn md--ol ((line : string)) : (option string)
+  (let ((k 0) (n (len line)))
+    (while (and (< k n) (>= (byte line k) 48) (<= (byte line k) 57)) (set k (+ k 1)))
+    (if (and (> k 0) (< (+ k 1) n) (= (byte line k) 46) (= (byte line (+ k 1)) 32))
+      (some (substr line (+ k 2) n))
+      none)))
+
+(defn md--special ((line : string)) : bool
+  (or (md--starts line "```") (md--starts line ">") (> (md--heading line) 0) (md--rule? line)
+      (match (md--ul line) ((some _) true) (none false))
+      (match (md--ol line) ((some _) true) (none false))))
+
+(defn md--fence ((lines : (vec string)) (i : int) (out : (vec string))) : int
+  (let ((info (trim (substr (get lines i) 3 (len (get lines i))))) (body : (vec string) (vec)) (k (+ i 1)) (done false))
+    (while (and (< k (len lines)) (not done))
+      (if (md--starts (get lines k) "```")
+        (set done true)
+        (do (push body (html-escape (get lines k))) (set k (+ k 1)))))
+    (push out (if (= info "")
+                (format "<pre><code>%s</code></pre>" (join body "\n"))
+                (format "<pre><code class=\"language-%s\">%s</code></pre>" (html-escape info) (join body "\n"))))
+    (+ k 1)))
+
+(defn md--quote ((lines : (vec string)) (i : int) (out : (vec string))) : int
+  (let ((inner : (vec string) (vec)) (k i))
+    (while (and (< k (len lines)) (md--starts (get lines k) ">"))
+      (let ((l (substr (get lines k) 1 (len (get lines k)))))
+        (push inner (if (md--starts l " ") (substr l 1 (len l)) l))
+        (set k (+ k 1))))
+    (push out (format "<blockquote>\n%s\n</blockquote>" (markdown-html (join inner "\n"))))
+    k))
+
+(defn md--list ((lines : (vec string)) (i : int) (out : (vec string)) (ordered : bool)) : int
+  (let ((items : (vec string) (vec)) (k i) (going true))
+    (while (and going (< k (len lines)))
+      (match (if ordered (md--ol (get lines k)) (md--ul (get lines k)))
+        ((some t) (push items (format "<li>%s</li>" (md--inline (trim t)))) (set k (+ k 1)))
+        (none (set going false))))
+    (push out (format "<%s>\n%s\n</%s>" (if ordered "ol" "ul") (join items "\n") (if ordered "ol" "ul")))
+    k))
+
+(defn md--paragraph ((lines : (vec string)) (i : int) (out : (vec string))) : int
+  (let ((k i) (text : (vec string) (vec)) (going true))
+    (while (and going (< k (len lines)))
+      (let ((l (get lines k)))
+        (if (or (= (len (trim l)) 0) (and (> k i) (md--special l)))
+          (set going false)
+          (do (push text (trim l)) (set k (+ k 1))))))
+    (push out (format "<p>%s</p>" (md--inline (join text "\n"))))
+    k))
+
+(defn md--block ((lines : (vec string)) (i : int) (out : (vec string))) : int
+  (let ((line (get lines i)))
+    (if (= (len (trim line)) 0) (+ i 1)
+      (if (md--starts line "```") (md--fence lines i out)
+        (if (md--starts line ">") (md--quote lines i out)
+          (if (> (md--heading line) 0)
+            (let ((k (md--heading line)))
+              (push out (format "<h%d>%s</h%d>" k (md--inline (trim (substr line k (len line)))) k))
+              (+ i 1))
+            (if (md--rule? line) (do (push out "<hr>") (+ i 1))
+              (match (md--ul line)
+                ((some _) (md--list lines i out false))
+                (none (match (md--ol line)
+                        ((some _) (md--list lines i out true))
+                        (none (md--paragraph lines i out))))))))))))
+
+(defn markdown-html ((text : string)) : string
+  (let ((lines (split text "\n")) (out : (vec string) (vec)) (i 0))
+    (while (< i (len lines))
+      (set i (md--block lines i out)))
+    (join out "\n")))
+
+(@test "headings, paragraphs and the line between them"
+  (assert (= (markdown-html "# Title\n\nsome *text* and **more**\nsecond line")
+             "<h1>Title</h1>\n<p>some <em>text</em> and <strong>more</strong>\nsecond line</p>"))
+  (assert (= (markdown-html "###### six\n####### seven") "<h6>six</h6>\n<p>####### seven</p>")))
+
+(@test "code, links and escapes in a line"
+  (assert (= (markdown-html "use `a < b` or [the docs](http://x.y/?a=1&b=2)")
+             "<p>use <code>a &lt; b</code> or <a href=\"http://x.y/?a=1&amp;b=2\">the docs</a></p>"))
+  (assert (= (markdown-html "2 \\* 3 * 4") "<p>2 * 3 * 4</p>"))
+  (assert (= (markdown-html "a lone * star") "<p>a lone * star</p>")))
+
+(@test "raw html is escaped"
+  (assert (= (markdown-html "<script>alert(1)</script>") "<p>&lt;script&gt;alert(1)&lt;/script&gt;</p>")))
+
+(@test "lists, quotes, rules and fences"
+  (assert (= (markdown-html "- a\n- **b**\n\n1. x\n2. y")
+             "<ul>\n<li>a</li>\n<li><strong>b</strong></li>\n</ul>\n<ol>\n<li>x</li>\n<li>y</li>\n</ol>"))
+  (assert (= (markdown-html "> quoted *text*\n> more\n\n---") "<blockquote>\n<p>quoted <em>text</em>\nmore</p>\n</blockquote>\n<hr>"))
+  (assert (= (markdown-html "```gael\n(a < b)\n```\nafter")
+             "<pre><code class=\"language-gael\">(a &lt; b)</code></pre>\n<p>after</p>")))

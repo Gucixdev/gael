@@ -1,0 +1,119 @@
+(gem html :version "0.1.0")
+; HTML written as a stream, with htmx's attributes as one call. The builder keeps the open tags on a stack, so a page
+; cannot come out with a tag left open, and every text goes through `html-escape` unless it says `raw`.
+;
+;   (def h (Html.new))
+;   (h.open "div") (h.attr "class" "card")     ; attributes go right after (h.open ...), before any content
+;   (h.hx "get" "/more") (h.hx "target" "#list") (h.hx "swap" "outerHTML")   ; hx-get="/more" and so on
+;     (h.el "p" "a < b")                       ; <p>a &lt; b</p>
+;     (h.open "input") (h.attr "name" "q")     ; void tags (br img input hr meta link) close themselves
+;   (h.close)                                  ; the innermost tag that is open
+;   (h.finish)                                 ; closes whatever is still open, gives the text
+;
+; What is written is only ever text, so a server answers a request with (h.finish) and a test compares strings.
+
+(struct Html
+  (parts : (vec string) (vec))
+  (stack : (vec string) (vec))
+  (pending : (vec bool) (vec false)))
+
+(defn Html.new () : Html (Html))
+
+(defn html-void? ((tag : string)) : bool
+  (or (= tag "br") (= tag "img") (= tag "input") (= tag "hr") (= tag "meta") (= tag "link")
+      (= tag "area") (= tag "base") (= tag "col") (= tag "source") (= tag "wbr")))
+
+; & < > and " as entities; what has none of them is returned as it is
+(defn html-escape ((s : string)) : string
+  (let ((parts : (vec string) (vec)) (seg 0) (n (len s)))
+    (for (i 0 n)
+      (let ((c (byte s i)))
+        (when (or (= c 38) (= c 60) (= c 62) (= c 34))
+          (push parts (substr s seg i))
+          (set seg (+ i 1))
+          (push parts (match c (38 "&amp;") (60 "&lt;") (62 "&gt;") (_ "&quot;"))))))
+    (if (= seg 0) s
+      (do (push parts (substr s seg n)) (join parts "")))))
+
+; the start tag is finished with > once something follows it
+(defn html--flush ((h : Html)) : unit
+  (when (get h.pending 0)
+    (push h.parts ">")
+    (put h.pending 0 false)
+    (when (html-void? (get h.stack (- (len h.stack) 1)))
+      (pop h.stack))))
+
+(defn Html.open ((h : Html) (tag : string)) : unit
+  (html--flush h)
+  (push h.parts (format "<%s" tag))
+  (push h.stack tag)
+  (put h.pending 0 true))
+
+(defn Html.attr ((h : Html) (name : string) (value : string)) : unit
+  (assert (get h.pending 0) "an attribute goes right after (h.open ...), before text or another tag")
+  (push h.parts (format " %s=\"%s\"" name (html-escape value))))
+
+; an attribute without a value: (h.flag "disabled")
+(defn Html.flag ((h : Html) (name : string)) : unit
+  (assert (get h.pending 0) "an attribute goes right after (h.open ...), before text or another tag")
+  (push h.parts (format " %s" name)))
+
+; htmx: (h.hx "get" "/more") writes hx-get="/more"
+(defn Html.hx ((h : Html) (name : string) (value : string)) : unit
+  (Html.attr h (format "hx-%s" name) value))
+
+(defn Html.text ((h : Html) (s : string)) : unit
+  (html--flush h)
+  (push h.parts (html-escape s)))
+
+(defn Html.raw ((h : Html) (s : string)) : unit
+  (html--flush h)
+  (push h.parts s))
+
+(defn Html.close ((h : Html)) : unit
+  (html--flush h)
+  (match (pop h.stack)
+    ((some tag) (push h.parts (format "</%s>" tag)))
+    (none (assert false "(h.close) with no tag open"))))
+
+; a tag with only text in it
+(defn Html.el ((h : Html) (tag : string) (s : string)) : unit
+  (Html.open h tag)
+  (Html.text h s)
+  (Html.close h))
+
+(defn Html.finish ((h : Html)) : string
+  (html--flush h)
+  (while (> (len h.stack) 0) (Html.close h))
+  (join h.parts ""))
+
+(@test "text is escaped, tags close, attributes quote"
+  (let ((h (Html.new)))
+    (h.open "div") (h.attr "class" "a\"b")
+    (h.el "p" "x < y & z")
+    (h.open "br")
+    (h.raw "<b>raw</b>")
+    (assert (= (h.finish) "<div class=\"a&quot;b\"><p>x &lt; y &amp; z</p><br><b>raw</b></div>"))))
+
+(@test "htmx attributes and an unclosed tree"
+  (let ((h (Html.new)))
+    (h.open "button") (h.hx "get" "/more") (h.hx "target" "#list") (h.flag "disabled")
+    (h.text "more")
+    (h.open "span")
+    (assert (= (h.finish) "<button hx-get=\"/more\" hx-target=\"#list\" disabled>more<span></span></button>"))))
+
+(@test "a void tag with attributes, then a sibling"
+  (let ((h (Html.new)))
+    (h.open "form")
+    (h.open "input") (h.attr "name" "q")
+    (h.open "input") (h.attr "name" "r")
+    (assert (= (h.finish) "<form><input name=\"q\"><input name=\"r\"></form>"))))
+
+(@test "an empty element and a closed one"
+  (let ((h (Html.new)))
+    (h.open "p") (h.close)
+    (assert (= (h.finish) "<p></p>"))))
+
+(@test "escape leaves plain text as it is"
+  (assert (= (html-escape "plain") "plain"))
+  (assert (= (html-escape "<>&\"") "&lt;&gt;&amp;&quot;")))
