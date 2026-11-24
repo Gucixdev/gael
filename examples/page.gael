@@ -1,0 +1,23 @@
+; A page from markdown, with an htmx button that swaps in more of it, written with the html and markdown gems.
+; What this prints is what a server would answer; the markdown is escaped, so text cannot bring a script along.
+(enable html markdown)
+
+(def intro "# Kite\n\nA *small* ship. See [the log](/log).\n\n- cook: **bo**\n- pilot: ann\n\n<script>no()</script>")
+
+(defn page ((title : string) (body : string)) : string
+  (let ((h (Html.new)))
+    (h.raw "<!doctype html>")
+    (h.open "html")
+    (h.open "head")
+    (h.el "title" title)
+    (h.open "script") (h.attr "src" "/htmx.min.js") (h.close)
+    (h.close)
+    (h.open "body")
+    (h.open "main") (h.attr "id" "log")
+    (h.raw body)
+    (h.close)
+    (h.open "button") (h.hx "get" "/log?page=2") (h.hx "target" "#log") (h.hx "swap" "beforeend")
+    (h.text "more")
+    (h.finish)))
+
+(println "%s" (page "Kite & crew" (markdown-html intro)))
