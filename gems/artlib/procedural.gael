@@ -1,0 +1,120 @@
+(gem artlib/procedural :version "0.1.0" :requires (artlib/image noise))
+; Procedural images from nodes. A node is a function from a place in the image to a color: (fn (float float) int),
+; the place u and v from 0 to 1, the color 0xRRGGBBAA. A node that takes nodes makes a bigger one, so a picture is a
+; small graph written as nested calls, and `(img.shade node)` runs it once per pixel. Nothing is stored between
+; pixels, the same seed makes the same picture on every machine, and a node costs only when it is asked.
+;
+;   (node-solid 0xff0000ff)                    ; one color
+;   (node-gradient top bottom)                 ; from the first color at v = 0 to the second at v = 1
+;   (node-checker 8 a b)                       ; 8 x 8 squares
+;   (node-noise seed 6.0 4)                    ; gray fbm noise: scale, octaves
+;   (node-voronoi seed 5)                      ; gray: the distance to the nearest of 5 x 5 jittered points
+;   (node-mix a b t)                           ; t of the way from a to b (0.0 to 1.0)
+;   (node-mask a b m)                          ; a where the red of m is 0, b where it is 255
+;   (node-tile n a)                            ; a repeated n x n times
+;   (node-warp a by)                           ; a, looked up a little off: by is a node whose red and green push u and v
+
+(defn node-solid ((c : int)) : (fn (float float) int)
+  (fn ((u : float) (v : float)) : int c))
+
+(defn proc--lerp ((a : int) (b : int) (t : float)) : int
+  (+ a (int (* (float (- b a)) t))))
+
+(defn proc--blend ((a : int) (b : int) (t : float)) : int
+  (let ((k (clamp t 0.0 1.0)))
+    (rgba (proc--lerp (color-r a) (color-r b) k) (proc--lerp (color-g a) (color-g b) k)
+          (proc--lerp (color-b a) (color-b b) k) (proc--lerp (color-a a) (color-a b) k))))
+
+(defn proc--gray ((x : float)) : int
+  (let ((v (clamp (int (* x 255.0)) 0 255)))
+    (rgba v v v 255)))
+
+(defn node-gradient ((top : int) (bottom : int)) : (fn (float float) int)
+  (fn ((u : float) (v : float)) : int (proc--blend top bottom v)))
+
+(defn node-checker ((n : int) (a : int) (b : int)) : (fn (float float) int)
+  (fn ((u : float) (v : float)) : int
+    (if (= (% (+ (int (floor (* u (float n)))) (int (floor (* v (float n))))) 2) 0) a b)))
+
+(defn node-noise ((seed : int) (scale : float) (octaves : int)) : (fn (float float) int)
+  (fn ((u : float) (v : float)) : int
+    (proc--gray (+ 0.5 (* 0.5 (fbm2 seed (* u scale) (* v scale) octaves))))))
+
+(defn proc--hash ((seed : int) (ix : int) (iy : int)) : int
+  (let ((h (bit-xor (u32 seed) (* (u32 ix) 0x27d4eb2d) (* (u32 iy) 0x165667b1))))
+    (set h (* (bit-xor h (shr h 15)) 0x85ebca6b))
+    (set h (* (bit-xor h (shr h 13)) 0xc2b2ae35))
+    (int (bit-xor h (shr h 16)))))
+
+; the feature point of the cell (ix iy), somewhere inside it
+(defn proc--point-x ((seed : int) (ix : int) (iy : int)) : float
+  (+ (float ix) (/ (float (bit-and (proc--hash seed ix iy) 65535)) 65536.0)))
+
+(defn proc--point-y ((seed : int) (ix : int) (iy : int)) : float
+  (+ (float iy) (/ (float (bit-and (shr (proc--hash seed ix iy) 16) 65535)) 65536.0)))
+
+(defn node-voronoi ((seed : int) (cells : int)) : (fn (float float) int)
+  (fn ((u : float) (v : float)) : int
+    (let ((x (* u (float cells))) (y (* v (float cells))) (best 9.0)
+          (cx (int (floor (* u (float cells))))) (cy (int (floor (* v (float cells))))))
+      (for (j (- cy 1) (+ cy 2))
+        (for (i (- cx 1) (+ cx 2))
+          (let ((px (- (proc--point-x seed (% (+ i cells) cells) (% (+ j cells) cells)) (float (% (+ i cells) cells)) (- x (float i))))
+                (py 0.0))
+            (set py (- (proc--point-y seed (% (+ i cells) cells) (% (+ j cells) cells)) (float (% (+ j cells) cells)) (- y (float j))))
+            (let ((d (sqrt (+ (* px px) (* py py)))))
+              (when (< d best) (set best d))))))
+      (proc--gray best))))
+
+(defn node-mix ((a : (fn (float float) int)) (b : (fn (float float) int)) (t : float)) : (fn (float float) int)
+  (fn ((u : float) (v : float)) : int (proc--blend (a u v) (b u v) t)))
+
+(defn node-mask ((a : (fn (float float) int)) (b : (fn (float float) int)) (m : (fn (float float) int))) : (fn (float float) int)
+  (fn ((u : float) (v : float)) : int
+    (proc--blend (a u v) (b u v) (/ (float (color-r (m u v))) 255.0))))
+
+(defn proc--frac ((x : float)) : float (- x (floor x)))
+
+(defn node-tile ((n : int) (a : (fn (float float) int))) : (fn (float float) int)
+  (fn ((u : float) (v : float)) : int (a (proc--frac (* u (float n))) (proc--frac (* v (float n))))))
+
+(defn node-warp ((a : (fn (float float) int)) (by : (fn (float float) int))) : (fn (float float) int)
+  (fn ((u : float) (v : float)) : int
+    (let ((w (by u v)))
+      (a (proc--frac (+ u (* 0.1 (- (/ (float (color-r w)) 255.0) 0.5))))
+         (proc--frac (+ v (* 0.1 (- (/ (float (color-g w)) 255.0) 0.5))))))))
+
+(@test "solid, gradient and checker"
+  (let ((img (Image.new 4 4)))
+    (img.shade (node-solid 0x336699ff))
+    (assert (= (img.get 3 3) 0x336699ff))
+    (img.shade (node-gradient 0x000000ff 0xffffffff))
+    (assert (< (color-r (img.get 0 0)) (color-r (img.get 0 3))))
+    (img.shade (node-checker 2 0x000000ff 0xffffffff))
+    (assert (= (img.get 0 0) 0x000000ff))
+    (assert (= (img.get 3 0) 0xffffffff))
+    (assert (= (img.get 3 3) 0x000000ff))))
+
+(@test "mix and mask pick between nodes"
+  (let ((a (node-solid 0x000000ff)) (b (node-solid 0xffffffff)) (img (Image.new 2 1)))
+    (img.shade (node-mix a b 0.5))
+    (assert (= (img.get 0 0) 0x7f7f7fff))
+    (img.shade (node-mask a b (node-checker 2 0x000000ff 0xffffffff)))
+    (assert (= (img.get 0 0) 0xffffffff))
+    (assert (= (img.get 1 0) 0x000000ff))))
+
+(@test "noise and voronoi: the same seed gives the same picture, another seed another"
+  (let ((p (Image.new 8 8)) (q (Image.new 8 8)) (r (Image.new 8 8)))
+    (p.shade (node-noise 1 4.0 3))
+    (q.shade (node-noise 1 4.0 3))
+    (r.shade (node-noise 2 4.0 3))
+    (assert (= (format "%v" (to-aos p)) (format "%v" (to-aos q))))
+    (assert (!= (format "%v" (to-aos p)) (format "%v" (to-aos r))))
+    (p.shade (node-voronoi 3 4))
+    (q.shade (node-voronoi 3 4))
+    (assert (= (format "%v" (to-aos p)) (format "%v" (to-aos q))))))
+
+(@test "a tile repeats its pattern"
+  (let ((img (Image.new 4 1)))
+    (img.shade (node-tile 2 (node-gradient 0x000000ff 0xffffffff)))
+    (assert (= (img.get 0 0) (img.get 2 0)))))

@@ -1,0 +1,21 @@
+; A picture from nodes: a gradient mixed with noise and Voronoi cells, a checkerboard written over a corner with a
+; frame, a blurred band. The same seeds make the same pixels on every machine, so the program prints some of them and
+; the size of the PNG it would write. Add (png-save "art.png" img) to get the file.
+(enable artlib/image artlib/procedural formatlib/png)
+
+(def img (Image.new 96 96))
+(img.shade (node-mix (node-gradient 0x1a1a40ff 0xff8040ff)
+                     (node-mask (node-noise 7 5.0 4) (node-voronoi 3 6) (node-noise 11 3.0 2)) 0.55))
+
+(def tile (Image.new 24 24))
+(tile.shade (node-checker 6 0xffffffff 0x202020ff))
+(img.write tile 4 4)
+(img.frame 4 4 24 24 1 0xffcc00ff)
+
+(def band (img.slice 48 96))
+(band.blur 1)
+(img.write band 0 48)
+
+(println "size %d x %d" img.w img.h)
+(println "corner %x, frame %x, checker %x" (img.get 10 10) (img.get 4 10) (img.get 9 5))
+(println "png %d bytes" (len (png-bytes img)))

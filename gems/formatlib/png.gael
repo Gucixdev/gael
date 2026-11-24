@@ -1,0 +1,94 @@
+(gem formatlib/png :version "0.1.0" :requires (artlib/image))
+; PNG out. The scanlines go into the file as they are, in stored deflate blocks: no compression, a file about the size
+; of the pixels, and a coder that is a page of code and cannot be wrong about a Huffman table. Anything reads it.
+; (Reading PNG needs inflate; it is not here yet.)
+;
+;   (png-encode img)                  ; the file as a string
+;   (png-save "out.png" img)          ; true when it was written
+;   (png-bytes img)                   ; the file as a (vec u8)
+
+(def png--table : (vec int) (vec))
+
+(defn png--init () : unit
+  (when (= (len png--table) 0)
+    (for (n 0 256)
+      (let ((c n))
+        (for (_ 0 8)
+          (set c (if (= (bit-and c 1) 1) (bit-xor 0xedb88320 (shr c 1)) (shr c 1))))
+        (push png--table c)))))
+
+; CRC-32 of the bytes of V from LO up to HI
+(defn png--crc ((v : (vec u8)) (lo : int) (hi : int)) : int
+  (png--init)
+  (let ((c 0xffffffff))
+    (for (i lo hi)
+      (set c (bit-xor (get png--table (bit-and (bit-xor c (int (get v i))) 255)) (shr c 8))))
+    (bit-xor c 0xffffffff)))
+
+(defn png--be32 ((out : (vec u8)) (n : int)) : unit
+  (push out (u8 (bit-and (shr n 24) 255)))
+  (push out (u8 (bit-and (shr n 16) 255)))
+  (push out (u8 (bit-and (shr n 8) 255)))
+  (push out (u8 (bit-and n 255))))
+
+(defn png--chunk ((out : (vec u8)) (kind : string) (data : (vec u8))) : unit
+  (png--be32 out (len data))
+  (let ((start (len out)))
+    (for (i 0 4) (push out (u8 (byte kind i))))
+    (for (b data) (push out b))
+    (png--be32 out (png--crc out start (len out)))))
+
+; zlib around stored blocks of at most 65535 bytes, and the Adler-32 of the data
+(defn png--zlib ((raw : (vec u8))) : (vec u8)
+  (let ((out : (vec u8) (vec (u8 120) (u8 1))) (pos 0) (n (len raw)) (done false) (a 1) (b 0))
+    (while (not done)
+      (let ((size (min 65535 (- n pos))))
+        (set done (>= (+ pos size) n))
+        (push out (u8 (if done 1 0)))
+        (push out (u8 (bit-and size 255))) (push out (u8 (shr size 8)))
+        (push out (u8 (bit-and (bit-not size) 255))) (push out (u8 (bit-and (shr (bit-not size) 8) 255)))
+        (for (i pos (+ pos size))
+          (push out (get raw i))
+          (set a (% (+ a (int (get raw i))) 65521))
+          (set b (% (+ b a) 65521)))
+        (set pos (+ pos size))))
+    (png--be32 out (bit-or (shl b 16) a))
+    out))
+
+(defn png-bytes ((img : Image)) : (vec u8)
+  (let ((out : (vec u8) (vec (u8 137) (u8 80) (u8 78) (u8 71) (u8 13) (u8 10) (u8 26) (u8 10)))
+        (head : (vec u8) (vec)) (raw : (vec u8) (vec)) (px (to-aos img)))
+    (png--be32 head img.w) (png--be32 head img.h)
+    (push head (u8 8)) (push head (u8 6)) (push head (u8 0)) (push head (u8 0)) (push head (u8 0))
+    (png--chunk out "IHDR" head)
+    (for (j 0 img.h)
+      (push raw (u8 0))
+      (for (i (* 4 j img.w) (* 4 (+ j 1) img.w)) (push raw (get px i))))
+    (png--chunk out "IDAT" (png--zlib raw))
+    (png--chunk out "IEND" (vec))
+    out))
+
+(defn png-encode ((img : Image)) : string
+  (let ((parts : (vec string) (vec)))
+    (for (b (png-bytes img)) (push parts (char (int b))))
+    (join parts "")))
+
+(defn png-save ((path : string) (img : Image)) : bool
+  (write-file path (png-encode img)))
+
+(@test "a 1x1 png has the signature, the three chunks and the right crc of IEND"
+  (let ((img (Image.new 1 1)))
+    (img.put 0 0 0xff8000ff)
+    (let ((b (png-bytes img)))
+      (assert (= (int (get b 1)) 80))
+      (assert (= (png--crc (vec (u8 73) (u8 69) (u8 78) (u8 68)) 0 4) 0xae426082))
+      (assert (= (len b) 73))
+      (assert (= (len (png-encode img)) 73)))))
+
+(@test "the adler sum of a known text"
+  (let ((z (png--zlib (vec (u8 87) (u8 105) (u8 107) (u8 105)))))
+    (assert (= (len z) 15))
+    (assert (= (int (get z 11)) 0x03))
+    (assert (= (int (get z 12)) 0xda))
+    (assert (= (int (get z 13)) 0x01))
+    (assert (= (int (get z 14)) 0x95))))

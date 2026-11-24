@@ -1,0 +1,236 @@
+(gem artlib/image :version "0.1.0")
+; An RGBA image kept as four planes, one vec of bytes each (SoA): the filters, the blends and the noise read one plane
+; at a time, and a plane of 8-bit values is a quarter of the memory of a vec of packed ints. A copy of an Image is the
+; same image, as with a vec. The edge is safe: reading outside gives 0 (transparent black), writing outside does nothing.
+; A color is an int 0xRRGGBBAA, the same as the canvas of the window and `draw-rect` use.
+;
+;   (def img (Image.new 64 64))           ; transparent black
+;   (img.clear 0x202030ff)                ; every pixel
+;   (img.rect 4 4 20 10 0xff0000ff)       ; filled
+;   (img.frame 0 0 64 64 2 0xffffffff)    ; a border, 2 thick, inside the box
+;   (img.put 5 5 c) (img.get 5 5)         ; one pixel
+;   (img.cut 8 8 16 16)                   ; a new image of that box
+;   (img.slice 10 20)                     ; a new image of the rows from 10 up to 20
+;   (dst.write src 3 4)                   ; src on dst at (3 4), blended by its alpha
+;   (img.invert) (img.gray) (img.threshold 128) (img.brighten 30) (img.blur 2) (img.flip-x)
+;   (img.shade f)                         ; every pixel from f(u v), u and v in 0..1: a node, see artlib/procedural
+;   (to-aos img)                          ; the bytes as R G B A R G B A ... in a vec, for a file or the GPU
+;   (Image.from-aos w h bytes)            ; and back
+
+(struct Image
+  (w : int 0)
+  (h : int 0)
+  (r : (vec u8) (vec))
+  (g : (vec u8) (vec))
+  (b : (vec u8) (vec))
+  (a : (vec u8) (vec)))
+
+(defn rgba ((r : int) (g : int) (b : int) (a : int)) : int
+  (bit-or (shl (bit-and r 255) 24) (shl (bit-and g 255) 16) (shl (bit-and b 255) 8) (bit-and a 255)))
+
+(defn color-r ((c : int)) : int (bit-and (shr c 24) 255))
+(defn color-g ((c : int)) : int (bit-and (shr c 16) 255))
+(defn color-b ((c : int)) : int (bit-and (shr c 8) 255))
+(defn color-a ((c : int)) : int (bit-and c 255))
+
+(defn Image.new ((w : int) (h : int)) : Image
+  (let ((img (Image :w (max w 0) :h (max h 0))))
+    (for (_ 0 (* img.w img.h))
+      (push img.r (u8 0)) (push img.g (u8 0)) (push img.b (u8 0)) (push img.a (u8 0)))
+    img))
+
+(defn Image.inside? ((img : Image) (x : int) (y : int)) : bool
+  (and (>= x 0) (< x img.w) (>= y 0) (< y img.h)))
+
+(defn Image.get ((img : Image) (x : int) (y : int)) : int
+  (if (Image.inside? img x y)
+    (let ((i (+ (* y img.w) x)))
+      (rgba (int (get img.r i)) (int (get img.g i)) (int (get img.b i)) (int (get img.a i))))
+    0))
+
+(defn Image.put ((img : Image) (x : int) (y : int) (c : int)) : unit
+  (when (Image.inside? img x y)
+    (let ((i (+ (* y img.w) x)))
+      (put img.r i (u8 (color-r c))) (put img.g i (u8 (color-g c)))
+      (put img.b i (u8 (color-b c))) (put img.a i (u8 (color-a c))))))
+
+(defn Image.clear ((img : Image) (c : int)) : unit
+  (for (i 0 (* img.w img.h))
+    (put img.r i (u8 (color-r c))) (put img.g i (u8 (color-g c)))
+    (put img.b i (u8 (color-b c))) (put img.a i (u8 (color-a c)))))
+
+(defn Image.rect ((img : Image) (x : int) (y : int) (w : int) (h : int) (c : int)) : unit
+  (for (j (max y 0) (min (+ y h) img.h))
+    (for (i (max x 0) (min (+ x w) img.w))
+      (Image.put img i j c))))
+
+; a border of T pixels inside the box
+(defn Image.frame ((img : Image) (x : int) (y : int) (w : int) (h : int) (t : int) (c : int)) : unit
+  (Image.rect img x y w t c)
+  (Image.rect img x (- (+ y h) t) w t c)
+  (Image.rect img x (+ y t) t (- h (* 2 t)) c)
+  (Image.rect img (- (+ x w) t) (+ y t) t (- h (* 2 t)) c))
+
+(defn Image.cut ((img : Image) (x : int) (y : int) (w : int) (h : int)) : Image
+  (let ((out (Image.new w h)))
+    (for (j 0 out.h)
+      (for (i 0 out.w)
+        (Image.put out i j (Image.get img (+ x i) (+ y j)))))
+    out))
+
+; the rows from FROM up to TO, the whole width
+(defn Image.slice ((img : Image) (from : int) (to : int)) : Image
+  (let ((a (clamp from 0 img.h)) (b (clamp to 0 img.h)))
+    (Image.cut img 0 a img.w (max 0 (- b a)))))
+
+(defn img--mix ((s : int) (d : int) (sa : int)) : int
+  (/ (+ (* s sa) (* d (- 255 sa))) 255))
+
+; the pixel SRC over the pixel DST
+(defn img--over ((src : int) (dst : int)) : int
+  (let ((sa (color-a src)) (da (color-a dst)))
+    (if (= sa 255) src
+      (if (= sa 0) dst
+        (let ((oa (+ sa (/ (* da (- 255 sa)) 255))))
+          (rgba (img--mix (color-r src) (color-r dst) sa) (img--mix (color-g src) (color-g dst) sa)
+                (img--mix (color-b src) (color-b dst) sa) oa))))))
+
+(defn Image.write ((dst : Image) (src : Image) (x : int) (y : int)) : unit
+  (for (j 0 src.h)
+    (for (i 0 src.w)
+      (when (Image.inside? dst (+ x i) (+ y j))
+        (Image.put dst (+ x i) (+ y j) (img--over (Image.get src i j) (Image.get dst (+ x i) (+ y j))))))))
+
+(defn Image.invert ((img : Image)) : unit
+  (for (i 0 (* img.w img.h))
+    (put img.r i (u8 (- 255 (int (get img.r i))))) (put img.g i (u8 (- 255 (int (get img.g i)))))
+    (put img.b i (u8 (- 255 (int (get img.b i)))))))
+
+(defn Image.gray ((img : Image)) : unit
+  (for (i 0 (* img.w img.h))
+    (let ((y (/ (+ (* 77 (int (get img.r i))) (* 151 (int (get img.g i))) (* 28 (int (get img.b i)))) 256)))
+      (put img.r i (u8 y)) (put img.g i (u8 y)) (put img.b i (u8 y)))))
+
+; black below LIMIT (0 to 255) in the brightness, white from it
+(defn Image.threshold ((img : Image) (limit : int)) : unit
+  (Image.gray img)
+  (for (i 0 (* img.w img.h))
+    (let ((v (if (>= (int (get img.r i)) limit) 255 0)))
+      (put img.r i (u8 v)) (put img.g i (u8 v)) (put img.b i (u8 v)))))
+
+(defn Image.brighten ((img : Image) (by : int)) : unit
+  (for (i 0 (* img.w img.h))
+    (put img.r i (u8 (clamp (+ (int (get img.r i)) by) 0 255)))
+    (put img.g i (u8 (clamp (+ (int (get img.g i)) by) 0 255)))
+    (put img.b i (u8 (clamp (+ (int (get img.b i)) by) 0 255)))))
+
+(defn Image.flip-x ((img : Image)) : unit
+  (for (j 0 img.h)
+    (for (i 0 (/ img.w 2))
+      (let ((a (Image.get img i j)) (b (Image.get img (- img.w 1 i) j)))
+        (Image.put img i j b)
+        (Image.put img (- img.w 1 i) j a)))))
+
+; each pixel the mean of the box of radius R around it; the edge counts only the pixels there are
+(defn Image.blur ((img : Image) (radius : int)) : unit
+  (let ((src (Image.cut img 0 0 img.w img.h)))
+    (for (j 0 img.h)
+      (for (i 0 img.w)
+        (let ((sr 0) (sg 0) (sb 0) (sa 0) (n 0))
+          (for (v (max 0 (- j radius)) (min img.h (+ j radius 1)))
+            (for (u (max 0 (- i radius)) (min img.w (+ i radius 1)))
+              (let ((c (Image.get src u v)))
+                (set sr (+ sr (color-r c))) (set sg (+ sg (color-g c)))
+                (set sb (+ sb (color-b c))) (set sa (+ sa (color-a c)))
+                (set n (+ n 1)))))
+          (Image.put img i j (rgba (/ sr n) (/ sg n) (/ sb n) (/ sa n))))))))
+
+; every pixel from F(u v), u and v from 0 to 1 across the image, in the middle of the pixel
+(defn Image.shade ((img : Image) (f : (fn (float float) int))) : unit
+  (for (j 0 img.h)
+    (for (i 0 img.w)
+      (Image.put img i j (f (/ (+ (float i) 0.5) (float img.w)) (/ (+ (float j) 0.5) (float img.h)))))))
+
+;; ---- the layout of a file: AoS ----
+
+(defn to-aos ((img : Image)) : (vec u8)
+  (let ((out : (vec u8) (vec)))
+    (for (i 0 (* img.w img.h))
+      (push out (get img.r i)) (push out (get img.g i)) (push out (get img.b i)) (push out (get img.a i)))
+    out))
+
+(defn Image.from-aos ((w : int) (h : int) (bytes : (vec u8))) : Image
+  (let ((img (Image :w w :h h)))
+    (for (i 0 (* w h))
+      (push img.r (get bytes (* 4 i))) (push img.g (get bytes (+ (* 4 i) 1)))
+      (push img.b (get bytes (+ (* 4 i) 2))) (push img.a (get bytes (+ (* 4 i) 3))))
+    img))
+
+(@test "a pixel, the edge and a rectangle"
+  (let ((img (Image.new 4 3)))
+    (assert (= (img.get 0 0) 0))
+    (img.put 1 1 0x11223344)
+    (assert (= (img.get 1 1) 0x11223344))
+    (img.put -1 0 0xffffffff)
+    (img.put 4 0 0xffffffff)
+    (assert (= (img.get -1 0) 0))
+    (img.rect 2 1 10 10 0xff0000ff)
+    (assert (= (img.get 3 2) 0xff0000ff))
+    (assert (= (img.get 1 2) 0))))
+
+(@test "frame, cut and slice"
+  (let ((img (Image.new 6 6)))
+    (img.frame 0 0 6 6 1 0xffffffff)
+    (assert (= (img.get 0 3) 0xffffffff))
+    (assert (= (img.get 5 5) 0xffffffff))
+    (assert (= (img.get 2 2) 0))
+    (let ((c (img.cut 1 1 4 4)))
+      (assert (= c.w 4))
+      (assert (= (c.get 0 0) 0))
+      (assert (= (c.get -1 0) 0)))
+    (let ((s (img.slice 4 100)))
+      (assert (= s.h 2))
+      (assert (= (s.get 0 1) 0xffffffff)))))
+
+(@test "write blends by alpha"
+  (let ((dst (Image.new 2 1)) (src (Image.new 2 1)))
+    (dst.clear 0x000000ff)
+    (src.put 0 0 0xffffffff)
+    (src.put 1 0 0xffffff80)
+    (dst.write src 0 0)
+    (assert (= (dst.get 0 0) 0xffffffff))
+    (assert (= (dst.get 1 0) 0x808080ff))))
+
+(@test "filters"
+  (let ((img (Image.new 2 1)))
+    (img.put 0 0 0xff0000ff)
+    (img.put 1 0 0x10203040)
+    (img.invert)
+    (assert (= (img.get 0 0) 0x00ffffff))
+    (assert (= (img.get 1 0) 0xefdfcf40))
+    (img.threshold 128)
+    (assert (= (img.get 0 0) 0xffffffff))
+    (assert (= (img.get 1 0) 0xffffff40))
+    (img.flip-x)
+    (assert (= (img.get 0 0) 0xffffff40))))
+
+(@test "blur averages and brighten clamps"
+  (let ((img (Image.new 3 1)))
+    (img.put 1 0 0xffffffff)
+    (img.blur 1)
+    (assert (= (color-r (img.get 0 0)) 127))
+    (assert (= (color-r (img.get 1 0)) 85))
+    (img.brighten 200)
+    (assert (= (color-r (img.get 1 0)) 255))))
+
+(@test "shade, and the layout both ways"
+  (let ((img (Image.new 2 2)))
+    (img.shade (fn ((u : float) (v : float)) : int (if (< u 0.5) 0x000000ff 0xffffffff)))
+    (assert (= (img.get 0 1) 0x000000ff))
+    (assert (= (img.get 1 1) 0xffffffff))
+    (let ((bytes (to-aos img)))
+      (assert (= (len bytes) 16))
+      (assert (= (int (get bytes 4)) 255))
+      (let ((back (Image.from-aos 2 2 bytes)))
+        (assert (= (back.get 1 0) 0xffffffff))
+        (assert (= (back.get 0 0) 0x000000ff))))))
