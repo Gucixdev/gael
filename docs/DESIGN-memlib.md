@@ -96,5 +96,5 @@ Decode, with s = xor of positions of set data bits xor c7 and o = parity(cell) x
 - [x] `gems/memlib/bitspace.gael`, `layout.gael` with tests: every single flip of 72 bits in several words heals;
       every double flip of a word is lost; scrub counts; errors named.
 - [x] Differential: the gem's encode equals the Lean oracle's on seeded random words.
-- [~] MODELS.md, REFERENCE.md, language.md, PLAN.md updated; `./test` green on the staged state; the `get` cost measured.
+- [~] MODELS.md, REFERENCE.md, language.md updated; `./test` green on the staged state; the `get` cost measured.
 - [ ] `maybe` rows 11 and 15 each have their cheap check run, and become need or no.

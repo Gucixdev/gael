@@ -3,7 +3,7 @@
 gael is a small statically typed language written as s-expressions. The compiler checks every type before anything
 runs and reports all the errors of a file in one go, each with its line, column and a caret under the mistake. A
 program without errors is compiled to bytecode and run on a stack VM. gael is meant to become the scripting language
-of a game engine and of an Emacs-like editor written in it (`docs/SPEC.md`, in Polish); this repository is the
+of a game engine and of an Emacs-like editor written in it; this repository is the
 language, version 0.3. `docs/REFERENCE.md` is the dictionary: every form, operator, function and type, with what it
 takes, gives and reports.
 
@@ -66,7 +66,7 @@ and 2 for bad usage.
 
 ## More
 
-[What it looks like](docs/tour.md), [the language in 0.3](docs/language.md), [how it is built](docs/internals.md), [reference](docs/REFERENCE.md), [spec](docs/SPEC.md).
+[What it looks like](docs/tour.md), [the language in 0.3](docs/language.md), [how it is built](docs/internals.md), [reference](docs/REFERENCE.md).
 
 ## Status
 
@@ -74,8 +74,7 @@ Version 0.3, tested on Linux x86-64 with gcc 13.3 and clang 18.1. `./test` passe
 compile and runtime error cases, three warning cases, four gael test cases, the tests of each of the ten gems that come
 with gael, one WGSL case, three REPL sessions, nine README examples), the C89 mirror of WebGPU's structs against
 `webgpu.h`, and with `GAEL_WGPU` set the GPU runs of `gpu-each`, drawing, and windows on a headless weston of the
-test's own (tested on Mesa's lavapipe, Vulkan on the CPU) with gcc, clang, gcc with the plain switch dispatch and gcc with both sanitizers, every run with `GAEL_CHECK=1`. GitHub
-Actions runs shellcheck on the scripts and `./test` on every push (`.github/workflows/test.yml`, ubuntu-24.04).
+test's own (tested on Mesa's lavapipe, Vulkan on the CPU) with gcc, clang, gcc with the plain switch dispatch and gcc with both sanitizers, every run with `GAEL_CHECK=1`.
 
 Not in 0.3: versions of gems, calling C, and the editor. The fixed limits are 8 parameters per function, 65536
 functions, 65536 globals, 65536 types and 2^24 instructions; per unit (a file, or one REPL form) 2^21 syntax nodes and a
